@@ -9,6 +9,10 @@ to be done once; after this, pushes to `main` deploy automatically.
 sudo mkdir -p /opt/pondpi
 sudo chown "$USER":"$USER" /opt/pondpi
 python3 -m venv /opt/pondpi/.venv
+
+# Separate staging venv used by the deploy workflow's smoke-test step
+sudo mkdir -p /opt/pondpi-staging-venv
+sudo chown "$USER":"$USER" /opt/pondpi-staging-venv
 ```
 
 ## 2. systemd service
