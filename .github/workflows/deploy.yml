@@ -13,7 +13,7 @@ jobs:
       - name: Sync files to deploy directory
         run: |
           mkdir -p /opt/pondpi
-          rsync -a --delete --exclude '.git' --exclude '.github' ./ /opt/pondpi/
+          rsync -a --delete --exclude '.git' --exclude '.github' --exclude 'deploy' ./ /opt/pondpi/
 
       - name: Install dependencies
         run: /opt/pondpi/.venv/bin/pip install -r /opt/pondpi/requirements.txt
