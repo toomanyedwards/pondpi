@@ -64,3 +64,16 @@ def test_read_frame_returns_none_when_not_enough_bytes():
 def test_read_frame_returns_none_when_header_missing():
     fake = FakeSerial(bytes([0x00, 0x01, 0x2C, 0x00]))
     assert read_sensor.read_frame(fake) is None
+
+
+def test_simulated_serial_produces_readable_frames():
+    sim = read_sensor.SimulatedSerial(base_mm=800, amplitude_mm=0, noise_mm=0)
+    assert read_sensor.read_frame(sim) == 800
+
+
+def test_simulated_serial_stays_within_sensor_range():
+    sim = read_sensor.SimulatedSerial(base_mm=800, amplitude_mm=200, noise_mm=5)
+    for _ in range(50):
+        distance_mm = read_sensor.read_frame(sim)
+        assert distance_mm is not None
+        assert 0 <= distance_mm <= 4500

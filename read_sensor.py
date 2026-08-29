@@ -1,4 +1,6 @@
 import argparse
+import math
+import random
 import time
 from collections import deque
 
@@ -39,6 +41,47 @@ def read_frame(ser):
     return None
 
 
+class SimulatedSerial:
+    """Fake serial source that streams synthetic A02YYUW frames, for local
+    development without real sensor hardware. The distance wanders slowly
+    around `base_mm` on a sine wave, plus a bit of random noise."""
+
+    def __init__(self, base_mm=800, amplitude_mm=200, period_s=30, noise_mm=5):
+        self._buf = b""
+        self._base_mm = base_mm
+        self._amplitude_mm = amplitude_mm
+        self._period_s = period_s
+        self._noise_mm = noise_mm
+        self._start = time.monotonic()
+
+    @property
+    def in_waiting(self):
+        if not self._buf:
+            self._buf = self._next_frame()
+        return len(self._buf)
+
+    def read(self, n):
+        chunk, self._buf = self._buf[:n], self._buf[n:]
+        return chunk
+
+    def reset_input_buffer(self):
+        self._buf = b""
+
+    def close(self):
+        pass
+
+    def _next_frame(self):
+        elapsed = time.monotonic() - self._start
+        wave = math.sin(2 * math.pi * elapsed / self._period_s)
+        noise = random.uniform(-self._noise_mm, self._noise_mm)
+        distance_mm = int(self._base_mm + self._amplitude_mm * wave + noise)
+        distance_mm = max(0, min(distance_mm, 4500))  # sensor's rated range
+
+        data_h, data_l = (distance_mm >> 8) & 0xFF, distance_mm & 0xFF
+        checksum = calculate_checksum(data_h, data_l)
+        return bytes([0xFF, data_h, data_l, checksum])
+
+
 def run(ser, window_size):
     # Rolling window of the last N valid readings
     readings = deque(maxlen=window_size)
@@ -71,10 +114,19 @@ def run(ser, window_size):
 def main():
     parser = argparse.ArgumentParser(description="A02YYUW distance reader with rolling average smoothing")
     parser.add_argument("--window-size", type=int, default=25, help="number of readings to average over (default: 25)")
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="use synthetic sensor data instead of a real serial connection (for local development)",
+    )
     args = parser.parse_args()
 
-    # Initialize serial port at 9600 baud rate
-    ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
+    if args.simulate:
+        ser = SimulatedSerial()
+    else:
+        # Initialize serial port at 9600 baud rate
+        ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
+
     run(ser, args.window_size)
 
 
