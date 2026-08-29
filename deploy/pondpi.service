@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=pi
 WorkingDirectory=/opt/pondpi
-ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/read_sensor.py
+ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py
 Restart=on-failure
 RestartSec=5
 

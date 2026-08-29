@@ -1,10 +1,6 @@
-import argparse
 import math
 import random
 import time
-from collections import deque
-
-import serial
 
 
 def calculate_checksum(data_h, data_l):
@@ -80,55 +76,3 @@ class SimulatedSerial:
         data_h, data_l = (distance_mm >> 8) & 0xFF, distance_mm & 0xFF
         checksum = calculate_checksum(data_h, data_l)
         return bytes([0xFF, data_h, data_l, checksum])
-
-
-def run(ser, window_size):
-    # Rolling window of the last N valid readings
-    readings = deque(maxlen=window_size)
-
-    print(f"Listening for A02YYUW Automatic Stream (window size: {window_size})... Press Ctrl+C to stop.")
-
-    try:
-        while True:
-            distance_mm = read_frame(ser)
-
-            if distance_mm is not None:
-                if is_valid_reading(distance_mm):
-                    readings.append(distance_mm)
-                    avg_mm = sum(readings) / len(readings)
-                    avg_cm = avg_mm / 10.0
-
-                    print(f"Distance: {avg_cm:.1f} cm  ({avg_mm:.0f} mm avg over {len(readings)} readings)")
-                else:
-                    print("Reading: Too close (Below 3cm blind zone)")
-
-            # Tiny sleep to avoid pegging the CPU
-            time.sleep(0.01)
-
-    except KeyboardInterrupt:
-        print("\nStopping streaming reader.")
-    finally:
-        ser.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="A02YYUW distance reader with rolling average smoothing")
-    parser.add_argument("--window-size", type=int, default=25, help="number of readings to average over (default: 25)")
-    parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="use synthetic sensor data instead of a real serial connection (for local development)",
-    )
-    args = parser.parse_args()
-
-    if args.simulate:
-        ser = SimulatedSerial()
-    else:
-        # Initialize serial port at 9600 baud rate
-        ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
-
-    run(ser, args.window_size)
-
-
-if __name__ == "__main__":
-    main()
