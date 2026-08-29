@@ -47,7 +47,7 @@ def test_health_degraded_when_poller_never_started():
 
 def test_level_returns_503_before_first_reading():
     server._state.update(
-        instantaneous_mm=None, rolling_avg_mm=None, samples_in_rolling_window=0, rolling_avg_window_size=25
+        instantaneous_mm=None, rolling_avg_mm=None, samples_in_rolling_window=0, rolling_window_size=25
     )
     client = server.app.test_client()
 
@@ -58,7 +58,7 @@ def test_level_returns_503_before_first_reading():
 
 def test_level_returns_current_reading():
     server._state.update(
-        instantaneous_mm=101.0, rolling_avg_mm=850.0, samples_in_rolling_window=25, rolling_avg_window_size=100
+        instantaneous_mm=101.0, rolling_avg_mm=850.0, samples_in_rolling_window=25, rolling_window_size=100
     )
     client = server.app.test_client()
 
@@ -69,7 +69,7 @@ def test_level_returns_current_reading():
     assert data == {
         "instantaneous_distance_cm": 10.1,
         "rolling_avg_distance_cm": 85.0,
-        "rolling_avg_window_size": 100,
+        "rolling_window_size": 100,
         "samples_in_rolling_window": 25,
         "polling_interval_ms": 10,
     }

@@ -18,7 +18,7 @@ _state = {
     "instantaneous_mm": None,
     "rolling_avg_mm": None,
     "samples_in_rolling_window": 0,
-    "rolling_avg_window_size": None,
+    "rolling_window_size": None,
 }
 
 _poll_thread = None
@@ -64,7 +64,7 @@ def level():
         return jsonify(
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
             rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
-            rolling_avg_window_size=_state["rolling_avg_window_size"],
+            rolling_window_size=_state["rolling_window_size"],
             samples_in_rolling_window=_state["samples_in_rolling_window"],
             polling_interval_ms=round(POLL_INTERVAL_S * 1000),
         )
@@ -90,7 +90,7 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    _state["rolling_avg_window_size"] = args.window_size
+    _state["rolling_window_size"] = args.window_size
     rolling_avg = RollingAverage(args.window_size)
 
     stop_event = threading.Event()
