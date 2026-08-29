@@ -27,19 +27,3 @@ jobs:
 
       - name: Restart service
         run: sudo systemctl restart pondpi.service
-
-      - name: Notify on failure
-        if: failure()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: toomanyedwards@gmail.com
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "PondPi deploy failed (run #${{ github.run_number }})"
-          to: toomanyedwards@gmail.com
-          from: PondPi CI <toomanyedwards@gmail.com>
-          body: |
-            Deploy failed on commit ${{ github.sha }}.
-
-            Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
