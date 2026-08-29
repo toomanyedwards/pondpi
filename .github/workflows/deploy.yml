@@ -14,7 +14,7 @@ jobs:
         run: |
           python3 -m venv --clear /opt/pondpi-staging-venv
           /opt/pondpi-staging-venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
-          /opt/pondpi-staging-venv/bin/python -m py_compile read_sensor.py
+          /opt/pondpi-staging-venv/bin/python -m py_compile read_sensor.py rolling_average.py server.py
           /opt/pondpi-staging-venv/bin/python -m pytest -q
 
       - name: Sync files to deploy directory
@@ -24,6 +24,11 @@ jobs:
 
       - name: Install dependencies
         run: /opt/pondpi/.venv/bin/pip install -r /opt/pondpi/requirements.txt
+
+      - name: Update systemd unit
+        run: |
+          sudo cp deploy/pondpi.service /etc/systemd/system/pondpi.service
+          sudo systemctl daemon-reload
 
       - name: Restart service
         run: sudo systemctl restart pondpi.service
