@@ -51,6 +51,7 @@ def health():
         poller_alive=poller_alive,
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
+        rolling_window_size=_state["rolling_window_size"],
     )
     return payload if poller_alive else (payload, 503)
 
