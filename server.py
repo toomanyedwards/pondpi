@@ -11,12 +11,14 @@ from rolling_average import RollingAverage
 
 app = Flask(__name__)
 
+POLL_INTERVAL_S = 0.01
+
 _state_lock = threading.Lock()
 _state = {
-    "distance_mm": None,
-    "distance_cm": None,
-    "reading_count": 0,
-    "window_size": None,
+    "instantaneous_mm": None,
+    "rolling_avg_mm": None,
+    "samples_in_rolling_window": 0,
+    "rolling_avg_window_size": None,
 }
 
 _poll_thread = None
@@ -31,11 +33,11 @@ def poll_sensor(ser, rolling_avg, stop_event):
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
             avg_mm = rolling_avg.add(distance_mm)
             with _state_lock:
-                _state["distance_mm"] = avg_mm
-                _state["distance_cm"] = avg_mm / 10.0
-                _state["reading_count"] = rolling_avg.count
+                _state["instantaneous_mm"] = distance_mm
+                _state["rolling_avg_mm"] = avg_mm
+                _state["samples_in_rolling_window"] = rolling_avg.count
 
-        time.sleep(0.01)
+        time.sleep(POLL_INTERVAL_S)
 
 
 @app.route("/health")
@@ -56,14 +58,15 @@ def health():
 @app.route("/level")
 def level():
     with _state_lock:
-        if _state["distance_mm"] is None:
+        if _state["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
         return jsonify(
-            distance_mm=round(_state["distance_mm"]),
-            distance_cm=round(_state["distance_cm"], 1),
-            reading_count=_state["reading_count"],
-            window_size=_state["window_size"],
+            instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
+            rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
+            rolling_avg_window_size=_state["rolling_avg_window_size"],
+            samples_in_rolling_window=_state["samples_in_rolling_window"],
+            polling_interval_ms=round(POLL_INTERVAL_S * 1000),
         )
 
 
@@ -87,7 +90,7 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    _state["window_size"] = args.window_size
+    _state["rolling_avg_window_size"] = args.window_size
     rolling_avg = RollingAverage(args.window_size)
 
     stop_event = threading.Event()
