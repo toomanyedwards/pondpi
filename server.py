@@ -1,6 +1,7 @@
 import argparse
 import threading
 import time
+from datetime import datetime, timezone
 
 import serial
 from flask import Flask, jsonify
@@ -19,6 +20,8 @@ _state = {
 }
 
 _poll_thread = None
+_started_at = datetime.now(timezone.utc)
+_started_monotonic = time.monotonic()
 
 
 def poll_sensor(ser, rolling_avg, stop_event):
@@ -38,11 +41,16 @@ def poll_sensor(ser, rolling_avg, stop_event):
 @app.route("/health")
 def health():
     poller_alive = _poll_thread is not None and _poll_thread.is_alive()
+    uptime_seconds = round(time.monotonic() - _started_monotonic, 1)
+    status = "ok" if poller_alive else "degraded"
 
-    if poller_alive:
-        return jsonify(status="ok", poller_alive=True)
-
-    return jsonify(status="degraded", poller_alive=False), 503
+    payload = jsonify(
+        status=status,
+        poller_alive=poller_alive,
+        started_at=_started_at.isoformat(),
+        uptime_seconds=uptime_seconds,
+    )
+    return payload if poller_alive else (payload, 503)
 
 
 @app.route("/level")

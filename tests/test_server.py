@@ -16,7 +16,12 @@ def test_health_ok_when_poller_alive():
     resp = client.get("/health")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok", "poller_alive": True}
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["poller_alive"] is True
+    assert data["started_at"] == server._started_at.isoformat()
+    assert isinstance(data["uptime_seconds"], (int, float))
+    assert data["uptime_seconds"] >= 0
 
 
 def test_health_degraded_when_poller_dead():
@@ -26,7 +31,9 @@ def test_health_degraded_when_poller_dead():
     resp = client.get("/health")
 
     assert resp.status_code == 503
-    assert resp.get_json() == {"status": "degraded", "poller_alive": False}
+    data = resp.get_json()
+    assert data["status"] == "degraded"
+    assert data["poller_alive"] is False
 
 
 def test_health_degraded_when_poller_never_started():
