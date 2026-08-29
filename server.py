@@ -18,6 +18,8 @@ _state = {
     "window_size": None,
 }
 
+_poll_thread = None
+
 
 def poll_sensor(ser, rolling_avg, stop_event):
     while not stop_event.is_set():
@@ -31,6 +33,16 @@ def poll_sensor(ser, rolling_avg, stop_event):
                 _state["reading_count"] = rolling_avg.count
 
         time.sleep(0.01)
+
+
+@app.route("/health")
+def health():
+    poller_alive = _poll_thread is not None and _poll_thread.is_alive()
+
+    if poller_alive:
+        return jsonify(status="ok", poller_alive=True)
+
+    return jsonify(status="degraded", poller_alive=False), 503
 
 
 @app.route("/level")
@@ -48,6 +60,8 @@ def level():
 
 
 def main():
+    global _poll_thread
+
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
     parser.add_argument("--window-size", type=int, default=25, help="number of readings to average over (default: 25)")
     parser.add_argument("--host", default="0.0.0.0", help="address to bind the HTTP server to (default: 0.0.0.0)")
@@ -71,6 +85,7 @@ def main():
     stop_event = threading.Event()
     poll_thread = threading.Thread(target=poll_sensor, args=(ser, rolling_avg, stop_event), daemon=True)
     poll_thread.start()
+    _poll_thread = poll_thread
 
     try:
         app.run(host=args.host, port=args.port)
