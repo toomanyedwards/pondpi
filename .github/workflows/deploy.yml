@@ -15,7 +15,7 @@ jobs:
           python3 -m venv --clear /opt/pondpi-staging-venv
           /opt/pondpi-staging-venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
           /opt/pondpi-staging-venv/bin/python -m py_compile read_sensor.py
-          /opt/pondpi-staging-venv/bin/pytest -q
+          /opt/pondpi-staging-venv/bin/python -m pytest -q
 
       - name: Sync files to deploy directory
         run: |
