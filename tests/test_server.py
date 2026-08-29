@@ -60,7 +60,11 @@ def test_level_returns_503_before_first_reading():
 
 def test_level_returns_current_reading():
     server._state.update(
-        instantaneous_mm=101.0, rolling_avg_mm=850.0, samples_in_rolling_window=25, rolling_window_size=100
+        instantaneous_mm=101.0,
+        rolling_avg_mm=850.0,
+        samples_in_rolling_window=25,
+        rolling_window_size=100,
+        polling_interval_ms=10,
     )
     client = server.app.test_client()
 
