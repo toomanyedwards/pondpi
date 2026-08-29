@@ -1,0 +1,14 @@
+[Unit]
+Description=PondPi ultrasonic water level reader
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/pondpi
+ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/read_sensor.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
