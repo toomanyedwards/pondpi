@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=pi
 WorkingDirectory=/opt/pondpi
-ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py
+ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py --window-size 500
 Restart=on-failure
 RestartSec=5
 
