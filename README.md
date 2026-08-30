@@ -88,7 +88,7 @@ no risk of a stray inherited env var silently changing behavior.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--window-size` | `6000` | Number of readings averaged for `rolling_avg_distance_cm`. |
+| `--window-size` | `30000` | Number of readings averaged for `rolling_avg_distance_cm`. |
 | `--polling-interval-ms` | `10` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
