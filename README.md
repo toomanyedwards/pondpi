@@ -88,8 +88,8 @@ no risk of a stray inherited env var silently changing behavior.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--window-size` | `30000` | Number of readings averaged for `rolling_avg_distance_cm`. |
-| `--polling-interval-ms` | `10` | How often (ms) to check the serial buffer for a new frame. |
+| `--window-size` | `2000` | Number of readings averaged for `rolling_avg_distance_cm`. |
+| `--polling-interval-ms` | `150` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
 | `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) instead of opening `/dev/serial0`. For local development with no sensor hardware attached. |
