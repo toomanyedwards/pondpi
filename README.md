@@ -99,6 +99,42 @@ from git directly on the device since `.git` is excluded from the
 rsync'd deploy directory. Falls back to `git rev-parse HEAD` for local
 dev checkouts, or `null` if neither is available.
 
+## Sensor notes
+
+This deployment uses DFRobot's [A02YYUW waterproof ultrasonic
+sensor](https://www.dfrobot.com/product-1935.html) (UART, 9600 bps).
+
+| Spec | Value |
+|---|---|
+| Response time | ~100 ms |
+| Ranging accuracy | ±1 cm |
+| Measuring range | 3 cm – 450 cm |
+| Blind zone | < 3 cm (`is_valid_reading` in `read_sensor.py` rejects readings ≤ 30 mm) |
+
+These two numbers directly shape the polling and smoothing defaults:
+
+- **Response time (100 ms) sets a polling floor.** The sensor only
+  produces a genuinely new measurement every ~100 ms; polling the serial
+  buffer faster than that doesn't get you more data, it gets you the
+  *same* frame read back multiple times in a row (e.g. polling every
+  20 ms would read each frame up to ~5 times). Those duplicate values
+  create flat plateaus in the raw signal that distort both the median
+  filter and the rolling average — they flatten real step-changes and
+  can reintroduce a sawtooth pattern as the duplicates fall in and out
+  of the windows together. `--polling-interval-ms` defaults to `150`
+  (comfortably above 100 ms) so that every sample fed into the filters
+  is an independent look at the water surface.
+- **Ranging accuracy (±1 cm) sets a noise floor.** Any single reading
+  can be off by up to 1 cm even with a perfectly still water surface, so
+  don't expect (or chase) sub-centimeter precision out of
+  `instantaneous_distance_cm`. That's exactly what
+  `rolling_avg_distance_cm` is for — averaging readings down to a
+  stabler value — but a `--window-size` so small that it's dominated by
+  one or two ±1 cm outliers will still show that noise. Conversely,
+  don't read too much into a rolling average that only moves by a few
+  mm between samples; that can be within the sensor's own accuracy
+  budget rather than a real water level change.
+
 ## Configuration
 
 All configuration is via CLI flags to `server.py`, not environment
@@ -119,8 +155,11 @@ Change the deployed configuration by editing `ExecStart` in
 `deploy/pondpi.service`, e.g.:
 
 ```
-ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py --window-size 50 --polling-interval-ms 20
+ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py --window-size 50 --polling-interval-ms 200
 ```
+
+Don't set `--polling-interval-ms` below ~100 — see [Sensor notes](#sensor-notes)
+below for why.
 
 ## Developing locally
 
