@@ -8,15 +8,14 @@ Raspberry Pi, and exposes the current reading over a small HTTP API.
 The sensor sits above the pond and streams distance-to-water-surface
 readings continuously over UART. A background thread polls the serial
 connection, validates each frame, and runs it through every configured
-`LevelStrategy` instance (see [Signal processing
-strategies](#signal-processing-strategies) below); a Flask server exposes
-every strategy's output on `GET /level`.
+`LevelProcessor` instance (see [Signal processing](#signal-processing)
+below); a Flask server exposes every processor's output on `GET /level`.
 
 ```
 ┌───────────────┐   UART frames    ┌────────────────┐    add()    ┌──────────────────────────────┐
-│ A02YYUW sensor│ ───────────────> │ poll_sensor()   │ ──────────> │ every configured LevelStrategy │
-└───────────────┘                  │ (background     │             │ (level_strategies.py),         │
-                                    │  thread)        │             │ e.g. MedianThenRollingAverage  │
+│ A02YYUW sensor│ ───────────────> │ poll_sensor()   │ ──────────> │ every configured LevelProcessor │
+└───────────────┘                  │ (background     │             │ (processors/), discovered      │
+                                    │  thread)        │             │ dynamically at startup          │
                                     └────────┬────────┘             └──────────────────┬────────────┘
                                              │ writes shared state                      │
                                              v                                          v
@@ -36,14 +35,14 @@ scripts relying on the working directory being on `sys.path`:
 pondpi/
 ├── pyproject.toml          # package metadata + dependencies (replaces requirements*.txt)
 ├── config/
-│   └── strategies.yaml     # signal-processing config, see below
+│   └── processors.yaml     # signal-processing config, see below
 ├── src/pondpi/              # the installable package — production code only
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
 │   ├── read_sensor.py
 │   ├── median_filter.py
 │   ├── rolling_average.py
-│   ├── level_strategies.py
-│   ├── strategy_config.py
+│   ├── processors/          # one LevelProcessor subclass per file, see below
+│   ├── processor_config.py
 │   ├── commit_sha.py
 │   └── duration.py
 ├── tests/                   # mirrors src/pondpi/, not shipped/deployed as code
@@ -54,10 +53,10 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
-| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelStrategy` classes. |
-| `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelStrategy` classes. |
-| `level_strategies.py` | `LevelStrategy` and its built-in implementations (`RawStrategy`, `MedianStrategy`, `RollingAverageStrategy`, `MedianThenRollingAverageStrategy`) — see [Signal processing strategies](#signal-processing-strategies). |
-| `strategy_config.py` | `load_strategies()` — reads `config/strategies.yaml` into named `LevelStrategy` instances. |
+| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelProcessor` classes. |
+| `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelProcessor` classes. |
+| `processors/` | `LevelProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `median_then_rolling_average.py`) — see [Signal processing](#signal-processing). |
+| `processor_config.py` | `load_processors()` — reads `config/processors.yaml` into named `LevelProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts the background polling thread and the Flask app. Owns all CLI configuration. |
@@ -73,7 +72,7 @@ Returns the current instantaneous and smoothed distance readings.
   "instantaneous_distance_cm": 11.3,
   "rolling_avg_distance_cm": 11.2,
   "polling_interval_ms": 150,
-  "strategies": {
+  "processors": {
     "rolling_avg": {
       "distance_cm": 11.2,
       "median_window_size": 5,
@@ -89,10 +88,10 @@ Returns the current instantaneous and smoothed distance readings.
 
 | Field | Meaning |
 |---|---|
-| `instantaneous_distance_cm` | The most recent single valid raw reading (not processed by any strategy). |
-| `rolling_avg_distance_cm` | The output of whichever strategy is marked `primary: true` in `config/strategies.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing strategies](#signal-processing-strategies)). |
+| `instantaneous_distance_cm` | The most recent single valid raw reading (not processed by any processor). |
+| `rolling_avg_distance_cm` | The output of whichever processor is marked `primary: true` in `config/processors.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing](#signal-processing)). |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
-| `strategies` | Every configured `LevelStrategy` instance's current output, keyed by name. `distance_cm` is always present; the rest of each entry is that strategy's own `extra_state()` (window sizes, sample counts, ...) and varies by strategy type. |
+| `processors` | Every configured `LevelProcessor` instance's current output, keyed by name. `distance_cm` is always present; the rest of each entry is that processor's own `extra_state()` (window sizes, sample counts, ...) and varies by processor type. |
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
 since the server started.
@@ -110,7 +109,7 @@ fixed mounting height.
   "started_at": "2026-08-29T19:31:24.633421+00:00",
   "uptime_seconds": 93780.4,
   "uptime_human": "1d 2h 3m 0s",
-  "strategies": ["rolling_avg", "instantaneous_raw"],
+  "processors": ["rolling_avg", "instantaneous_raw"],
   "commit_sha": "e1d742a9c2f4b1a0d3e5f6a7b8c9d0e1f2a3b4c5"
 }
 ```
@@ -124,7 +123,7 @@ anything was wrong.
 below the largest non-zero one are always shown (so exactly one hour is
 `"1h 0m 0s"`, not `"1h"`); under a minute it's just e.g. `"45s"`.
 
-`strategies` is just the list of configured strategy names, as a quick
+`processors` is just the list of configured processor names, as a quick
 "did the config load correctly" signal — see `/level` for their actual
 output.
 
@@ -172,16 +171,23 @@ These two numbers directly shape the polling and smoothing defaults:
   mm between samples; that can be within the sensor's own accuracy
   budget rather than a real water level change.
 
-## Signal processing strategies
+## Signal processing
 
-Raw readings are run through every strategy configured in
-`config/strategies.yaml` (a strategy pattern — one class per algorithm, in
-`level_strategies.py`), and every strategy's output is returned side by
-side on `/level`. This makes it possible to compare smoothing approaches
-against the live sensor stream without a code change or redeploy — just
-edit the YAML.
+Raw readings are run through every processor configured in
+`config/processors.yaml` (a strategy pattern — one class per algorithm,
+in `src/pondpi/processors/`), and every processor's output is returned
+side by side on `/level`. This makes it possible to compare smoothing
+approaches against the live sensor stream without a code change or
+redeploy — just edit the YAML.
 
-Built-in `LevelStrategy` types (`type:` in the YAML) and their `params`:
+Processor types are discovered dynamically at server startup, not from a
+hand-maintained registry: each file in `processors/` (except `base.py`)
+must define exactly one `LevelProcessor` subclass, and the file's name
+becomes the `type:` string used in the YAML. Adding a new processor means
+writing `processors/<name>.py` and referencing `type: <name>` in
+`config/processors.yaml` — nothing else to edit or register.
+
+Built-in `LevelProcessor` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
@@ -190,10 +196,10 @@ Built-in `LevelStrategy` types (`type:` in the YAML) and their `params`:
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
 | `median_then_rolling_average` | `median_window_size`, `rolling_window_size` | Median-filters, then rolling-averages the result. This is today's production pipeline. |
 
-Example `config/strategies.yaml`:
+Example `config/processors.yaml`:
 
 ```yaml
-strategies:
+processors:
   - name: rolling_avg
     type: median_then_rolling_average
     primary: true
@@ -209,41 +215,36 @@ legacy top-level `rolling_avg_distance_cm` field in `/level` — **the
 deployed Home Assistant "Pond Level" sensor reads that exact field**
 (`sensor.pond_level`, a `rest` sensor in Home Assistant's
 `configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s), so
-don't remove or repurpose the `primary` strategy without updating that
+don't remove or repurpose the `primary` processor without updating that
 sensor's `value_template` too. `instantaneous_distance_cm` is unaffected
-by strategies — it's always the raw last-valid reading — and is what
+by processors — it's always the raw last-valid reading — and is what
 `sensor.pond_level_instantaneous` reads.
-
-New strategy types are added by writing a `LevelStrategy` subclass in
-`level_strategies.py` (implement `add(raw_mm)` and optionally
-`extra_state()`) and registering it in `STRATEGY_TYPES`; no other code
-needs to change to start using it from the YAML.
 
 ## Configuration
 
-All non-strategy configuration is via CLI flags to `pondpi-server`, not
+All non-processor configuration is via CLI flags to `pondpi-server`, not
 environment variables — a single boolean/numeric mode switch is more
 visible this way (shows up in `ps aux` and the systemd unit's `ExecStart`
 line), so there's no risk of a stray inherited env var silently changing
 behavior. Signal-processing parameters (window sizes, etc.) live in
-`config/strategies.yaml` instead — see [Signal processing
-strategies](#signal-processing-strategies) above.
+`config/processors.yaml` instead — see [Signal processing](#signal-processing)
+above.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--strategies-config` | `config/strategies.yaml` (relative to the working directory) | Path to the YAML file configuring level-processing strategies. |
+| `--processors-config` | `config/processors.yaml` (relative to the working directory) | Path to the YAML file configuring level-processing processors. |
 | `--polling-interval-ms` | `150` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
 | `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) instead of opening `/dev/serial0`. For local development with no sensor hardware attached. |
 
-`--strategies-config`'s default (and where `/health`'s `commit_sha`
+`--processors-config`'s default (and where `/health`'s `commit_sha`
 resolves from) is relative to the working directory, not the installed
 package's location — this only works because `WorkingDirectory` is always
 set explicitly: `/opt/pondpi` in `deploy/pondpi.service`, and the repo
 root by convention for local dev (see below).
 
-Change the deployed configuration by editing `config/strategies.yaml` (for
+Change the deployed configuration by editing `config/processors.yaml` (for
 smoothing) or `ExecStart` in `deploy/pondpi.service` (for everything
 else), e.g.:
 
@@ -282,9 +283,9 @@ also puts the `pondpi-server` command on your `PATH` (equivalently, run
 `python -m pondpi.server` directly).
 
 Useful while developing: a small `rolling_window_size` in
-`config/strategies.yaml` (see the average react faster) and
+`config/processors.yaml` (see the average react faster) and
 `--polling-interval-ms 200` (slow the stream down to read it by eye). Pass
-`--strategies-config` to point at an alternate YAML file without touching
+`--processors-config` to point at an alternate YAML file without touching
 the checked-in one.
 
 ## Testing
@@ -297,10 +298,12 @@ ruff check .   # lint
 Tests live in `tests/`, import from the installed `pondpi` package (e.g.
 `from pondpi.median_filter import MedianFilter`), and don't need any
 hardware or network access — `tests/test_read_sensor.py`,
-`tests/test_rolling_average.py`, `tests/test_level_strategies.py`, and
-`tests/test_strategy_config.py` (the last using `tmp_path` YAML files)
-exercise pure functions directly, and `tests/test_server.py` uses Flask's
-test client against `pondpi.server.app` with `pondpi.server._state` set
+`tests/test_rolling_average.py`, `tests/test_processors.py` (including
+the dynamic-discovery mechanism itself, against both the real
+`processors/` package and small synthetic ones built in `tmp_path`), and
+`tests/test_processor_config.py` (using `tmp_path` YAML files) exercise
+pure functions directly, and `tests/test_server.py` uses Flask's test
+client against `pondpi.server.app` with `pondpi.server._state` set
 directly.
 
 Bare `pytest` works fine (no `python -m` needed) as long as you've
