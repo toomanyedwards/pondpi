@@ -68,7 +68,9 @@ def test_level_returns_current_reading():
         instantaneous_mm=101.0,
         rolling_avg_mm=850.0,
         polling_interval_ms=10,
+        emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
         processors={
+            "rolling_median5": {"value": 500.0},
             "rolling_avg": {
                 "value": 850.0,
                 "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
@@ -87,10 +89,16 @@ def test_level_returns_current_reading():
         "rolling_avg_distance_cm": 85.0,
         "polling_interval_ms": 10,
         "processors": {
+            "rolling_median5": {"distance_cm": 50.0},
             "rolling_avg": {
                 "distance_cm": 85.0,
                 "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
             },
             "instantaneous_raw": {"distance_cm": 10.1},
+        },
+        # rolling_median5 is emit: false -- present in `processors`, absent from `signals`.
+        "signals": {
+            "rolling_avg": 85.0,
+            "instantaneous_raw": 10.1,
         },
     }
