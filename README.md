@@ -130,7 +130,7 @@ deliberately leaves out.
         "params": {
           "steps": [
             {"ref": "rolling_median5"},
-            {"type": "rolling_average", "params": {"window_size": 40}}
+            {"type": "rolling_average", "params": {"window_size": 200}}
           ]
         },
         "primary": true,
@@ -140,7 +140,7 @@ deliberately leaves out.
         "distance_cm": 11.2,
         "steps": [
           {"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5},
-          {"processor": "rolling_average", "window_size": 40, "samples_in_window": 40}
+          {"processor": "rolling_average", "window_size": 200, "samples_in_window": 200}
         ]
       }
     },
@@ -262,7 +262,7 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 |---|---|---|
 | `raw` | none | Passes the raw reading through unchanged. |
 | `rolling_median` | `window_size` | Median-filters the raw reading over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
+| `rolling_average` | `window_size` | Averages the raw reading over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 | `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
 
@@ -304,7 +304,7 @@ processors:
         - ref: rolling_median5
         - type: rolling_average
           params:
-            window_size: 40
+            window_size: 200
   - name: instantaneous_raw
     type: raw
 ```
