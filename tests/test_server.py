@@ -88,8 +88,6 @@ def test_level_returns_current_reading():
     assert data == {
         "measure_name": "level",
         "units": "cm",
-        "instantaneous_distance_cm": 10.1,
-        "rolling_avg_distance_cm": 85.0,
         "polling_interval_ms": 10,
         "primary_signal": {"value": 85.0, "name": "rolling_avg"},
         # rolling_median5 is emit: false -- absent from `signals`.

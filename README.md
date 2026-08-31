@@ -70,8 +70,6 @@ Returns the current instantaneous and smoothed distance readings.
 {
   "measure_name": "level",
   "units": "cm",
-  "instantaneous_distance_cm": 11.3,
-  "rolling_avg_distance_cm": 11.2,
   "polling_interval_ms": 150,
   "primary_signal": {
     "value": 11.2,
@@ -88,18 +86,9 @@ Returns the current instantaneous and smoothed distance readings.
 |---|---|
 | `measure_name` | What this endpoint measures — always `"level"`. Self-describing metadata, useful if the response is logged or forwarded without the URL for context. |
 | `units` | The unit every `_cm`/`value` field in this response is in — always `"cm"`. |
-| `instantaneous_distance_cm` | **Legacy.** The most recent single valid raw reading (not processed by any processor). Superseded by `signals.instantaneous_raw`, kept because the deployed Home Assistant sensor's `value_template` reads this exact field — see below. |
-| `rolling_avg_distance_cm` | **Legacy.** The output of whichever processor is marked `primary: true` in `config/processors.yaml`. Superseded by `primary_signal.value`, kept for the same Home Assistant reason. |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
-| `primary_signal` | `{value, name}` for whichever processor is marked `primary: true` — `name` is that processor's actual configured name, so this stays correct even if you rename it (unlike `rolling_avg_distance_cm`, whose field name is fixed regardless of what the primary processor is actually called). |
+| `primary_signal` | `{value, name}` for whichever processor is marked `primary: true` — `name` is that processor's actual configured name, so this stays correct even if you rename it. |
 | `signals` | A curated `{name: distance_cm}` view of just the processors meant to be read as final output — every configured processor *except* whichever ones are marked `emit: false` in `config/processors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
-
-`instantaneous_distance_cm`/`rolling_avg_distance_cm` are kept only
-because Home Assistant's `configuration.yaml` `value_template`s read
-those exact field names (see [Signal processing](#signal-processing)) —
-new integrations should use `primary_signal`/`signals` instead. Once
-Home Assistant is migrated to the new fields, the legacy ones can be
-dropped.
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
@@ -233,8 +222,8 @@ These two numbers directly shape the polling and smoothing defaults:
 - **Ranging accuracy (±1 cm) sets a noise floor.** Any single reading
   can be off by up to 1 cm even with a perfectly still water surface, so
   don't expect (or chase) sub-centimeter precision out of
-  `instantaneous_distance_cm`. That's exactly what
-  `rolling_avg_distance_cm` is for — averaging readings down to a
+  `signals.instantaneous_raw`. That's exactly what `primary_signal` is
+  for — averaging readings down to a
   stabler value — but a rolling window so small that it's dominated by
   one or two ±1 cm outliers will still show that noise. Conversely,
   don't read too much into a rolling average that only moves by a few
@@ -306,15 +295,16 @@ processors:
     type: raw
 ```
 
-Exactly one entry must be marked `primary: true`. Its output backfills the
-legacy top-level `rolling_avg_distance_cm` field in `/level` — **the
-deployed Home Assistant "Pond Level" sensor reads that exact field**
-(`sensor.pond_level`, a `rest` sensor in Home Assistant's
-`configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s), so
-don't remove or repurpose the `primary` processor without updating that
-sensor's `value_template` too. `instantaneous_distance_cm` is unaffected
-by processors — it's always the raw last-valid reading — and is what
-`sensor.pond_level_instantaneous` reads.
+Exactly one entry must be marked `primary: true`. Its output becomes
+`primary_signal` in `/level` — **the deployed Home Assistant "Pond Level"
+sensor reads that field** (`sensor.pond_level`, a `rest` sensor in Home
+Assistant's `configuration.yaml` polling `http://pondpi.lan:8080/level`
+every 30s via `value_json.primary_signal.value`), so don't remove or
+repurpose the `primary` processor without updating that sensor's
+`value_template` too. `signals.instantaneous_raw` is unaffected by
+processors — it's always the raw last-valid reading — and is what
+`sensor.pond_level_instantaneous` reads (via
+`value_json.signals.instantaneous_raw`).
 
 Any entry can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
