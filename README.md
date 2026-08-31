@@ -55,7 +55,7 @@ pondpi/
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
 | `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
-| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `chain.py`) — see [Signal processing](#signal-processing). |
+| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `median_processor.py`, `rolling_average_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
@@ -187,12 +187,15 @@ smoothing approaches against the live sensor stream without a code
 change or redeploy — just edit the YAML.
 
 Signal processor types are discovered dynamically at server startup, not
-from a hand-maintained registry: each file in `signal_processors/`
-(except `base.py`) must define exactly one `LevelSignalProcessor`
-subclass, and the file's name becomes the `type:` string used in the
-YAML. Adding a new signal processor means writing
-`signal_processors/<name>.py` and referencing `type: <name>` in
-`config/processors.yaml` — nothing else to edit or register.
+from a hand-maintained registry: each file in `signal_processors/` whose
+name ends in `_processor` must define exactly one `LevelSignalProcessor`
+subclass, and the name with that suffix stripped becomes the `type:`
+string used in the YAML. Files that don't end in `_processor` (`base.py`,
+or any future non-processor helper module) are ignored automatically —
+no hardcoded skip-list to maintain. Adding a new signal processor means
+writing `signal_processors/<name>_processor.py` and referencing
+`type: <name>` in `config/processors.yaml` — nothing else to edit or
+register.
 
 Signal processors are unit-agnostic: `add()` takes a raw value in and
 returns a processed value out, with no notion of mm/cm baked in anywhere.

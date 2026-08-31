@@ -1,10 +1,12 @@
 import pytest
 
 from pondpi.signal_processors import discover_signal_processor_types
-from pondpi.signal_processors.chain import ChainSignalProcessor
-from pondpi.signal_processors.median import MedianSignalProcessor
-from pondpi.signal_processors.raw import RawSignalProcessor
-from pondpi.signal_processors.rolling_average import RollingAverageSignalProcessor
+from pondpi.signal_processors.chain_processor import ChainSignalProcessor
+from pondpi.signal_processors.median_processor import MedianSignalProcessor
+from pondpi.signal_processors.raw_processor import RawSignalProcessor
+from pondpi.signal_processors.rolling_average_processor import (
+    RollingAverageSignalProcessor,
+)
 
 
 def test_raw_processor_passes_through_unchanged():
@@ -94,7 +96,7 @@ def _write_fake_package(tmp_path, package_name, module_filename, module_source):
 
 def test_discover_signal_processor_types_raises_when_module_has_no_processor_class(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
-    _write_fake_package(tmp_path, "fakepkg_none", "empty", "x = 1\n")
+    _write_fake_package(tmp_path, "fakepkg_none", "empty_processor", "x = 1\n")
 
     import fakepkg_none
 
@@ -109,7 +111,7 @@ def test_discover_signal_processor_types_raises_when_module_has_multiple_process
         "class A(LevelSignalProcessor):\n    pass\n\n"
         "class B(LevelSignalProcessor):\n    pass\n"
     )
-    _write_fake_package(tmp_path, "fakepkg_multi", "broken", source)
+    _write_fake_package(tmp_path, "fakepkg_multi", "broken_processor", source)
 
     import fakepkg_multi
 
@@ -117,10 +119,23 @@ def test_discover_signal_processor_types_raises_when_module_has_multiple_process
         discover_signal_processor_types(fakepkg_multi)
 
 
-def test_discover_signal_processor_types_skips_base_module(tmp_path, monkeypatch):
+def test_discover_signal_processor_types_strips_the_processor_suffix_for_the_type_name(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
-    _write_fake_package(tmp_path, "fakepkg_base_only", "base", "x = 1\n")
+    source = "from pondpi.signal_processors.base import LevelSignalProcessor\n\nclass Thing(LevelSignalProcessor):\n    pass\n"
+    _write_fake_package(tmp_path, "fakepkg_suffix", "widget_processor", source)
 
-    import fakepkg_base_only
+    import fakepkg_suffix
 
-    assert discover_signal_processor_types(fakepkg_base_only) == {}
+    assert set(discover_signal_processor_types(fakepkg_suffix)) == {"widget"}
+
+
+def test_discover_signal_processor_types_ignores_modules_not_ending_in_processor(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _write_fake_package(tmp_path, "fakepkg_ignored", "base", "x = 1\n")
+    (tmp_path / "fakepkg_ignored" / "helpers.py").write_text("x = 1\n")
+
+    import fakepkg_ignored
+
+    # Neither base.py nor an arbitrary non-"_processor" helper module is
+    # scanned -- no hardcoded skip-list needed, just the naming convention.
+    assert discover_signal_processor_types(fakepkg_ignored) == {}
