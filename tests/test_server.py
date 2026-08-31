@@ -68,6 +68,7 @@ def test_level_returns_current_reading():
         instantaneous_mm=101.0,
         rolling_avg_mm=850.0,
         polling_interval_ms=10,
+        primary_name="rolling_avg",
         emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
         processors={
             "rolling_median5": {"value": 500.0},
@@ -85,9 +86,12 @@ def test_level_returns_current_reading():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data == {
+        "measure_name": "level",
+        "units": "cm",
         "instantaneous_distance_cm": 10.1,
         "rolling_avg_distance_cm": 85.0,
         "polling_interval_ms": 10,
+        "primary_signal": {"value": 85.0, "name": "rolling_avg"},
         # rolling_median5 is emit: false -- absent from `signals`.
         "signals": {
             "rolling_avg": 85.0,
