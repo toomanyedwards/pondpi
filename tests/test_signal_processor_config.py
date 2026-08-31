@@ -1,8 +1,8 @@
 import pytest
 
 from pondpi.signal_processor_config import load_signal_processors
-from pondpi.signal_processors.chain import ChainSignalProcessor
-from pondpi.signal_processors.raw import RawSignalProcessor
+from pondpi.signal_processors.chain_processor import ChainSignalProcessor
+from pondpi.signal_processors.raw_processor import RawSignalProcessor
 
 
 def write_yaml(tmp_path, content):

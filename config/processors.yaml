@@ -1,11 +1,14 @@
 # Named, parameterized instances of the LevelSignalProcessor classes in
 # src/pondpi/signal_processors/. Each processor's type name is just its
-# filename (e.g. signal_processors/median.py -> type: median), discovered
+# filename with the "_processor" suffix stripped (e.g.
+# signal_processors/median_processor.py -> type: median), discovered
 # dynamically at startup -- adding a new processor means writing
-# signal_processors/<name>.py, not editing anything here or in code. Every
-# instance below processes the raw sensor stream independently and its
-# output is exposed under `processors` in /level. See README.md's
-# "Signal processing" section.
+# signal_processors/<name>_processor.py, not editing anything here or in
+# code. Files not ending in "_processor" (base.py, or any future
+# non-processor helper module) are ignored automatically. Every instance
+# below processes the raw sensor stream independently and its output is
+# exposed under `processors` in /level. See README.md's "Signal
+# processing" section.
 #
 # `type: chain` runs a value through multiple processors in sequence via
 # `params.steps`. Each step is either `ref: <name>` (reuses another
