@@ -79,7 +79,7 @@ def main():
     global _poll_thread
 
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
-    parser.add_argument("--window-size", type=int, default=2000, help="number of readings to average over (default: 2000)")
+    parser.add_argument("--window-size", type=int, default=40, help="number of readings to average over (default: 40)")
     parser.add_argument(
         "--median-window-size",
         type=int,
