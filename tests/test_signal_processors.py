@@ -2,6 +2,9 @@ import pytest
 
 from pondpi.signal_processors import discover_signal_processor_types
 from pondpi.signal_processors.chain_processor import ChainSignalProcessor
+from pondpi.signal_processors.exponential_smoothing_processor import (
+    ExponentialSmoothingSignalProcessor,
+)
 from pondpi.signal_processors.raw_processor import RawSignalProcessor
 from pondpi.signal_processors.rolling_average_processor import (
     RollingAverageSignalProcessor,
@@ -41,6 +44,24 @@ def test_rolling_average_processor_extra_state():
     processor = RollingAverageSignalProcessor(window_size=2)
     processor.add(10)
     assert processor.extra_state() == {"window_size": 2, "samples_in_window": 1}
+
+
+def test_exponential_smoothing_processor_first_reading_passes_through():
+    processor = ExponentialSmoothingSignalProcessor(alpha=0.5)
+    assert processor.add(10) == 10
+
+
+def test_exponential_smoothing_processor_weights_new_reading_by_alpha():
+    processor = ExponentialSmoothingSignalProcessor(alpha=0.5)
+    processor.add(10)
+    assert processor.add(20) == 15  # 0.5 * 20 + 0.5 * 10
+    assert processor.add(20) == 17.5  # 0.5 * 20 + 0.5 * 15
+
+
+def test_exponential_smoothing_processor_extra_state():
+    processor = ExponentialSmoothingSignalProcessor(alpha=0.3)
+    processor.add(10)
+    assert processor.extra_state() == {"alpha": 0.3}
 
 
 def test_chain_processor_feeds_each_step_output_into_the_next():
@@ -85,6 +106,7 @@ def test_discover_signal_processor_types_finds_all_built_ins():
         "raw": RawSignalProcessor,
         "rolling_median": RollingMedianSignalProcessor,
         "rolling_average": RollingAverageSignalProcessor,
+        "exponential_smoothing": ExponentialSmoothingSignalProcessor,
         "chain": ChainSignalProcessor,
     }
 
