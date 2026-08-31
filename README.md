@@ -32,6 +32,7 @@ average; a Flask server exposes the result on `GET /level`.
 | `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; used to reject spikes/outliers before smoothing. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
+| `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint. Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
 ## API
@@ -74,7 +75,8 @@ fixed mounting height.
   "status": "ok",
   "poller_alive": true,
   "started_at": "2026-08-29T19:31:24.633421+00:00",
-  "uptime_seconds": 11.8,
+  "uptime_seconds": 93780.4,
+  "uptime_human": "1d 2h 3m 0s",
   "rolling_window_size": 100,
   "median_window_size": 5,
   "commit_sha": "e1d742a9c2f4b1a0d3e5f6a7b8c9d0e1f2a3b4c5"
@@ -85,6 +87,10 @@ fixed mounting height.
 died — e.g. an unhandled exception in `poll_sensor()` — which otherwise
 would silently leave `/level` serving stale data forever with no signal
 anything was wrong.
+
+`uptime_human` is `uptime_seconds` formatted as `"1d 2h 3m 4s"`. Units
+below the largest non-zero one are always shown (so exactly one hour is
+`"1h 0m 0s"`, not `"1h"`); under a minute it's just e.g. `"45s"`.
 
 `commit_sha` is the full commit SHA that's currently deployed. In
 production this comes from a `COMMIT_SHA` file written by the deploy
