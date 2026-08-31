@@ -25,6 +25,7 @@ def test_health_ok_when_poller_alive():
     assert data["started_at"] == server._started_at.isoformat()
     assert isinstance(data["uptime_seconds"], (int, float))
     assert data["uptime_seconds"] >= 0
+    assert data["uptime_human"] == f"{int(data['uptime_seconds'])}s"
     assert data["rolling_window_size"] == 25
     assert data["median_window_size"] == 5
     assert data["commit_sha"] == "abc123"

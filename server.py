@@ -9,6 +9,7 @@ from flask import Flask, jsonify
 
 import read_sensor
 from commit_sha import read_commit_sha
+from duration import format_duration
 from median_filter import MedianFilter
 from rolling_average import RollingAverage
 
@@ -56,6 +57,7 @@ def health():
         poller_alive=poller_alive,
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
+        uptime_human=format_duration(uptime_seconds),
         rolling_window_size=_state["rolling_window_size"],
         median_window_size=_state["median_window_size"],
         commit_sha=_state["commit_sha"],
