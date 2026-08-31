@@ -70,12 +70,12 @@ def test_level_returns_current_reading():
         polling_interval_ms=10,
         processors={
             "rolling_avg": {
-                "distance_mm": 850.0,
+                "value": 850.0,
                 "median_window_size": 5,
                 "rolling_window_size": 100,
                 "samples_in_rolling_window": 25,
             },
-            "instantaneous_raw": {"distance_mm": 101.0},
+            "instantaneous_raw": {"value": 101.0},
         },
     )
     client = server.app.test_client()
