@@ -25,7 +25,31 @@ every strategy's output on `GET /level`.
                                     └─────────────────────────────────────────┘
 ```
 
-### Files
+### Project layout
+
+Production code, tests, and config are kept in separate top-level
+directories, and `pondpi` is a proper installable Python package (see
+[Developing locally](#developing-locally)) rather than a pile of loose
+scripts relying on the working directory being on `sys.path`:
+
+```
+pondpi/
+├── pyproject.toml          # package metadata + dependencies (replaces requirements*.txt)
+├── config/
+│   └── strategies.yaml     # signal-processing config, see below
+├── src/pondpi/              # the installable package — production code only
+│   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
+│   ├── read_sensor.py
+│   ├── median_filter.py
+│   ├── rolling_average.py
+│   ├── level_strategies.py
+│   ├── strategy_config.py
+│   ├── commit_sha.py
+│   └── duration.py
+├── tests/                   # mirrors src/pondpi/, not shipped/deployed as code
+├── deploy/                  # systemd unit + one-time Pi setup docs
+└── .github/workflows/       # CI (per-PR) + Deploy (on merge to main)
+```
 
 | File | Responsibility |
 |---|---|
@@ -33,10 +57,10 @@ every strategy's output on `GET /level`.
 | `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelStrategy` classes. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelStrategy` classes. |
 | `level_strategies.py` | `LevelStrategy` and its built-in implementations (`RawStrategy`, `MedianStrategy`, `RollingAverageStrategy`, `MedianThenRollingAverageStrategy`) — see [Signal processing strategies](#signal-processing-strategies). |
-| `strategy_config.py` | `load_strategies()` — reads `strategies.yaml` into named `LevelStrategy` instances. |
+| `strategy_config.py` | `load_strategies()` — reads `config/strategies.yaml` into named `LevelStrategy` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
-| `server.py` | Service entrypoint. Starts the background polling thread and the Flask app. Owns all CLI configuration. |
+| `server.py` | Service entrypoint (`pondpi-server`). Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
 ## API
 
@@ -66,7 +90,7 @@ Returns the current instantaneous and smoothed distance readings.
 | Field | Meaning |
 |---|---|
 | `instantaneous_distance_cm` | The most recent single valid raw reading (not processed by any strategy). |
-| `rolling_avg_distance_cm` | The output of whichever strategy is marked `primary: true` in `strategies.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing strategies](#signal-processing-strategies)). |
+| `rolling_avg_distance_cm` | The output of whichever strategy is marked `primary: true` in `config/strategies.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing strategies](#signal-processing-strategies)). |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
 | `strategies` | Every configured `LevelStrategy` instance's current output, keyed by name. `distance_cm` is always present; the rest of each entry is that strategy's own `extra_state()` (window sizes, sample counts, ...) and varies by strategy type. |
 
@@ -150,11 +174,12 @@ These two numbers directly shape the polling and smoothing defaults:
 
 ## Signal processing strategies
 
-Raw readings are run through every strategy configured in `strategies.yaml`
-(a strategy pattern — one class per algorithm, in `level_strategies.py`),
-and every strategy's output is returned side by side on `/level`. This
-makes it possible to compare smoothing approaches against the live sensor
-stream without a code change or redeploy — just edit the YAML.
+Raw readings are run through every strategy configured in
+`config/strategies.yaml` (a strategy pattern — one class per algorithm, in
+`level_strategies.py`), and every strategy's output is returned side by
+side on `/level`. This makes it possible to compare smoothing approaches
+against the live sensor stream without a code change or redeploy — just
+edit the YAML.
 
 Built-in `LevelStrategy` types (`type:` in the YAML) and their `params`:
 
@@ -165,7 +190,7 @@ Built-in `LevelStrategy` types (`type:` in the YAML) and their `params`:
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
 | `median_then_rolling_average` | `median_window_size`, `rolling_window_size` | Median-filters, then rolling-averages the result. This is today's production pipeline. |
 
-Example `strategies.yaml`:
+Example `config/strategies.yaml`:
 
 ```yaml
 strategies:
@@ -196,28 +221,34 @@ needs to change to start using it from the YAML.
 
 ## Configuration
 
-All non-strategy configuration is via CLI flags to `server.py`, not
+All non-strategy configuration is via CLI flags to `pondpi-server`, not
 environment variables — a single boolean/numeric mode switch is more
 visible this way (shows up in `ps aux` and the systemd unit's `ExecStart`
 line), so there's no risk of a stray inherited env var silently changing
 behavior. Signal-processing parameters (window sizes, etc.) live in
-`strategies.yaml` instead — see [Signal processing
+`config/strategies.yaml` instead — see [Signal processing
 strategies](#signal-processing-strategies) above.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--strategies-config` | `strategies.yaml` (next to `server.py`) | Path to the YAML file configuring level-processing strategies. |
+| `--strategies-config` | `config/strategies.yaml` (relative to the working directory) | Path to the YAML file configuring level-processing strategies. |
 | `--polling-interval-ms` | `150` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
 | `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) instead of opening `/dev/serial0`. For local development with no sensor hardware attached. |
 
-Change the deployed configuration by editing `strategies.yaml` (for
+`--strategies-config`'s default (and where `/health`'s `commit_sha`
+resolves from) is relative to the working directory, not the installed
+package's location — this only works because `WorkingDirectory` is always
+set explicitly: `/opt/pondpi` in `deploy/pondpi.service`, and the repo
+root by convention for local dev (see below).
+
+Change the deployed configuration by editing `config/strategies.yaml` (for
 smoothing) or `ExecStart` in `deploy/pondpi.service` (for everything
 else), e.g.:
 
 ```
-ExecStart=/opt/pondpi/.venv/bin/python /opt/pondpi/server.py --polling-interval-ms 200
+ExecStart=/opt/pondpi/.venv/bin/pondpi-server --polling-interval-ms 200
 ```
 
 Don't set `--polling-interval-ms` below ~100 — see [Sensor notes](#sensor-notes)
@@ -230,19 +261,28 @@ serial source that generates valid, correctly-checksummed A02YYUW frames
 with a distance that wanders on a sine wave plus noise, running through
 the exact same parsing/averaging code path as production.
 
+Run these from the repo root — `pondpi-server`'s default config/commit-SHA
+paths are relative to the working directory (see [Configuration](#configuration)
+above).
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -e ".[dev]"
 
-python server.py --simulate
+pondpi-server --simulate
 # in another terminal:
 curl http://localhost:8080/level
 curl http://localhost:8080/health
 ```
 
+`pip install -e ".[dev]"` is an editable install, so changes to files
+under `src/pondpi/` take effect immediately — no reinstall needed. It
+also puts the `pondpi-server` command on your `PATH` (equivalently, run
+`python -m pondpi.server` directly).
+
 Useful while developing: a small `rolling_window_size` in
-`strategies.yaml` (see the average react faster) and
+`config/strategies.yaml` (see the average react faster) and
 `--polling-interval-ms 200` (slow the stream down to read it by eye). Pass
 `--strategies-config` to point at an alternate YAML file without touching
 the checked-in one.
@@ -250,20 +290,22 @@ the checked-in one.
 ## Testing
 
 ```bash
-python -m pytest -q      # unit tests
-ruff check .              # lint
+pytest -q      # unit tests
+ruff check .   # lint
 ```
 
-Tests live in `tests/` and don't need any hardware or network access —
-`tests/test_read_sensor.py`, `tests/test_rolling_average.py`,
-`tests/test_level_strategies.py`, and `tests/test_strategy_config.py`
-(the last using `tmp_path` YAML files) exercise pure functions directly,
-and `tests/test_server.py` uses Flask's test client against `server.app`
-with `server._state` set directly.
+Tests live in `tests/`, import from the installed `pondpi` package (e.g.
+`from pondpi.median_filter import MedianFilter`), and don't need any
+hardware or network access — `tests/test_read_sensor.py`,
+`tests/test_rolling_average.py`, `tests/test_level_strategies.py`, and
+`tests/test_strategy_config.py` (the last using `tmp_path` YAML files)
+exercise pure functions directly, and `tests/test_server.py` uses Flask's
+test client against `pondpi.server.app` with `pondpi.server._state` set
+directly.
 
-Note: run pytest as `python -m pytest`, not bare `pytest` — the module
-import (`import read_sensor`) relies on the current directory being on
-`sys.path`, which `python -m` adds automatically.
+Bare `pytest` works fine (no `python -m` needed) as long as you've
+`pip install -e`'d the package first — `pondpi` resolves via the editable
+install, not a `sys.path`/cwd trick.
 
 ## CI/CD
 
@@ -280,7 +322,11 @@ import (`import read_sensor`) relies on the current directory being on
      below this step touches the live service unless it passes.
   2. **Sync** the repo into `/opt/pondpi` (excluding `.git`, `.github`,
      `deploy/`, and `.venv`).
-  3. **Install dependencies** into `/opt/pondpi/.venv`.
+  3. **Install dependencies** — an editable install
+     (`pip install -e /opt/pondpi`) of the `pondpi` package into
+     `/opt/pondpi/.venv`, so `/opt/pondpi/src/pondpi/` stays the literal
+     running code (same "sync source, restart service" model as before
+     the switch to a proper package).
   4. **Update systemd unit** — copies `deploy/pondpi.service` into
      `/etc/systemd/system/` and reloads systemd, so changes to the unit
      file itself (not just the code) take effect.

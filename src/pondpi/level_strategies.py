@@ -1,5 +1,5 @@
-from median_filter import MedianFilter
-from rolling_average import RollingAverage
+from pondpi.median_filter import MedianFilter
+from pondpi.rolling_average import RollingAverage
 
 
 class LevelStrategy:

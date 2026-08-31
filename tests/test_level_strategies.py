@@ -1,4 +1,4 @@
-from level_strategies import (
+from pondpi.level_strategies import (
     STRATEGY_TYPES,
     MedianStrategy,
     MedianThenRollingAverageStrategy,

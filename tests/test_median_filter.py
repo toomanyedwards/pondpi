@@ -1,4 +1,4 @@
-from median_filter import MedianFilter
+from pondpi.median_filter import MedianFilter
 
 
 def test_median_is_none_before_any_reading():
