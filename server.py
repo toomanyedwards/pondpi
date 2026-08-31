@@ -7,6 +7,7 @@ import serial
 from flask import Flask, jsonify
 
 import read_sensor
+from median_filter import MedianFilter
 from rolling_average import RollingAverage
 
 app = Flask(__name__)
@@ -17,6 +18,7 @@ _state = {
     "rolling_avg_mm": None,
     "samples_in_rolling_window": 0,
     "rolling_window_size": None,
+    "median_window_size": None,
     "polling_interval_ms": None,
 }
 
@@ -25,12 +27,13 @@ _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(ser, rolling_avg, stop_event, poll_interval_s):
+def poll_sensor(ser, median_filter, rolling_avg, stop_event, poll_interval_s):
     while not stop_event.is_set():
         distance_mm = read_sensor.read_frame(ser)
 
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
-            avg_mm = rolling_avg.add(distance_mm)
+            median_mm = median_filter.add(distance_mm)
+            avg_mm = rolling_avg.add(median_mm)
             with _state_lock:
                 _state["instantaneous_mm"] = distance_mm
                 _state["rolling_avg_mm"] = avg_mm
@@ -51,6 +54,7 @@ def health():
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
         rolling_window_size=_state["rolling_window_size"],
+        median_window_size=_state["median_window_size"],
     )
     return payload if poller_alive else (payload, 503)
 
@@ -66,6 +70,7 @@ def level():
             rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
             rolling_window_size=_state["rolling_window_size"],
             samples_in_rolling_window=_state["samples_in_rolling_window"],
+            median_window_size=_state["median_window_size"],
             polling_interval_ms=_state["polling_interval_ms"],
         )
 
@@ -75,6 +80,12 @@ def main():
 
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
     parser.add_argument("--window-size", type=int, default=2000, help="number of readings to average over (default: 2000)")
+    parser.add_argument(
+        "--median-window-size",
+        type=int,
+        default=5,
+        help="number of raw readings to median-filter before they enter the rolling average (default: 5)",
+    )
     parser.add_argument(
         "--polling-interval-ms",
         type=int,
@@ -97,13 +108,15 @@ def main():
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
     _state["rolling_window_size"] = args.window_size
+    _state["median_window_size"] = args.median_window_size
     _state["polling_interval_ms"] = args.polling_interval_ms
+    median_filter = MedianFilter(args.median_window_size)
     rolling_avg = RollingAverage(args.window_size)
 
     stop_event = threading.Event()
     poll_thread = threading.Thread(
         target=poll_sensor,
-        args=(ser, rolling_avg, stop_event, args.polling_interval_ms / 1000),
+        args=(ser, median_filter, rolling_avg, stop_event, args.polling_interval_ms / 1000),
         daemon=True,
     )
     poll_thread.start()

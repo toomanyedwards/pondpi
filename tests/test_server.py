@@ -12,6 +12,7 @@ class DummyThread:
 def test_health_ok_when_poller_alive():
     server._poll_thread = DummyThread(alive=True)
     server._state["rolling_window_size"] = 25
+    server._state["median_window_size"] = 5
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -24,6 +25,7 @@ def test_health_ok_when_poller_alive():
     assert isinstance(data["uptime_seconds"], (int, float))
     assert data["uptime_seconds"] >= 0
     assert data["rolling_window_size"] == 25
+    assert data["median_window_size"] == 5
 
 
 def test_health_degraded_when_poller_dead():
@@ -49,7 +51,11 @@ def test_health_degraded_when_poller_never_started():
 
 def test_level_returns_503_before_first_reading():
     server._state.update(
-        instantaneous_mm=None, rolling_avg_mm=None, samples_in_rolling_window=0, rolling_window_size=25
+        instantaneous_mm=None,
+        rolling_avg_mm=None,
+        samples_in_rolling_window=0,
+        rolling_window_size=25,
+        median_window_size=5,
     )
     client = server.app.test_client()
 
@@ -64,6 +70,7 @@ def test_level_returns_current_reading():
         rolling_avg_mm=850.0,
         samples_in_rolling_window=25,
         rolling_window_size=100,
+        median_window_size=5,
         polling_interval_ms=10,
     )
     client = server.app.test_client()
@@ -77,5 +84,6 @@ def test_level_returns_current_reading():
         "rolling_avg_distance_cm": 85.0,
         "rolling_window_size": 100,
         "samples_in_rolling_window": 25,
+        "median_window_size": 5,
         "polling_interval_ms": 10,
     }
