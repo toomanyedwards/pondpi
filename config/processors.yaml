@@ -1,0 +1,22 @@
+# Named, parameterized instances of the LevelProcessor classes in
+# src/pondpi/processors/. Each processor's type name is just its
+# filename (e.g. processors/median.py -> type: median), discovered
+# dynamically at startup -- adding a new processor means writing
+# processors/<name>.py, not editing anything here or in code. Every
+# instance below processes the raw sensor stream independently and its
+# output is exposed under `processors` in /level. See README.md's
+# "Signal processing" section.
+#
+# Exactly one entry must be marked `primary: true` -- its output backfills
+# the legacy top-level rolling_avg_distance_cm field in /level, which the
+# Home Assistant "Pond Level" sensor depends on. Don't remove it without
+# updating configuration.yaml on the Home Assistant box.
+processors:
+  - name: rolling_avg
+    type: median_then_rolling_average
+    primary: true
+    params:
+      median_window_size: 5
+      rolling_window_size: 40
+  - name: instantaneous_raw
+    type: raw

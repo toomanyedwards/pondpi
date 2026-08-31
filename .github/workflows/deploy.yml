@@ -15,7 +15,7 @@ jobs:
           python3 -m venv --clear /opt/pondpi-staging-venv
           /opt/pondpi-staging-venv/bin/pip install --quiet --upgrade pip
           /opt/pondpi-staging-venv/bin/pip install --quiet -e ".[dev]"
-          /opt/pondpi-staging-venv/bin/python -m py_compile src/pondpi/*.py
+          find src/pondpi -name '*.py' | xargs /opt/pondpi-staging-venv/bin/python -m py_compile
           /opt/pondpi-staging-venv/bin/python -m pytest -q
 
       - name: Record commit SHA

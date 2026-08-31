@@ -11,7 +11,7 @@ class DummyThread:
 
 def test_health_ok_when_poller_alive():
     server._poll_thread = DummyThread(alive=True)
-    server._state["strategy_names"] = ["rolling_avg", "instantaneous_raw"]
+    server._state["processor_names"] = ["rolling_avg", "instantaneous_raw"]
     server._state["commit_sha"] = "abc123"
     client = server.app.test_client()
 
@@ -25,7 +25,7 @@ def test_health_ok_when_poller_alive():
     assert isinstance(data["uptime_seconds"], (int, float))
     assert data["uptime_seconds"] >= 0
     assert data["uptime_human"] == f"{int(data['uptime_seconds'])}s"
-    assert data["strategies"] == ["rolling_avg", "instantaneous_raw"]
+    assert data["processors"] == ["rolling_avg", "instantaneous_raw"]
     assert data["commit_sha"] == "abc123"
 
 
@@ -54,7 +54,7 @@ def test_level_returns_503_before_first_reading():
     server._state.update(
         instantaneous_mm=None,
         rolling_avg_mm=None,
-        strategies={},
+        processors={},
     )
     client = server.app.test_client()
 
@@ -68,7 +68,7 @@ def test_level_returns_current_reading():
         instantaneous_mm=101.0,
         rolling_avg_mm=850.0,
         polling_interval_ms=10,
-        strategies={
+        processors={
             "rolling_avg": {
                 "distance_mm": 850.0,
                 "median_window_size": 5,
@@ -88,7 +88,7 @@ def test_level_returns_current_reading():
         "instantaneous_distance_cm": 10.1,
         "rolling_avg_distance_cm": 85.0,
         "polling_interval_ms": 10,
-        "strategies": {
+        "processors": {
             "rolling_avg": {
                 "distance_cm": 85.0,
                 "median_window_size": 5,
