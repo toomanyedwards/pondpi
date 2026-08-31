@@ -36,12 +36,12 @@ def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s):
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
             results = {}
             for name, processor in processors.items():
-                results[name] = {"distance_mm": processor.add(distance_mm), **processor.extra_state()}
+                results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
 
             with _state_lock:
                 _state["instantaneous_mm"] = distance_mm
                 _state["processors"] = results
-                _state["rolling_avg_mm"] = results[primary_name]["distance_mm"]
+                _state["rolling_avg_mm"] = results[primary_name]["value"]
 
         time.sleep(poll_interval_s)
 
@@ -72,8 +72,8 @@ def level():
 
         processors = {}
         for name, result in _state["processors"].items():
-            extra_state = {k: v for k, v in result.items() if k != "distance_mm"}
-            processors[name] = {"distance_cm": round(result["distance_mm"] / 10.0, 1), **extra_state}
+            extra_state = {k: v for k, v in result.items() if k != "value"}
+            processors[name] = {"distance_cm": round(result["value"] / 10.0, 1), **extra_state}
 
         return jsonify(
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),

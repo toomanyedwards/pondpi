@@ -187,6 +187,12 @@ becomes the `type:` string used in the YAML. Adding a new processor means
 writing `processors/<name>.py` and referencing `type: <name>` in
 `config/processors.yaml` — nothing else to edit or register.
 
+Processors are unit-agnostic: `add()` takes a raw value in and returns a
+processed value out, with no notion of mm/cm baked in anywhere. Millimeter
+readings from the sensor go in, and whatever comes out is only
+interpreted as millimeters (and converted to cm) at the HTTP layer in
+`server.py`'s `/level` route — not inside any processor.
+
 Built-in `LevelProcessor` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |

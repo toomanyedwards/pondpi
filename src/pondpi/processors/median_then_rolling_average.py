@@ -10,9 +10,9 @@ class MedianThenRollingAverageProcessor(LevelProcessor):
         self._median = MedianFilter(median_window_size)
         self._rolling_avg = RollingAverage(rolling_window_size)
 
-    def add(self, raw_mm):
-        median_mm = self._median.add(raw_mm)
-        return self._rolling_avg.add(median_mm)
+    def add(self, raw_value):
+        median_value = self._median.add(raw_value)
+        return self._rolling_avg.add(median_value)
 
     def extra_state(self):
         return {
