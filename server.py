@@ -2,11 +2,13 @@ import argparse
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import serial
 from flask import Flask, jsonify
 
 import read_sensor
+from commit_sha import read_commit_sha
 from median_filter import MedianFilter
 from rolling_average import RollingAverage
 
@@ -20,6 +22,7 @@ _state = {
     "rolling_window_size": None,
     "median_window_size": None,
     "polling_interval_ms": None,
+    "commit_sha": read_commit_sha(Path(__file__).resolve().parent),
 }
 
 _poll_thread = None
@@ -55,6 +58,7 @@ def health():
         uptime_seconds=uptime_seconds,
         rolling_window_size=_state["rolling_window_size"],
         median_window_size=_state["median_window_size"],
+        commit_sha=_state["commit_sha"],
     )
     return payload if poller_alive else (payload, 503)
 

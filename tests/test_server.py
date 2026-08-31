@@ -13,6 +13,7 @@ def test_health_ok_when_poller_alive():
     server._poll_thread = DummyThread(alive=True)
     server._state["rolling_window_size"] = 25
     server._state["median_window_size"] = 5
+    server._state["commit_sha"] = "abc123"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -26,6 +27,7 @@ def test_health_ok_when_poller_alive():
     assert data["uptime_seconds"] >= 0
     assert data["rolling_window_size"] == 25
     assert data["median_window_size"] == 5
+    assert data["commit_sha"] == "abc123"
 
 
 def test_health_degraded_when_poller_dead():
