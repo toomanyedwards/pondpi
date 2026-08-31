@@ -1,4 +1,4 @@
-import read_sensor
+from pondpi import read_sensor
 
 
 class FakeSerial:

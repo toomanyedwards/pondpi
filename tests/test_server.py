@@ -1,4 +1,4 @@
-import server
+from pondpi import server
 
 
 class DummyThread:

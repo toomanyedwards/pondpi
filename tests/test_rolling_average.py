@@ -1,4 +1,4 @@
-from rolling_average import RollingAverage
+from pondpi.rolling_average import RollingAverage
 
 
 def test_average_is_none_before_any_reading():

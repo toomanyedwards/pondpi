@@ -1,6 +1,6 @@
 import yaml
 
-from level_strategies import STRATEGY_TYPES
+from pondpi.level_strategies import STRATEGY_TYPES
 
 
 def load_strategies(path):

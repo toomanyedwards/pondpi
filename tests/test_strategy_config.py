@@ -1,7 +1,7 @@
 import pytest
 
-from level_strategies import MedianThenRollingAverageStrategy, RawStrategy
-from strategy_config import load_strategies
+from pondpi.level_strategies import MedianThenRollingAverageStrategy, RawStrategy
+from pondpi.strategy_config import load_strategies
 
 
 def write_yaml(tmp_path, content):

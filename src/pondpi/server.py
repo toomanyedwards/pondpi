@@ -7,10 +7,10 @@ from pathlib import Path
 import serial
 from flask import Flask, jsonify
 
-import read_sensor
-from commit_sha import read_commit_sha
-from duration import format_duration
-from strategy_config import load_strategies
+from pondpi import read_sensor
+from pondpi.commit_sha import read_commit_sha
+from pondpi.duration import format_duration
+from pondpi.strategy_config import load_strategies
 
 app = Flask(__name__)
 
@@ -21,7 +21,7 @@ _state = {
     "strategies": {},
     "strategy_names": [],
     "polling_interval_ms": None,
-    "commit_sha": read_commit_sha(Path(__file__).resolve().parent),
+    "commit_sha": read_commit_sha(Path.cwd()),
 }
 
 _poll_thread = None
@@ -90,8 +90,8 @@ def main():
     parser.add_argument(
         "--strategies-config",
         type=Path,
-        default=Path(__file__).resolve().parent / "strategies.yaml",
-        help="path to the YAML file configuring level-processing strategies (default: strategies.yaml)",
+        default=Path.cwd() / "config" / "strategies.yaml",
+        help="path to the YAML file configuring level-processing strategies (default: config/strategies.yaml)",
     )
     parser.add_argument(
         "--polling-interval-ms",

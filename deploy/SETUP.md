@@ -24,7 +24,7 @@ sudo systemctl enable pondpi.service
 ```
 
 (Leave it stopped for now — it'll start once the first deploy has synced
-`read_sensor.py` into `/opt/pondpi`.)
+the code and installed the `pondpi` package into `/opt/pondpi/.venv`.)
 
 ## 3. Passwordless service restart for the runner
 
