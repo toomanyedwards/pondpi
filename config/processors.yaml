@@ -40,7 +40,11 @@ processors:
         - ref: rolling_median5
         - type: rolling_average
           params:
-            window_size: 40
+            # 200 samples * 150ms poll interval = ~30s window, matched to
+            # Home Assistant's scan_interval so primary_signal represents
+            # a full averaged interval per HA poll rather than a ~6s
+            # slice of it (same reasoning as exp_smooth's alpha below).
+            window_size: 200
   # alpha is applied once per 150ms poll, not once per HA scrape -- at
   # that feed rate an EMA's half-life is roughly 0.15s * ln(0.5)/ln(1-alpha)
   # samples. alpha 0.1-0.9 all decay to a fraction of a second, which is
