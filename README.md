@@ -53,7 +53,7 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
-| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `rolling_median_processor.py`, `rolling_average_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
+| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `rolling_median_processor.py`, `rolling_average_processor.py`, `exponential_smoothing_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
 | `signal_processors/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignalProcessor` classes. Not signal processors themselves (they don't implement the `LevelSignalProcessor` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_processor`. |
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
@@ -263,6 +263,7 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 | `raw` | none | Passes the raw reading through unchanged. |
 | `rolling_median` | `window_size` | Median-filters the raw reading over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
+| `exponential_smoothing` | `alpha` | Exponentially-weighted moving average — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 | `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
 
 `chain`'s `steps` is a list where each entry is either `ref: <name>` —

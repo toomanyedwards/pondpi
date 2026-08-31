@@ -8,11 +8,11 @@
 # subpackage, or any future non-processor helper module) are ignored
 # automatically. Every instance below processes the raw sensor stream
 # independently and its full state is exposed under `processors` in
-# /level. See README.md's "Signal processing" section.
+# /diag. See README.md's "Signal processing" section.
 #
 # `emit: false` (default true) keeps a processor out of /level's
 # `signals` section -- the curated "final output values" view -- while
-# it still shows up in `processors`. Use this for processors that only
+# it still shows up in full on /diag. Use this for processors that only
 # exist as an intermediate step (e.g. rolling_median5 below, which feeds
 # rolling_avg's chain) and aren't a meaningful output on their own.
 #
@@ -22,10 +22,10 @@
 # never the literal same object, so state is never shared) or an inline
 # `type`/`params` (builds a fresh instance directly, recursively).
 #
-# Exactly one entry must be marked `primary: true` -- its output backfills
-# the legacy top-level rolling_avg_distance_cm field in /level, which the
-# Home Assistant "Pond Level" sensor depends on. Don't remove it without
-# updating configuration.yaml on the Home Assistant box.
+# Exactly one entry must be marked `primary: true` -- its output becomes
+# `primary_signal` in /level, which the Home Assistant "Pond Level" sensor
+# depends on. Don't remove it without updating configuration.yaml on the
+# Home Assistant box.
 processors:
   - name: rolling_median5
     type: rolling_median
@@ -41,5 +41,9 @@ processors:
         - type: rolling_average
           params:
             window_size: 40
+  - name: exp_smooth
+    type: exponential_smoothing
+    params:
+      alpha: 0.3
   - name: instantaneous_raw
     type: raw
