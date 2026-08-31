@@ -101,8 +101,10 @@ dev checkouts, or `null` if neither is available.
 
 ## Sensor notes
 
-This deployment uses DFRobot's [A02YYUW waterproof ultrasonic
-sensor](https://www.dfrobot.com/product-1935.html) (UART, 9600 bps).
+### Currently used: A02YYUW
+
+DFRobot's [A02YYUW waterproof ultrasonic sensor](https://www.dfrobot.com/product-1935.html)
+(UART, 9600 bps).
 
 | Spec | Value |
 |---|---|
