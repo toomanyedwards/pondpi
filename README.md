@@ -55,7 +55,7 @@ pondpi/
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
 | `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
-| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `median_then_rolling_average.py`) — see [Signal processing](#signal-processing). |
+| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `chain.py`) — see [Signal processing](#signal-processing). |
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
@@ -73,11 +73,17 @@ Returns the current instantaneous and smoothed distance readings.
   "rolling_avg_distance_cm": 11.2,
   "polling_interval_ms": 150,
   "processors": {
+    "median5": {
+      "distance_cm": 11.2,
+      "window_size": 5,
+      "samples_in_window": 5
+    },
     "rolling_avg": {
       "distance_cm": 11.2,
-      "median_window_size": 5,
-      "rolling_window_size": 40,
-      "samples_in_rolling_window": 40
+      "steps": [
+        {"processor": "median5", "window_size": 5, "samples_in_window": 5},
+        {"processor": "rolling_average", "window_size": 40, "samples_in_window": 40}
+      ]
     },
     "instantaneous_raw": {
       "distance_cm": 11.3
@@ -201,18 +207,33 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 | `raw` | none | Passes the raw reading through unchanged. |
 | `median` | `window_size` | Median-filters the raw reading — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
-| `median_then_rolling_average` | `median_window_size`, `rolling_window_size` | Median-filters, then rolling-averages the result. This is today's production pipeline. |
+| `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
+
+`chain`'s `steps` is a list where each entry is either `ref: <name>` —
+reuses another processor's `type`/`params` to build a fresh, **independent**
+instance (a config alias, never the literal same object, so state is
+never shared between the two) — or an inline `type:`/`params:`, built
+directly (recursively, so a step can itself be a chain). This is how
+today's production pipeline (median-then-rolling-average) is built,
+without needing a dedicated hardcoded class for it.
 
 Example `config/processors.yaml`:
 
 ```yaml
 processors:
+  - name: median5
+    type: median
+    params:
+      window_size: 5
   - name: rolling_avg
-    type: median_then_rolling_average
+    type: chain
     primary: true
     params:
-      median_window_size: 5
-      rolling_window_size: 40
+      steps:
+        - ref: median5
+        - type: rolling_average
+          params:
+            window_size: 40
   - name: instantaneous_raw
     type: raw
 ```
