@@ -91,11 +91,6 @@ def level():
         return jsonify(
             measure_name="level",
             units="cm",
-            # Legacy fields -- kept for the deployed Home Assistant sensor's
-            # value_template, which reads these two exact names. Remove only
-            # once that's migrated to primary_signal/signals.
-            instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
-            rolling_avg_distance_cm=rolling_avg_distance_cm,
             polling_interval_ms=_state["polling_interval_ms"],
             primary_signal={"value": rolling_avg_distance_cm, "name": _state["primary_name"]},
             signals=signals,
