@@ -71,9 +71,7 @@ def test_level_returns_current_reading():
         processors={
             "rolling_avg": {
                 "value": 850.0,
-                "median_window_size": 5,
-                "rolling_window_size": 100,
-                "samples_in_rolling_window": 25,
+                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
             },
             "instantaneous_raw": {"value": 101.0},
         },
@@ -91,9 +89,7 @@ def test_level_returns_current_reading():
         "processors": {
             "rolling_avg": {
                 "distance_cm": 85.0,
-                "median_window_size": 5,
-                "rolling_window_size": 100,
-                "samples_in_rolling_window": 25,
+                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
             },
             "instantaneous_raw": {"distance_cm": 10.1},
         },

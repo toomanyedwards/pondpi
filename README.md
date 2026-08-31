@@ -40,7 +40,7 @@ pondpi/
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
 │   ├── read_sensor.py
 │   ├── signal_processors/    # one LevelSignalProcessor subclass per <type>_processor.py file
-│   │   └── utils/             # MedianFilter, RollingAverage -- generic building blocks,
+│   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
 │   │                           # not signal processors themselves, see below
 │   ├── signal_processor_config.py
 │   ├── commit_sha.py
@@ -53,8 +53,8 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
-| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `median_processor.py`, `rolling_average_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
-| `signal_processors/utils/` | `MedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignalProcessor` classes. Not signal processors themselves (they don't implement the `LevelSignalProcessor` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_processor`. |
+| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `rolling_median_processor.py`, `rolling_average_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
+| `signal_processors/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignalProcessor` classes. Not signal processors themselves (they don't implement the `LevelSignalProcessor` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_processor`. |
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
@@ -72,7 +72,7 @@ Returns the current instantaneous and smoothed distance readings.
   "rolling_avg_distance_cm": 11.2,
   "polling_interval_ms": 150,
   "processors": {
-    "median5": {
+    "rolling_median5": {
       "distance_cm": 11.2,
       "window_size": 5,
       "samples_in_window": 5
@@ -80,7 +80,7 @@ Returns the current instantaneous and smoothed distance readings.
     "rolling_avg": {
       "distance_cm": 11.2,
       "steps": [
-        {"processor": "median5", "window_size": 5, "samples_in_window": 5},
+        {"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5},
         {"processor": "rolling_average", "window_size": 40, "samples_in_window": 40}
       ]
     },
@@ -207,7 +207,7 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 | Type | Params | Behavior |
 |---|---|---|
 | `raw` | none | Passes the raw reading through unchanged. |
-| `median` | `window_size` | Median-filters the raw reading — rejects spikes/outliers. |
+| `rolling_median` | `window_size` | Median-filters the raw reading over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. |
 | `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
 
@@ -216,15 +216,15 @@ reuses another processor's `type`/`params` to build a fresh, **independent**
 instance (a config alias, never the literal same object, so state is
 never shared between the two) — or an inline `type:`/`params:`, built
 directly (recursively, so a step can itself be a chain). This is how
-today's production pipeline (median-then-rolling-average) is built,
-without needing a dedicated hardcoded class for it.
+today's production pipeline (rolling-median-then-rolling-average) is
+built, without needing a dedicated hardcoded class for it.
 
 Example `config/processors.yaml`:
 
 ```yaml
 processors:
-  - name: median5
-    type: median
+  - name: rolling_median5
+    type: rolling_median
     params:
       window_size: 5
   - name: rolling_avg
@@ -232,7 +232,7 @@ processors:
     primary: true
     params:
       steps:
-        - ref: median5
+        - ref: rolling_median5
         - type: rolling_average
           params:
             window_size: 40
@@ -326,7 +326,7 @@ ruff check .   # lint
 ```
 
 Tests live in `tests/`, import from the installed `pondpi` package (e.g.
-`from pondpi.signal_processors.utils.median_filter import MedianFilter`),
+`from pondpi.signal_processors.utils.rolling_median_filter import RollingMedianFilter`),
 and don't need any
 hardware or network access — `tests/test_read_sensor.py`,
 `tests/test_rolling_average.py`, `tests/test_signal_processors.py`

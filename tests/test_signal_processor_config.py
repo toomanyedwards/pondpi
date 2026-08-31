@@ -16,8 +16,8 @@ def test_loads_valid_config(tmp_path):
         tmp_path,
         """
         processors:
-          - name: median5
-            type: median
+          - name: rolling_median5
+            type: rolling_median
             params:
               window_size: 5
           - name: rolling_avg
@@ -25,7 +25,7 @@ def test_loads_valid_config(tmp_path):
             primary: true
             params:
               steps:
-                - ref: median5
+                - ref: rolling_median5
                 - type: rolling_average
                   params:
                     window_size: 40
@@ -37,7 +37,7 @@ def test_loads_valid_config(tmp_path):
     processors, primary_name = load_signal_processors(path)
 
     assert primary_name == "rolling_avg"
-    assert set(processors) == {"median5", "rolling_avg", "instantaneous_raw"}
+    assert set(processors) == {"rolling_median5", "rolling_avg", "instantaneous_raw"}
     assert isinstance(processors["rolling_avg"], ChainSignalProcessor)
     assert isinstance(processors["instantaneous_raw"], RawSignalProcessor)
 
@@ -47,8 +47,8 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
         tmp_path,
         """
         processors:
-          - name: median5
-            type: median
+          - name: rolling_median5
+            type: rolling_median
             params:
               window_size: 5
           - name: rolling_avg
@@ -56,7 +56,7 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
             primary: true
             params:
               steps:
-                - ref: median5
+                - ref: rolling_median5
                 - type: rolling_average
                   params:
                     window_size: 2
@@ -64,20 +64,20 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
     )
 
     processors, _ = load_signal_processors(path)
-    median5 = processors["median5"]
+    rolling_median5 = processors["rolling_median5"]
     rolling_avg = processors["rolling_avg"]
 
-    # Feed distinct values into the standalone median5 vs. the chain (which
+    # Feed distinct values into the standalone rolling_median5 vs. the chain (which
     # also starts with a median-5 step). If the chain's ref step shared
-    # median5's actual instance, these calls would corrupt each other's
+    # rolling_median5's actual instance, these calls would corrupt each other's
     # window -- assert they stay fully independent.
-    median5.add(100)
+    rolling_median5.add(100)
     rolling_avg.add(999)
 
-    assert median5.extra_state()["samples_in_window"] == 1
+    assert rolling_median5.extra_state()["samples_in_window"] == 1
     chain_median_state = rolling_avg.extra_state()["steps"][0]
     assert chain_median_state["samples_in_window"] == 1
-    assert chain_median_state["processor"] == "median5"
+    assert chain_median_state["processor"] == "rolling_median5"
 
 
 def test_nested_chain_of_chains(tmp_path):
@@ -93,7 +93,7 @@ def test_nested_chain_of_chains(tmp_path):
                 - type: chain
                   params:
                     steps:
-                      - type: median
+                      - type: rolling_median
                         params:
                           window_size: 3
                 - type: rolling_average
@@ -139,15 +139,15 @@ def test_ref_to_processor_defined_later_raises(tmp_path):
             primary: true
             params:
               steps:
-                - ref: median5
-          - name: median5
-            type: median
+                - ref: rolling_median5
+          - name: rolling_median5
+            type: rolling_median
             params:
               window_size: 5
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined processor 'median5'"):
+    with pytest.raises(ValueError, match="references undefined processor 'rolling_median5'"):
         load_signal_processors(path)
 
 
@@ -256,7 +256,7 @@ def test_invalid_params_raises(tmp_path):
         """
         processors:
           - name: a
-            type: median
+            type: rolling_median
             primary: true
             params:
               not_a_real_param: 5

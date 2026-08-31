@@ -1,7 +1,7 @@
 from collections import deque
 
 
-class MedianFilter:
+class RollingMedianFilter:
     """Tracks the median of the last `window_size` values added."""
 
     def __init__(self, window_size=5):
