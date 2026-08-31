@@ -14,7 +14,7 @@ jobs:
         run: |
           python3 -m venv --clear /opt/pondpi-staging-venv
           /opt/pondpi-staging-venv/bin/pip install --quiet -r requirements.txt -r requirements-dev.txt
-          /opt/pondpi-staging-venv/bin/python -m py_compile read_sensor.py rolling_average.py median_filter.py commit_sha.py duration.py server.py
+          /opt/pondpi-staging-venv/bin/python -m py_compile read_sensor.py rolling_average.py median_filter.py commit_sha.py duration.py level_strategies.py strategy_config.py server.py
           /opt/pondpi-staging-venv/bin/python -m pytest -q
 
       - name: Record commit SHA
