@@ -31,6 +31,7 @@ average; a Flask server exposes the result on `GET /level`.
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
 | `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; used to reject spikes/outliers before smoothing. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added. |
+| `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `server.py` | Service entrypoint. Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
 ## API
@@ -75,7 +76,8 @@ fixed mounting height.
   "started_at": "2026-08-29T19:31:24.633421+00:00",
   "uptime_seconds": 11.8,
   "rolling_window_size": 100,
-  "median_window_size": 5
+  "median_window_size": 5,
+  "commit_sha": "e1d742a9c2f4b1a0d3e5f6a7b8c9d0e1f2a3b4c5"
 }
 ```
 
@@ -83,6 +85,13 @@ fixed mounting height.
 died — e.g. an unhandled exception in `poll_sensor()` — which otherwise
 would silently leave `/level` serving stale data forever with no signal
 anything was wrong.
+
+`commit_sha` is the full commit SHA that's currently deployed. In
+production this comes from a `COMMIT_SHA` file written by the deploy
+workflow (see `.github/workflows/deploy.yml`) — the SHA can't be read
+from git directly on the device since `.git` is excluded from the
+rsync'd deploy directory. Falls back to `git rev-parse HEAD` for local
+dev checkouts, or `null` if neither is available.
 
 ## Configuration
 
