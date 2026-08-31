@@ -266,6 +266,19 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 | `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
 
+`exponential_smoothing`'s `alpha` gets applied once per sensor poll
+(every `--polling-interval-ms`, default 150ms) — not once per reading of
+`/level` by a downstream consumer. An EMA's half-life in *samples* is
+roughly `ln(0.5) / ln(1 - alpha)`; at a 150ms feed rate, `alpha` values
+of 0.1-0.9 all decay to a half-life under a second, which is invisible
+next to something polling `/level` every 30s (e.g. Home Assistant's
+default `scan_interval`) — the value it reads back has already forgotten
+everything older than a second regardless of which of those alphas was
+configured. To get smoothing that's actually visible at a given polling
+cadence, pick `alpha` so the half-life (`0.15 * ln(0.5)/ln(1-alpha)`
+seconds, at the default polling interval) lands near that cadence —
+roughly `alpha` in the 0.01-0.2 range for a 10-30s cadence.
+
 `chain`'s `steps` is a list where each entry is either `ref: <name>` —
 reuses another processor's `type`/`params` to build a fresh, **independent**
 instance (a config alias, never the literal same object, so state is
