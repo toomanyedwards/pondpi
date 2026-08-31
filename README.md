@@ -39,9 +39,9 @@ pondpi/
 ├── src/pondpi/              # the installable package — production code only
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
 │   ├── read_sensor.py
-│   ├── median_filter.py
-│   ├── rolling_average.py
-│   ├── signal_processors/    # one LevelSignalProcessor subclass per file, see below
+│   ├── signal_processors/    # one LevelSignalProcessor subclass per <type>_processor.py file
+│   │   └── utils/             # MedianFilter, RollingAverage -- generic building blocks,
+│   │                           # not signal processors themselves, see below
 │   ├── signal_processor_config.py
 │   ├── commit_sha.py
 │   └── duration.py
@@ -53,9 +53,8 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
-| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
-| `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
 | `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `median_processor.py`, `rolling_average_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
+| `signal_processors/utils/` | `MedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignalProcessor` classes. Not signal processors themselves (they don't implement the `LevelSignalProcessor` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_processor`. |
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
@@ -327,7 +326,8 @@ ruff check .   # lint
 ```
 
 Tests live in `tests/`, import from the installed `pondpi` package (e.g.
-`from pondpi.median_filter import MedianFilter`), and don't need any
+`from pondpi.signal_processors.utils.median_filter import MedianFilter`),
+and don't need any
 hardware or network access — `tests/test_read_sensor.py`,
 `tests/test_rolling_average.py`, `tests/test_signal_processors.py`
 (including the dynamic-discovery mechanism itself, against both the real
