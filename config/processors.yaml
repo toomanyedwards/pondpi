@@ -41,39 +41,39 @@ processors:
         - type: rolling_average
           params:
             window_size: 40
-  - name: exp_smooth_0.1
+  - name: exp_smooth_0p1
     type: exponential_smoothing
     params:
       alpha: 0.1
-  - name: exp_smooth_0.2
+  - name: exp_smooth_0p2
     type: exponential_smoothing
     params:
       alpha: 0.2
-  - name: exp_smooth_0.3
+  - name: exp_smooth_0p3
     type: exponential_smoothing
     params:
       alpha: 0.3
-  - name: exp_smooth_0.4
+  - name: exp_smooth_0p4
     type: exponential_smoothing
     params:
       alpha: 0.4
-  - name: exp_smooth_0.5
+  - name: exp_smooth_0p5
     type: exponential_smoothing
     params:
       alpha: 0.5
-  - name: exp_smooth_0.6
+  - name: exp_smooth_0p6
     type: exponential_smoothing
     params:
       alpha: 0.6
-  - name: exp_smooth_0.7
+  - name: exp_smooth_0p7
     type: exponential_smoothing
     params:
       alpha: 0.7
-  - name: exp_smooth_0.8
+  - name: exp_smooth_0p8
     type: exponential_smoothing
     params:
       alpha: 0.8
-  - name: exp_smooth_0.9
+  - name: exp_smooth_0p9
     type: exponential_smoothing
     params:
       alpha: 0.9
