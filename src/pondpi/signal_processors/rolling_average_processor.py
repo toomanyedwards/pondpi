@@ -1,5 +1,5 @@
-from pondpi.rolling_average import RollingAverage
 from pondpi.signal_processors.base import LevelSignalProcessor
+from pondpi.signal_processors.utils.rolling_average import RollingAverage
 
 
 class RollingAverageSignalProcessor(LevelSignalProcessor):

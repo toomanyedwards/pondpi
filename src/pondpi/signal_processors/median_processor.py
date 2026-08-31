@@ -1,5 +1,5 @@
-from pondpi.median_filter import MedianFilter
 from pondpi.signal_processors.base import LevelSignalProcessor
+from pondpi.signal_processors.utils.median_filter import MedianFilter
 
 
 class MedianSignalProcessor(LevelSignalProcessor):
