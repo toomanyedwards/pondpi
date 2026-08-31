@@ -22,6 +22,7 @@ _state = {
     "processor_names": [],
     "emit_flags": {},
     "configs": {},
+    "primary_name": None,
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path.cwd()),
 }
@@ -85,10 +86,18 @@ def level():
             if _state["emit_flags"].get(name, True):
                 signals[name] = _processor_output(result)["distance_cm"]
 
+        rolling_avg_distance_cm = round(_state["rolling_avg_mm"] / 10.0, 1)
+
         return jsonify(
+            measure_name="level",
+            units="cm",
+            # Legacy fields -- kept for the deployed Home Assistant sensor's
+            # value_template, which reads these two exact names. Remove only
+            # once that's migrated to primary_signal/signals.
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
-            rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
+            rolling_avg_distance_cm=rolling_avg_distance_cm,
             polling_interval_ms=_state["polling_interval_ms"],
+            primary_signal={"value": rolling_avg_distance_cm, "name": _state["primary_name"]},
             signals=signals,
         )
 
@@ -145,6 +154,7 @@ def main():
     _state["processor_names"] = list(processors)
     _state["emit_flags"] = emit_flags
     _state["configs"] = configs
+    _state["primary_name"] = primary_name
     _state["polling_interval_ms"] = args.polling_interval_ms
 
     stop_event = threading.Event()
