@@ -20,6 +20,7 @@ _state = {
     "rolling_avg_mm": None,
     "processors": {},
     "processor_names": [],
+    "emit_flags": {},
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path.cwd()),
 }
@@ -71,15 +72,20 @@ def level():
             return jsonify(error="no readings yet"), 503
 
         processors = {}
+        signals = {}
         for name, result in _state["processors"].items():
             extra_state = {k: v for k, v in result.items() if k != "value"}
-            processors[name] = {"distance_cm": round(result["value"] / 10.0, 1), **extra_state}
+            distance_cm = round(result["value"] / 10.0, 1)
+            processors[name] = {"distance_cm": distance_cm, **extra_state}
+            if _state["emit_flags"].get(name, True):
+                signals[name] = distance_cm
 
         return jsonify(
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
             rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
             polling_interval_ms=_state["polling_interval_ms"],
             processors=processors,
+            signals=signals,
         )
 
 
@@ -114,8 +120,9 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    processors, primary_name = load_signal_processors(args.processors_config)
+    processors, primary_name, emit_flags = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
+    _state["emit_flags"] = emit_flags
     _state["polling_interval_ms"] = args.polling_interval_ms
 
     stop_event = threading.Event()

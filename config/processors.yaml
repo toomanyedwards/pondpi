@@ -7,8 +7,14 @@
 # here or in code. Files not ending in "_processor" (base.py, the utils/
 # subpackage, or any future non-processor helper module) are ignored
 # automatically. Every instance below processes the raw sensor stream
-# independently and its output is exposed under `processors` in /level.
-# See README.md's "Signal processing" section.
+# independently and its full state is exposed under `processors` in
+# /level. See README.md's "Signal processing" section.
+#
+# `emit: false` (default true) keeps a processor out of /level's
+# `signals` section -- the curated "final output values" view -- while
+# it still shows up in `processors`. Use this for processors that only
+# exist as an intermediate step (e.g. rolling_median5 below, which feeds
+# rolling_avg's chain) and aren't a meaningful output on their own.
 #
 # `type: chain` runs a value through multiple processors in sequence via
 # `params.steps`. Each step is either `ref: <name>` (reuses another
@@ -23,6 +29,7 @@
 processors:
   - name: rolling_median5
     type: rolling_median
+    emit: false
     params:
       window_size: 5
   - name: rolling_avg

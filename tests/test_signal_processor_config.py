@@ -34,12 +34,35 @@ def test_loads_valid_config(tmp_path):
         """,
     )
 
-    processors, primary_name = load_signal_processors(path)
+    processors, primary_name, emit_flags = load_signal_processors(path)
 
     assert primary_name == "rolling_avg"
     assert set(processors) == {"rolling_median5", "rolling_avg", "instantaneous_raw"}
     assert isinstance(processors["rolling_avg"], ChainSignalProcessor)
     assert isinstance(processors["instantaneous_raw"], RawSignalProcessor)
+    # emit defaults to True when not specified
+    assert emit_flags == {"rolling_median5": True, "rolling_avg": True, "instantaneous_raw": True}
+
+
+def test_emit_false_is_respected(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        processors:
+          - name: rolling_median5
+            type: rolling_median
+            emit: false
+            params:
+              window_size: 5
+          - name: instantaneous_raw
+            type: raw
+            primary: true
+        """,
+    )
+
+    _, _, emit_flags = load_signal_processors(path)
+
+    assert emit_flags == {"rolling_median5": False, "instantaneous_raw": True}
 
 
 def test_chain_ref_step_builds_an_independent_instance(tmp_path):
@@ -63,7 +86,7 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
         """,
     )
 
-    processors, _ = load_signal_processors(path)
+    processors, _, _ = load_signal_processors(path)
     rolling_median5 = processors["rolling_median5"]
     rolling_avg = processors["rolling_avg"]
 
@@ -102,7 +125,7 @@ def test_nested_chain_of_chains(tmp_path):
         """,
     )
 
-    processors, _ = load_signal_processors(path)
+    processors, _, _ = load_signal_processors(path)
     outer = processors["outer"]
 
     assert outer.add(10) == 10  # median([10]) = 10 -> rolling([10]) = 10
