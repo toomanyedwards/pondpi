@@ -1,8 +1,8 @@
-from pondpi.processors.base import LevelProcessor
 from pondpi.rolling_average import RollingAverage
+from pondpi.signal_processors.base import LevelSignalProcessor
 
 
-class RollingAverageProcessor(LevelProcessor):
+class RollingAverageSignalProcessor(LevelSignalProcessor):
     """Averages the raw reading over a rolling window."""
 
     def __init__(self, window_size):

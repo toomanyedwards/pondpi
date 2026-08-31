@@ -1,16 +1,17 @@
 import yaml
 
-from pondpi.processors import discover_processor_types
+from pondpi.signal_processors import discover_signal_processor_types
 
 
-def load_processors(path):
-    """Loads named LevelProcessor instances from a YAML config file.
+def load_signal_processors(path):
+    """Loads named LevelSignalProcessor instances from a YAML config file.
 
-    Returns (dict[name -> LevelProcessor instance], primary_name). Exactly
-    one entry must be marked `primary: true` — its output backfills the
-    legacy top-level rolling_avg_distance_cm field in /level.
+    Returns (dict[name -> LevelSignalProcessor instance], primary_name).
+    Exactly one entry must be marked `primary: true` — its output
+    backfills the legacy top-level rolling_avg_distance_cm field in
+    /level.
     """
-    processor_types = discover_processor_types()
+    processor_types = discover_signal_processor_types()
 
     with open(path) as f:
         config = yaml.safe_load(f)
