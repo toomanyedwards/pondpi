@@ -7,17 +7,18 @@ Raspberry Pi, and exposes the current reading over a small HTTP API.
 
 The sensor sits above the pond and streams distance-to-water-surface
 readings continuously over UART. A background thread polls the serial
-connection, validates each frame, and feeds it into a rolling average;
-a Flask server exposes the result on `GET /level`.
+connection, validates each frame, runs it through a median filter to
+reject spikes/outliers, and feeds the filtered value into a rolling
+average; a Flask server exposes the result on `GET /level`.
 
 ```
-┌───────────────┐   UART frames    ┌────────────────┐    add()    ┌──────────────────┐
-│ A02YYUW sensor│ ───────────────> │ poll_sensor()   │ ──────────> │ RollingAverage    │
-└───────────────┘                  │ (background     │             └──────────────────┘
-                                    │  thread)        │                     │
-                                    └────────┬────────┘                     │
-                                             │ writes shared state          │
-                                             v                              v
+┌───────────────┐   UART frames    ┌────────────────┐    add()    ┌──────────────────┐    add()    ┌──────────────────┐
+│ A02YYUW sensor│ ───────────────> │ poll_sensor()   │ ──────────> │ MedianFilter      │ ──────────> │ RollingAverage    │
+└───────────────┘                  │ (background     │             └──────────────────┘             └──────────────────┘
+                                    │  thread)        │                                                       │
+                                    └────────┬────────┘                                                       │
+                                             │ writes shared state                                            │
+                                             v                                                                 v
                                     ┌─────────────────────────────────────────┐
                                     │ Flask app: GET /level, GET /health       │
                                     └─────────────────────────────────────────┘
@@ -28,6 +29,7 @@ a Flask server exposes the result on `GET /level`.
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
+| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; used to reject spikes/outliers before smoothing. |
 | `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added. |
 | `server.py` | Service entrypoint. Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
@@ -43,16 +45,18 @@ Returns the current instantaneous and smoothed distance readings.
   "rolling_avg_distance_cm": 11.2,
   "rolling_window_size": 100,
   "samples_in_rolling_window": 100,
+  "median_window_size": 5,
   "polling_interval_ms": 10
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `instantaneous_distance_cm` | The most recent single valid reading. |
-| `rolling_avg_distance_cm` | Average over the last `rolling_window_size` valid readings. |
+| `instantaneous_distance_cm` | The most recent single valid raw reading (not median-filtered). |
+| `rolling_avg_distance_cm` | Average over the last `rolling_window_size` median-filtered readings. |
 | `rolling_window_size` | Configured window size (see `--window-size` below). |
 | `samples_in_rolling_window` | How many samples are currently in the window (ramps up to `rolling_window_size` after startup). |
+| `median_window_size` | Configured median filter window size (see `--median-window-size` below). |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
@@ -70,7 +74,8 @@ fixed mounting height.
   "poller_alive": true,
   "started_at": "2026-08-29T19:31:24.633421+00:00",
   "uptime_seconds": 11.8,
-  "rolling_window_size": 100
+  "rolling_window_size": 100,
+  "median_window_size": 5
 }
 ```
 
@@ -89,6 +94,7 @@ no risk of a stray inherited env var silently changing behavior.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--window-size` | `2000` | Number of readings averaged for `rolling_avg_distance_cm`. |
+| `--median-window-size` | `5` | Number of raw readings median-filtered together before entering the rolling average. Rejects spikes/outliers. |
 | `--polling-interval-ms` | `150` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
