@@ -2,10 +2,12 @@ import pytest
 
 from pondpi.signal_processors import discover_signal_processor_types
 from pondpi.signal_processors.chain_processor import ChainSignalProcessor
-from pondpi.signal_processors.median_processor import MedianSignalProcessor
 from pondpi.signal_processors.raw_processor import RawSignalProcessor
 from pondpi.signal_processors.rolling_average_processor import (
     RollingAverageSignalProcessor,
+)
+from pondpi.signal_processors.rolling_median_processor import (
+    RollingMedianSignalProcessor,
 )
 
 
@@ -16,15 +18,15 @@ def test_raw_processor_passes_through_unchanged():
     assert processor.extra_state() == {}
 
 
-def test_median_processor_delegates_to_median_filter():
-    processor = MedianSignalProcessor(window_size=3)
+def test_rolling_median_processor_delegates_to_rolling_median_filter():
+    processor = RollingMedianSignalProcessor(window_size=3)
     processor.add(10)
     processor.add(30)
     assert processor.add(20) == 20  # median of 10, 30, 20
 
 
-def test_median_processor_extra_state():
-    processor = MedianSignalProcessor(window_size=3)
+def test_rolling_median_processor_extra_state():
+    processor = RollingMedianSignalProcessor(window_size=3)
     processor.add(10)
     assert processor.extra_state() == {"window_size": 3, "samples_in_window": 1}
 
@@ -44,7 +46,7 @@ def test_rolling_average_processor_extra_state():
 def test_chain_processor_feeds_each_step_output_into_the_next():
     chain = ChainSignalProcessor(
         steps=[
-            ("median", MedianSignalProcessor(window_size=3)),
+            ("rolling_median", RollingMedianSignalProcessor(window_size=3)),
             ("rolling_average", RollingAverageSignalProcessor(window_size=2)),
         ]
     )
@@ -62,7 +64,7 @@ def test_chain_processor_feeds_each_step_output_into_the_next():
 def test_chain_processor_extra_state():
     chain = ChainSignalProcessor(
         steps=[
-            ("median5", MedianSignalProcessor(window_size=3)),
+            ("rolling_median5", RollingMedianSignalProcessor(window_size=3)),
             ("rolling_average", RollingAverageSignalProcessor(window_size=2)),
         ]
     )
@@ -70,7 +72,7 @@ def test_chain_processor_extra_state():
 
     assert chain.extra_state() == {
         "steps": [
-            {"processor": "median5", "window_size": 3, "samples_in_window": 1},
+            {"processor": "rolling_median5", "window_size": 3, "samples_in_window": 1},
             {"processor": "rolling_average", "window_size": 2, "samples_in_window": 1},
         ]
     }
@@ -81,7 +83,7 @@ def test_discover_signal_processor_types_finds_all_built_ins():
 
     assert processor_types == {
         "raw": RawSignalProcessor,
-        "median": MedianSignalProcessor,
+        "rolling_median": RollingMedianSignalProcessor,
         "rolling_average": RollingAverageSignalProcessor,
         "chain": ChainSignalProcessor,
     }

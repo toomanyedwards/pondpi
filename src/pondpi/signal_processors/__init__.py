@@ -15,11 +15,12 @@ def discover_signal_processor_types(package=None):
     package whose filename ends in "_processor".
 
     type_name is the module's filename with that suffix stripped (e.g.
-    signal_processors/median_processor.py -> type "median"). Each such
-    module must define exactly one LevelSignalProcessor subclass -- zero
-    or multiple is an error, not silently ignored. Files that don't end
-    in "_processor" (base.py, or any future non-processor helper module)
-    are ignored automatically, with no hardcoded skip-list to maintain.
+    signal_processors/rolling_median_processor.py -> type "rolling_median").
+    Each such module must define exactly one LevelSignalProcessor
+    subclass -- zero or multiple is an error, not silently ignored. Files
+    that don't end in "_processor" (base.py, the utils/ subpackage, or
+    any future non-processor helper module) are ignored automatically,
+    with no hardcoded skip-list to maintain.
     This is what lets a new signal processor be added by just dropping a
     new <name>_processor.py file in this folder, with nothing else to
     register.
