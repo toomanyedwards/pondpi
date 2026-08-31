@@ -19,9 +19,9 @@ below); a Flask server exposes every processor's output on `GET /level`.
                                     └────────┬─────────┘             └──────────────────┬─────────────────┘
                                              │ writes shared state                       │
                                              v                                           v
-                                    ┌─────────────────────────────────────────┐
-                                    │ Flask app: GET /level, GET /health       │
-                                    └─────────────────────────────────────────┘
+                                    ┌───────────────────────────────────────────────┐
+                                    │ Flask app: GET /level, GET /health, GET /diag  │
+                                    └───────────────────────────────────────────────┘
 ```
 
 ### Project layout
@@ -71,23 +71,6 @@ Returns the current instantaneous and smoothed distance readings.
   "instantaneous_distance_cm": 11.3,
   "rolling_avg_distance_cm": 11.2,
   "polling_interval_ms": 150,
-  "processors": {
-    "rolling_median5": {
-      "distance_cm": 11.2,
-      "window_size": 5,
-      "samples_in_window": 5
-    },
-    "rolling_avg": {
-      "distance_cm": 11.2,
-      "steps": [
-        {"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5},
-        {"processor": "rolling_average", "window_size": 40, "samples_in_window": 40}
-      ]
-    },
-    "instantaneous_raw": {
-      "distance_cm": 11.3
-    }
-  },
   "signals": {
     "rolling_avg": 11.2,
     "instantaneous_raw": 11.3
@@ -100,10 +83,12 @@ Returns the current instantaneous and smoothed distance readings.
 | `instantaneous_distance_cm` | The most recent single valid raw reading (not processed by any processor). |
 | `rolling_avg_distance_cm` | The output of whichever processor is marked `primary: true` in `config/processors.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing](#signal-processing)). |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
-| `processors` | Every configured `LevelSignalProcessor` instance's full current output, keyed by name. `distance_cm` is always present; the rest of each entry is that processor's own `extra_state()` (window sizes, sample counts, ...) and varies by processor type. |
-| `signals` | A curated `{name: distance_cm}` view of just the processors meant to be read as final output — `processors` minus whichever ones are marked `emit: false` in `config/processors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
+| `signals` | A curated `{name: distance_cm}` view of just the processors meant to be read as final output — every configured processor *except* whichever ones are marked `emit: false` in `config/processors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
 
-Note `rolling_median5` above appears in `processors` (with its full window-size/sample-count state) but not in `signals` — it's marked `emit: false` in `config/processors.yaml` since it only exists to feed `rolling_avg`'s chain, not as a meaningful output on its own.
+`rolling_median5` (see [Signal processing](#signal-processing)) doesn't
+appear here — it's marked `emit: false` since it only exists to feed
+`rolling_avg`'s chain, not as a meaningful output on its own. Its full
+state is still visible on `/diag`.
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
 since the server started.
@@ -111,6 +96,63 @@ since the server started.
 Distance is measured from the sensor down to the water surface — it's not
 a depth/level in absolute terms unless you subtract it from the sensor's
 fixed mounting height.
+
+### `GET /diag`
+
+The config and live output of **every** configured signal processor,
+regardless of `emit` — the full diagnostic view that `/level`'s `signals`
+deliberately leaves out.
+
+```json
+{
+  "processors": {
+    "rolling_median5": {
+      "config": {
+        "type": "rolling_median",
+        "params": {"window_size": 5},
+        "primary": false,
+        "emit": false
+      },
+      "output": {
+        "distance_cm": 11.2,
+        "window_size": 5,
+        "samples_in_window": 5
+      }
+    },
+    "rolling_avg": {
+      "config": {
+        "type": "chain",
+        "params": {
+          "steps": [
+            {"ref": "rolling_median5"},
+            {"type": "rolling_average", "params": {"window_size": 40}}
+          ]
+        },
+        "primary": true,
+        "emit": true
+      },
+      "output": {
+        "distance_cm": 11.2,
+        "steps": [
+          {"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5},
+          {"processor": "rolling_average", "window_size": 40, "samples_in_window": 40}
+        ]
+      }
+    },
+    "instantaneous_raw": {
+      "config": {"type": "raw", "params": {}, "primary": false, "emit": true},
+      "output": {"distance_cm": 11.3}
+    }
+  }
+}
+```
+
+Each processor's `config` is its *effective* configuration from
+`config/processors.yaml` (defaults filled in, so `primary`/`emit` are
+always present even if the YAML omitted them), and `output` is the same
+shape `/level`'s `signals`/`processors` used to expose — `distance_cm`
+plus that processor's own `extra_state()`. Returns `503 {"error": "no
+readings yet"}` under the same condition as `/level`.
 
 ### `GET /health`
 
@@ -260,7 +302,7 @@ by processors — it's always the raw last-valid reading — and is what
 
 Any entry can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
-while it still shows up in full in `processors`. Use this for a processor
+while it still shows up in full on `/diag`. Use this for a processor
 that only exists as an intermediate stage feeding a `chain` (like
 `rolling_median5` above) and isn't a meaningful output on its own.
 

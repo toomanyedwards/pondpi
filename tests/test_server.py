@@ -88,17 +88,59 @@ def test_level_returns_current_reading():
         "instantaneous_distance_cm": 10.1,
         "rolling_avg_distance_cm": 85.0,
         "polling_interval_ms": 10,
-        "processors": {
-            "rolling_median5": {"distance_cm": 50.0},
-            "rolling_avg": {
-                "distance_cm": 85.0,
-                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
-            },
-            "instantaneous_raw": {"distance_cm": 10.1},
-        },
-        # rolling_median5 is emit: false -- present in `processors`, absent from `signals`.
+        # rolling_median5 is emit: false -- absent from `signals`.
         "signals": {
             "rolling_avg": 85.0,
             "instantaneous_raw": 10.1,
+        },
+    }
+
+
+def test_diag_returns_503_before_first_reading():
+    server._state.update(
+        instantaneous_mm=None,
+        processors={},
+    )
+    client = server.app.test_client()
+
+    resp = client.get("/diag")
+
+    assert resp.status_code == 503
+
+
+def test_diag_returns_config_and_output_for_every_processor():
+    server._state.update(
+        instantaneous_mm=101.0,
+        configs={
+            "rolling_median5": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
+            "rolling_avg": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
+        },
+        processors={
+            "rolling_median5": {"value": 500.0},
+            "rolling_avg": {
+                "value": 850.0,
+                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+            },
+        },
+    )
+    client = server.app.test_client()
+
+    resp = client.get("/diag")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data == {
+        "processors": {
+            "rolling_median5": {
+                "config": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
+                "output": {"distance_cm": 50.0},
+            },
+            "rolling_avg": {
+                "config": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
+                "output": {
+                    "distance_cm": 85.0,
+                    "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+                },
+            },
         },
     }

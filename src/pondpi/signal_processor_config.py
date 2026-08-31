@@ -7,15 +7,20 @@ def load_signal_processors(path):
     """Loads named LevelSignalProcessor instances from a YAML config file.
 
     Returns (dict[name -> LevelSignalProcessor instance], primary_name,
-    dict[name -> emit bool]). Exactly one entry must be marked
-    `primary: true` — its output backfills the legacy top-level
-    rolling_avg_distance_cm field in /level.
+    dict[name -> emit bool], dict[name -> config summary]). Exactly one
+    entry must be marked `primary: true` — its output backfills the
+    legacy top-level rolling_avg_distance_cm field in /level.
 
     Each entry may set `emit: false` (default true) to keep that
     processor out of /level's `signals` section while still showing up
-    in `processors` -- for processors that only exist as an intermediate
-    step (e.g. a median stage feeding a chain) and aren't a meaningful
-    output on their own.
+    in full on /diag -- for processors that only exist as an
+    intermediate step (e.g. a median stage feeding a chain) and aren't a
+    meaningful output on their own.
+
+    The config summary dict (used by /diag) reflects each entry's
+    *effective* config -- `type`, `params` (raw as written, including
+    unresolved chain step dicts), `primary`, `emit` -- with defaults
+    applied, not just what was literally typed.
 
     A `type: chain` entry's `params.steps` runs a value through multiple
     processors in sequence. Each step is either:
@@ -40,6 +45,7 @@ def load_signal_processors(path):
     processors = {}
     entries_by_name = {}
     emit_flags = {}
+    configs = {}
     primary_name = None
 
     for entry in entries:
@@ -53,6 +59,7 @@ def load_signal_processors(path):
         processors[name] = _build_processor(entry, processor_types, entries_by_name, path, f"processor '{name}'")
         entries_by_name[name] = entry
         emit_flags[name] = entry.get("emit", True)
+        configs[name] = _config_summary(entry)
 
         if entry.get("primary", False):
             if primary_name is not None:
@@ -62,7 +69,19 @@ def load_signal_processors(path):
     if primary_name is None:
         raise ValueError(f"{path}: exactly one processor must be marked 'primary: true'")
 
-    return processors, primary_name, emit_flags
+    return processors, primary_name, emit_flags, configs
+
+
+def _config_summary(entry):
+    summary = {
+        "type": entry.get("type"),
+        "params": entry.get("params") or {},
+        "primary": bool(entry.get("primary", False)),
+        "emit": entry.get("emit", True),
+    }
+    if entry.get("ref") is not None:
+        summary["ref"] = entry["ref"]
+    return summary
 
 
 def _build_processor(entry, processor_types, entries_by_name, path, label):

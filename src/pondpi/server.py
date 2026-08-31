@@ -21,6 +21,7 @@ _state = {
     "processors": {},
     "processor_names": [],
     "emit_flags": {},
+    "configs": {},
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path.cwd()),
 }
@@ -47,6 +48,14 @@ def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s):
         time.sleep(poll_interval_s)
 
 
+def _processor_output(result):
+    """Converts one processor's cached poll_sensor() result ({"value": mm,
+    **extra_state}) into its /level and /diag output shape
+    ({"distance_cm": cm, **extra_state})."""
+    extra_state = {k: v for k, v in result.items() if k != "value"}
+    return {"distance_cm": round(result["value"] / 10.0, 1), **extra_state}
+
+
 @app.route("/health")
 def health():
     poller_alive = _poll_thread is not None and _poll_thread.is_alive()
@@ -71,22 +80,34 @@ def level():
         if _state["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
-        processors = {}
         signals = {}
         for name, result in _state["processors"].items():
-            extra_state = {k: v for k, v in result.items() if k != "value"}
-            distance_cm = round(result["value"] / 10.0, 1)
-            processors[name] = {"distance_cm": distance_cm, **extra_state}
             if _state["emit_flags"].get(name, True):
-                signals[name] = distance_cm
+                signals[name] = _processor_output(result)["distance_cm"]
 
         return jsonify(
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
             rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
             polling_interval_ms=_state["polling_interval_ms"],
-            processors=processors,
             signals=signals,
         )
+
+
+@app.route("/diag")
+def diag():
+    """Full config + live output for every configured signal processor,
+    regardless of `emit` -- unlike /level's `signals`, which only shows
+    processors meant to be read as final output."""
+    with _state_lock:
+        if _state["instantaneous_mm"] is None:
+            return jsonify(error="no readings yet"), 503
+
+        processors = {
+            name: {"config": _state["configs"][name], "output": _processor_output(result)}
+            for name, result in _state["processors"].items()
+        }
+
+        return jsonify(processors=processors)
 
 
 def main():
@@ -120,9 +141,10 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    processors, primary_name, emit_flags = load_signal_processors(args.processors_config)
+    processors, primary_name, emit_flags, configs = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
     _state["emit_flags"] = emit_flags
+    _state["configs"] = configs
     _state["polling_interval_ms"] = args.polling_interval_ms
 
     stop_event = threading.Event()
