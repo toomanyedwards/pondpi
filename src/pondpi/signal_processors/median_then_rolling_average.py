@@ -1,9 +1,9 @@
 from pondpi.median_filter import MedianFilter
-from pondpi.processors.base import LevelProcessor
 from pondpi.rolling_average import RollingAverage
+from pondpi.signal_processors.base import LevelSignalProcessor
 
 
-class MedianThenRollingAverageProcessor(LevelProcessor):
+class MedianThenRollingAverageSignalProcessor(LevelSignalProcessor):
     """Median-filters the raw reading, then averages the result over a rolling window."""
 
     def __init__(self, median_window_size, rolling_window_size):

@@ -1,8 +1,8 @@
 from pondpi.median_filter import MedianFilter
-from pondpi.processors.base import LevelProcessor
+from pondpi.signal_processors.base import LevelSignalProcessor
 
 
-class MedianProcessor(LevelProcessor):
+class MedianSignalProcessor(LevelSignalProcessor):
     """Median-filters the raw reading."""
 
     def __init__(self, window_size):

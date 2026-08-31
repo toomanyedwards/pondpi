@@ -8,17 +8,17 @@ Raspberry Pi, and exposes the current reading over a small HTTP API.
 The sensor sits above the pond and streams distance-to-water-surface
 readings continuously over UART. A background thread polls the serial
 connection, validates each frame, and runs it through every configured
-`LevelProcessor` instance (see [Signal processing](#signal-processing)
+`LevelSignalProcessor` instance (see [Signal processing](#signal-processing)
 below); a Flask server exposes every processor's output on `GET /level`.
 
 ```
-┌───────────────┐   UART frames    ┌────────────────┐    add()    ┌──────────────────────────────┐
-│ A02YYUW sensor│ ───────────────> │ poll_sensor()   │ ──────────> │ every configured LevelProcessor │
-└───────────────┘                  │ (background     │             │ (processors/), discovered      │
-                                    │  thread)        │             │ dynamically at startup          │
-                                    └────────┬────────┘             └──────────────────┬────────────┘
-                                             │ writes shared state                      │
-                                             v                                          v
+┌───────────────┐   UART frames    ┌─────────────────┐    add()    ┌───────────────────────────────────┐
+│ A02YYUW sensor│ ───────────────> │ poll_sensor()    │ ──────────> │ every configured LevelSignalProcessor │
+└───────────────┘                  │ (background      │             │ (signal_processors/), discovered      │
+                                    │  thread)         │             │ dynamically at startup                │
+                                    └────────┬─────────┘             └──────────────────┬─────────────────┘
+                                             │ writes shared state                       │
+                                             v                                           v
                                     ┌─────────────────────────────────────────┐
                                     │ Flask app: GET /level, GET /health       │
                                     └─────────────────────────────────────────┘
@@ -41,8 +41,8 @@ pondpi/
 │   ├── read_sensor.py
 │   ├── median_filter.py
 │   ├── rolling_average.py
-│   ├── processors/          # one LevelProcessor subclass per file, see below
-│   ├── processor_config.py
+│   ├── signal_processors/    # one LevelSignalProcessor subclass per file, see below
+│   ├── signal_processor_config.py
 │   ├── commit_sha.py
 │   └── duration.py
 ├── tests/                   # mirrors src/pondpi/, not shipped/deployed as code
@@ -53,10 +53,10 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `read_sensor.py` | Protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop. |
-| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelProcessor` classes. |
-| `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelProcessor` classes. |
-| `processors/` | `LevelProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `median_then_rolling_average.py`) — see [Signal processing](#signal-processing). |
-| `processor_config.py` | `load_processors()` — reads `config/processors.yaml` into named `LevelProcessor` instances. |
+| `median_filter.py` | `MedianFilter` — tracks the median of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
+| `rolling_average.py` | `RollingAverage` — tracks the average of the last N values added; a building block used by some `LevelSignalProcessor` classes. |
+| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file (`raw.py`, `median.py`, `rolling_average.py`, `median_then_rolling_average.py`) — see [Signal processing](#signal-processing). |
+| `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts the background polling thread and the Flask app. Owns all CLI configuration. |
@@ -91,7 +91,7 @@ Returns the current instantaneous and smoothed distance readings.
 | `instantaneous_distance_cm` | The most recent single valid raw reading (not processed by any processor). |
 | `rolling_avg_distance_cm` | The output of whichever processor is marked `primary: true` in `config/processors.yaml` — kept as a stable top-level field because the deployed Home Assistant sensor depends on it (see [Signal processing](#signal-processing)). |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
-| `processors` | Every configured `LevelProcessor` instance's current output, keyed by name. `distance_cm` is always present; the rest of each entry is that processor's own `extra_state()` (window sizes, sample counts, ...) and varies by processor type. |
+| `processors` | Every configured `LevelSignalProcessor` instance's current output, keyed by name. `distance_cm` is always present; the rest of each entry is that processor's own `extra_state()` (window sizes, sample counts, ...) and varies by processor type. |
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
 since the server started.
@@ -173,27 +173,28 @@ These two numbers directly shape the polling and smoothing defaults:
 
 ## Signal processing
 
-Raw readings are run through every processor configured in
+Raw readings are run through every signal processor configured in
 `config/processors.yaml` (a strategy pattern — one class per algorithm,
-in `src/pondpi/processors/`), and every processor's output is returned
-side by side on `/level`. This makes it possible to compare smoothing
-approaches against the live sensor stream without a code change or
-redeploy — just edit the YAML.
+in `src/pondpi/signal_processors/`), and every processor's output is
+returned side by side on `/level`. This makes it possible to compare
+smoothing approaches against the live sensor stream without a code
+change or redeploy — just edit the YAML.
 
-Processor types are discovered dynamically at server startup, not from a
-hand-maintained registry: each file in `processors/` (except `base.py`)
-must define exactly one `LevelProcessor` subclass, and the file's name
-becomes the `type:` string used in the YAML. Adding a new processor means
-writing `processors/<name>.py` and referencing `type: <name>` in
+Signal processor types are discovered dynamically at server startup, not
+from a hand-maintained registry: each file in `signal_processors/`
+(except `base.py`) must define exactly one `LevelSignalProcessor`
+subclass, and the file's name becomes the `type:` string used in the
+YAML. Adding a new signal processor means writing
+`signal_processors/<name>.py` and referencing `type: <name>` in
 `config/processors.yaml` — nothing else to edit or register.
 
-Processors are unit-agnostic: `add()` takes a raw value in and returns a
-processed value out, with no notion of mm/cm baked in anywhere. Millimeter
-readings from the sensor go in, and whatever comes out is only
+Signal processors are unit-agnostic: `add()` takes a raw value in and
+returns a processed value out, with no notion of mm/cm baked in anywhere.
+Millimeter readings from the sensor go in, and whatever comes out is only
 interpreted as millimeters (and converted to cm) at the HTTP layer in
-`server.py`'s `/level` route — not inside any processor.
+`server.py`'s `/level` route — not inside any signal processor.
 
-Built-in `LevelProcessor` types (`type:` in the YAML) and their `params`:
+Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
@@ -304,10 +305,11 @@ ruff check .   # lint
 Tests live in `tests/`, import from the installed `pondpi` package (e.g.
 `from pondpi.median_filter import MedianFilter`), and don't need any
 hardware or network access — `tests/test_read_sensor.py`,
-`tests/test_rolling_average.py`, `tests/test_processors.py` (including
-the dynamic-discovery mechanism itself, against both the real
-`processors/` package and small synthetic ones built in `tmp_path`), and
-`tests/test_processor_config.py` (using `tmp_path` YAML files) exercise
+`tests/test_rolling_average.py`, `tests/test_signal_processors.py`
+(including the dynamic-discovery mechanism itself, against both the real
+`signal_processors/` package and small synthetic ones built in
+`tmp_path`), and `tests/test_signal_processor_config.py` (using
+`tmp_path` YAML files) exercise
 pure functions directly, and `tests/test_server.py` uses Flask's test
 client against `pondpi.server.app` with `pondpi.server._state` set
 directly.

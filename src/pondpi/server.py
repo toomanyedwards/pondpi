@@ -10,7 +10,7 @@ from flask import Flask, jsonify
 from pondpi import read_sensor
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
-from pondpi.processor_config import load_processors
+from pondpi.signal_processor_config import load_signal_processors
 
 app = Flask(__name__)
 
@@ -114,7 +114,7 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    processors, primary_name = load_processors(args.processors_config)
+    processors, primary_name = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
     _state["polling_interval_ms"] = args.polling_interval_ms
 
