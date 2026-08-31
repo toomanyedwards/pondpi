@@ -11,8 +11,7 @@ class DummyThread:
 
 def test_health_ok_when_poller_alive():
     server._poll_thread = DummyThread(alive=True)
-    server._state["rolling_window_size"] = 25
-    server._state["median_window_size"] = 5
+    server._state["strategy_names"] = ["rolling_avg", "instantaneous_raw"]
     server._state["commit_sha"] = "abc123"
     client = server.app.test_client()
 
@@ -26,8 +25,7 @@ def test_health_ok_when_poller_alive():
     assert isinstance(data["uptime_seconds"], (int, float))
     assert data["uptime_seconds"] >= 0
     assert data["uptime_human"] == f"{int(data['uptime_seconds'])}s"
-    assert data["rolling_window_size"] == 25
-    assert data["median_window_size"] == 5
+    assert data["strategies"] == ["rolling_avg", "instantaneous_raw"]
     assert data["commit_sha"] == "abc123"
 
 
@@ -56,9 +54,7 @@ def test_level_returns_503_before_first_reading():
     server._state.update(
         instantaneous_mm=None,
         rolling_avg_mm=None,
-        samples_in_rolling_window=0,
-        rolling_window_size=25,
-        median_window_size=5,
+        strategies={},
     )
     client = server.app.test_client()
 
@@ -71,10 +67,16 @@ def test_level_returns_current_reading():
     server._state.update(
         instantaneous_mm=101.0,
         rolling_avg_mm=850.0,
-        samples_in_rolling_window=25,
-        rolling_window_size=100,
-        median_window_size=5,
         polling_interval_ms=10,
+        strategies={
+            "rolling_avg": {
+                "distance_mm": 850.0,
+                "median_window_size": 5,
+                "rolling_window_size": 100,
+                "samples_in_rolling_window": 25,
+            },
+            "instantaneous_raw": {"distance_mm": 101.0},
+        },
     )
     client = server.app.test_client()
 
@@ -85,8 +87,14 @@ def test_level_returns_current_reading():
     assert data == {
         "instantaneous_distance_cm": 10.1,
         "rolling_avg_distance_cm": 85.0,
-        "rolling_window_size": 100,
-        "samples_in_rolling_window": 25,
-        "median_window_size": 5,
         "polling_interval_ms": 10,
+        "strategies": {
+            "rolling_avg": {
+                "distance_cm": 85.0,
+                "median_window_size": 5,
+                "rolling_window_size": 100,
+                "samples_in_rolling_window": 25,
+            },
+            "instantaneous_raw": {"distance_cm": 10.1},
+        },
     }

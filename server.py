@@ -10,8 +10,7 @@ from flask import Flask, jsonify
 import read_sensor
 from commit_sha import read_commit_sha
 from duration import format_duration
-from median_filter import MedianFilter
-from rolling_average import RollingAverage
+from strategy_config import load_strategies
 
 app = Flask(__name__)
 
@@ -19,9 +18,8 @@ _state_lock = threading.Lock()
 _state = {
     "instantaneous_mm": None,
     "rolling_avg_mm": None,
-    "samples_in_rolling_window": 0,
-    "rolling_window_size": None,
-    "median_window_size": None,
+    "strategies": {},
+    "strategy_names": [],
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path(__file__).resolve().parent),
 }
@@ -31,17 +29,19 @@ _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(ser, median_filter, rolling_avg, stop_event, poll_interval_s):
+def poll_sensor(ser, strategies, primary_name, stop_event, poll_interval_s):
     while not stop_event.is_set():
         distance_mm = read_sensor.read_frame(ser)
 
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
-            median_mm = median_filter.add(distance_mm)
-            avg_mm = rolling_avg.add(median_mm)
+            results = {}
+            for name, strategy in strategies.items():
+                results[name] = {"distance_mm": strategy.add(distance_mm), **strategy.extra_state()}
+
             with _state_lock:
                 _state["instantaneous_mm"] = distance_mm
-                _state["rolling_avg_mm"] = avg_mm
-                _state["samples_in_rolling_window"] = rolling_avg.count
+                _state["strategies"] = results
+                _state["rolling_avg_mm"] = results[primary_name]["distance_mm"]
 
         time.sleep(poll_interval_s)
 
@@ -58,8 +58,7 @@ def health():
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
         uptime_human=format_duration(uptime_seconds),
-        rolling_window_size=_state["rolling_window_size"],
-        median_window_size=_state["median_window_size"],
+        strategies=_state["strategy_names"],
         commit_sha=_state["commit_sha"],
     )
     return payload if poller_alive else (payload, 503)
@@ -71,13 +70,16 @@ def level():
         if _state["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
+        strategies = {}
+        for name, result in _state["strategies"].items():
+            extra_state = {k: v for k, v in result.items() if k != "distance_mm"}
+            strategies[name] = {"distance_cm": round(result["distance_mm"] / 10.0, 1), **extra_state}
+
         return jsonify(
             instantaneous_distance_cm=round(_state["instantaneous_mm"] / 10.0, 1),
             rolling_avg_distance_cm=round(_state["rolling_avg_mm"] / 10.0, 1),
-            rolling_window_size=_state["rolling_window_size"],
-            samples_in_rolling_window=_state["samples_in_rolling_window"],
-            median_window_size=_state["median_window_size"],
             polling_interval_ms=_state["polling_interval_ms"],
+            strategies=strategies,
         )
 
 
@@ -85,12 +87,11 @@ def main():
     global _poll_thread
 
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
-    parser.add_argument("--window-size", type=int, default=40, help="number of readings to average over (default: 40)")
     parser.add_argument(
-        "--median-window-size",
-        type=int,
-        default=5,
-        help="number of raw readings to median-filter before they enter the rolling average (default: 5)",
+        "--strategies-config",
+        type=Path,
+        default=Path(__file__).resolve().parent / "strategies.yaml",
+        help="path to the YAML file configuring level-processing strategies (default: strategies.yaml)",
     )
     parser.add_argument(
         "--polling-interval-ms",
@@ -113,16 +114,14 @@ def main():
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
 
-    _state["rolling_window_size"] = args.window_size
-    _state["median_window_size"] = args.median_window_size
+    strategies, primary_name = load_strategies(args.strategies_config)
+    _state["strategy_names"] = list(strategies)
     _state["polling_interval_ms"] = args.polling_interval_ms
-    median_filter = MedianFilter(args.median_window_size)
-    rolling_avg = RollingAverage(args.window_size)
 
     stop_event = threading.Event()
     poll_thread = threading.Thread(
         target=poll_sensor,
-        args=(ser, median_filter, rolling_avg, stop_event, args.polling_interval_ms / 1000),
+        args=(ser, strategies, primary_name, stop_event, args.polling_interval_ms / 1000),
         daemon=True,
     )
     poll_thread.start()
