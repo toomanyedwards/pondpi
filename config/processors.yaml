@@ -47,29 +47,16 @@ processors:
             window_size: 200
   # alpha is applied once per 150ms poll, not once per HA scrape -- at
   # that feed rate an EMA's half-life is roughly 0.15s * ln(0.5)/ln(1-alpha)
-  # samples. alpha 0.1-0.9 all decay to a fraction of a second, which is
-  # invisible next to Home Assistant's 30s scan_interval; alpha needs to
-  # be in the ~0.01-0.2 range for the half-life to land in the 1-20s
-  # range and actually show up as smoothing on a 30s-resolution chart.
+  # samples. alpha needs to be in the ~0.005-0.01 range for the half-life
+  # to land in the 10-20s range and actually show up as smoothing on a
+  # 30s-resolution chart.
+  - name: exp_smooth_0p005
+    type: exponential_smoothing
+    params:
+      alpha: 0.005
   - name: exp_smooth_0p01
     type: exponential_smoothing
     params:
       alpha: 0.01
-  - name: exp_smooth_0p02
-    type: exponential_smoothing
-    params:
-      alpha: 0.02
-  - name: exp_smooth_0p05
-    type: exponential_smoothing
-    params:
-      alpha: 0.05
-  - name: exp_smooth_0p1
-    type: exponential_smoothing
-    params:
-      alpha: 0.1
-  - name: exp_smooth_0p2
-    type: exponential_smoothing
-    params:
-      alpha: 0.2
   - name: instantaneous_raw
     type: raw
