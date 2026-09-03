@@ -165,6 +165,7 @@ readings yet"}` under the same condition as `/level`.
 {
   "status": "ok",
   "poller_alive": true,
+  "last_reading_age_s": 0.1,
   "started_at": "2026-08-29T19:31:24.633421+00:00",
   "uptime_seconds": 93780.4,
   "uptime_human": "1d 2h 3m 0s",
@@ -173,10 +174,26 @@ readings yet"}` under the same condition as `/level`.
 }
 ```
 
-`status` is `"degraded"` (HTTP 503) if the background polling thread has
-died — e.g. an unhandled exception in `poll_sensor()` — which otherwise
-would silently leave `/level` serving stale data forever with no signal
-anything was wrong.
+`status` is `"degraded"` (HTTP 503) under either of two independent
+conditions, both of which would otherwise silently leave `/level` serving
+stale data forever with no signal anything was wrong:
+
+- the background polling thread has died (`poller_alive: false`) — e.g. an
+  unhandled exception in `poll_sensor()`.
+- no valid frame has been read in over `STALE_READING_THRESHOLD_S` (3s,
+  `server.py`) — the thread can be alive and still not be producing fresh
+  readings, e.g. if a wiring disturbance knocks `read_frame()`'s byte
+  alignment out of sync in just the wrong way and its incremental
+  header-hunting resync never lands on a fresh header. `poll_sensor()`
+  itself watches for this same condition and forces a `reset_input_buffer()`
+  once it's crossed, so in practice a stale reading should self-resolve
+  within a few seconds — `last_reading_age_s` climbing past the threshold
+  and staying there is the signal that didn't happen.
+
+`last_reading_age_s` is seconds since the last valid frame, or `null`
+before the first ever reading (not itself a degraded condition — a poller
+that's alive but just hasn't read anything yet, e.g. right after startup,
+is normal).
 
 `uptime_human` is `uptime_seconds` formatted as `"1d 2h 3m 4s"`. Units
 below the largest non-zero one are always shown (so exactly one hour is
