@@ -14,6 +14,13 @@ from pondpi.signal_processor_config import load_signal_processors
 
 app = Flask(__name__)
 
+# Comfortably above the sensor's ~100ms response time and our 150ms default
+# poll interval -- if this long passes with no valid frame, read_frame()
+# has likely lost byte alignment with the sensor's stream and isn't going
+# to resync on its own. Used both to force a resync in poll_sensor() and to
+# flag /health degraded.
+STALE_READING_THRESHOLD_S = 3.0
+
 _state_lock = threading.Lock()
 _state = {
     "instantaneous_mm": None,
@@ -25,6 +32,7 @@ _state = {
     "primary_name": None,
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path.cwd()),
+    "last_reading_monotonic": None,
 }
 
 _poll_thread = None
@@ -32,11 +40,14 @@ _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s):
+def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s, stale_threshold_s=STALE_READING_THRESHOLD_S):
+    last_valid_monotonic = time.monotonic()
+
     while not stop_event.is_set():
         distance_mm = read_sensor.read_frame(ser)
 
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
+            last_valid_monotonic = time.monotonic()
             results = {}
             for name, processor in processors.items():
                 results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
@@ -45,6 +56,17 @@ def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s):
                 _state["instantaneous_mm"] = distance_mm
                 _state["processors"] = results
                 _state["rolling_avg_mm"] = results[primary_name]["value"]
+                _state["last_reading_monotonic"] = last_valid_monotonic
+        elif time.monotonic() - last_valid_monotonic > stale_threshold_s:
+            # No valid frame in a while -- read_frame()'s incremental
+            # header-hunting resync can get permanently wedged if the byte
+            # stream is knocked out of alignment (e.g. by a wiring
+            # disturbance) in just the wrong way. A plain buffer flush is
+            # enough to force a fresh resync, so do that rather than wait
+            # forever. Reset the timer so we don't flush every loop
+            # iteration while genuinely disconnected.
+            ser.reset_input_buffer()
+            last_valid_monotonic = time.monotonic()
 
         time.sleep(poll_interval_s)
 
@@ -61,18 +83,28 @@ def _processor_output(result):
 def health():
     poller_alive = _poll_thread is not None and _poll_thread.is_alive()
     uptime_seconds = round(time.monotonic() - _started_monotonic, 1)
-    status = "ok" if poller_alive else "degraded"
+
+    last_reading_monotonic = _state["last_reading_monotonic"]
+    if last_reading_monotonic is None:
+        last_reading_age_s = None
+        stale = False
+    else:
+        last_reading_age_s = round(time.monotonic() - last_reading_monotonic, 1)
+        stale = last_reading_age_s > STALE_READING_THRESHOLD_S
+
+    status = "ok" if poller_alive and not stale else "degraded"
 
     payload = jsonify(
         status=status,
         poller_alive=poller_alive,
+        last_reading_age_s=last_reading_age_s,
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
         uptime_human=format_duration(uptime_seconds),
         processors=_state["processor_names"],
         commit_sha=_state["commit_sha"],
     )
-    return payload if poller_alive else (payload, 503)
+    return payload if status == "ok" else (payload, 503)
 
 
 @app.route("/level")
