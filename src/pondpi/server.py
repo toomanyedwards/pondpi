@@ -38,8 +38,8 @@ def _new_sensor_state():
         "instantaneous_mm": None,
         "rolling_avg_mm": None,
         "processed_mm": None,
-        "processors": {},
-        "processor_names": [],
+        "signals": {},
+        "signal_names": [],
         "emit_flags": {},
         "configs": {},
         "primary_name": None,
@@ -48,27 +48,27 @@ def _new_sensor_state():
     }
 
 
-def poll_sensor(name, sensor, processors, primary_name, stop_event, poll_interval_s):
+def poll_sensor(name, sensor, signals, primary_name, stop_event, poll_interval_s):
     """Sensor-agnostic polling loop for one named sensor: repeatedly
-    calls `sensor.read()` and routes whichever named signals it returns
+    calls `sensor.read()` and routes whichever named readings it returns
     into that sensor's own state slot. "raw" readings are run through
-    the configured signal processor pipeline; "processed" readings (if
-    the sensor reports any -- not every driver will) are cached as-is,
-    since a sensor's own onboard smoothing isn't something further
-    Pi-side processing should second-guess. One of these runs per
-    configured sensor, each in its own thread."""
+    the configured signal pipeline; "processed" readings (if the sensor
+    reports any -- not every driver will) are cached as-is, since a
+    sensor's own onboard smoothing isn't something further Pi-side
+    processing should second-guess. One of these runs per configured
+    sensor, each in its own thread."""
     while not stop_event.is_set():
         readings = sensor.read()
 
         if "raw" in readings:
             distance_mm = readings["raw"]
             results = {}
-            for pname, processor in processors.items():
-                results[pname] = {"value": processor.add(distance_mm), **processor.extra_state()}
+            for sname, signal in signals.items():
+                results[sname] = {"value": signal.add(distance_mm), **signal.extra_state()}
 
             with _state_lock:
                 _state[name]["instantaneous_mm"] = distance_mm
-                _state[name]["processors"] = results
+                _state[name]["signals"] = results
                 _state[name]["rolling_avg_mm"] = results[primary_name]["value"]
                 _state[name]["last_reading_monotonic"] = time.monotonic()
 
@@ -79,8 +79,8 @@ def poll_sensor(name, sensor, processors, primary_name, stop_event, poll_interva
         time.sleep(poll_interval_s)
 
 
-def _processor_output(result):
-    """Converts one processor's cached poll_sensor() result ({"value": mm,
+def _signal_output(result):
+    """Converts one signal's cached poll_sensor() result ({"value": mm,
     **extra_state}) into its /level and /diag output shape
     ({"distance_cm": cm, **extra_state})."""
     extra_state = {k: v for k, v in result.items() if k != "value"}
@@ -114,7 +114,7 @@ def health():
             "poller_alive": poller_alive,
             "last_reading_age_s": last_reading_age_s,
             "last_reset_at": last_reset_at.isoformat() if last_reset_at else None,
-            "processors": _state[name]["processor_names"],
+            "signals": _state[name]["signal_names"],
         }
 
     status = "ok" if overall_ok else "degraded"
@@ -182,9 +182,9 @@ def _level_response(name, mode):
             return jsonify(error="no readings yet"), 503
 
         signals = {}
-        for pname, result in _state[name]["processors"].items():
-            if _state[name]["emit_flags"].get(pname, True):
-                signals[pname] = _processor_output(result)["distance_cm"]
+        for sname, result in _state[name]["signals"].items():
+            if _state[name]["emit_flags"].get(sname, True):
+                signals[sname] = _signal_output(result)["distance_cm"]
 
         rolling_avg_distance_cm = round(_state[name]["rolling_avg_mm"] / 10.0, 1)
 
@@ -214,19 +214,19 @@ def sensor_level(name):
 
 def _diag_response(name):
     """Full config + live output for every one of this sensor's
-    configured signal processors, regardless of `emit` -- unlike
-    /level's `signals`, which only shows processors meant to be read as
-    final output."""
+    configured signals, regardless of `emit` -- unlike /level's
+    `signals`, which only shows signals meant to be read as final
+    output."""
     with _state_lock:
         if _state[name]["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
-        processors = {
-            pname: {"config": _state[name]["configs"][pname], "output": _processor_output(result)}
-            for pname, result in _state[name]["processors"].items()
+        signals = {
+            sname: {"config": _state[name]["configs"][sname], "output": _signal_output(result)}
+            for sname, result in _state[name]["signals"].items()
         }
 
-        return jsonify(processors=processors)
+        return jsonify(signals=signals)
 
 
 @app.route("/diag")
@@ -283,14 +283,14 @@ def main():
         _reset_locks[name] = threading.Lock()
 
         _state[name] = _new_sensor_state()
-        _state[name]["processor_names"] = list(cfg["processors"])
+        _state[name]["signal_names"] = list(cfg["signals"])
         _state[name]["emit_flags"] = cfg["emit_flags"]
         _state[name]["configs"] = cfg["configs"]
         _state[name]["primary_name"] = cfg["primary_name"]
 
         poll_thread = threading.Thread(
             target=poll_sensor,
-            args=(name, cfg["driver"], cfg["processors"], cfg["primary_name"], stop_event, args.polling_interval_ms / 1000),
+            args=(name, cfg["driver"], cfg["signals"], cfg["primary_name"], stop_event, args.polling_interval_ms / 1000),
             daemon=True,
         )
         poll_thread.start()

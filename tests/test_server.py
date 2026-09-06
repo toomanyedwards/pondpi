@@ -13,7 +13,7 @@ class DummyThread:
         return self._alive
 
 
-class _PassthroughProcessor:
+class _PassthroughSignal:
     def add(self, value):
         return value
 
@@ -64,7 +64,7 @@ def test_health_ok_when_poller_alive():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
-    server._state["pond_main"]["processor_names"] = ["rolling_avg", "instantaneous_raw"]
+    server._state["pond_main"]["signal_names"] = ["rolling_avg", "instantaneous_raw"]
     server._commit_sha = "abc123"
     server._default_sensor_name = "pond_main"
     client = server.app.test_client()
@@ -82,7 +82,7 @@ def test_health_ok_when_poller_alive():
     assert data["commit_sha"] == "abc123"
     assert data["sensors"]["pond_main"]["poller_alive"] is True
     assert data["sensors"]["pond_main"]["last_reading_age_s"] is None
-    assert data["sensors"]["pond_main"]["processors"] == ["rolling_avg", "instantaneous_raw"]
+    assert data["sensors"]["pond_main"]["signals"] == ["rolling_avg", "instantaneous_raw"]
 
 
 def test_health_degraded_when_poller_dead():
@@ -248,15 +248,15 @@ def test_sensor_reset_targets_named_sensor_independently():
     assert fake_main.reset_calls == 0
 
 
-def test_poll_sensor_routes_raw_readings_through_processors():
+def test_poll_sensor_routes_raw_readings_through_signals():
     _reset_globals(["pond_main"])
-    processors = {"instantaneous_raw": _PassthroughProcessor()}
+    signals = {"instantaneous_raw": _PassthroughSignal()}
     sensor = FakeSensorDriver([{"raw": 100}])
     stop_event = threading.Event()
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, processors, "instantaneous_raw", stop_event, 0.001),
+        args=("pond_main", sensor, signals, "instantaneous_raw", stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -273,7 +273,7 @@ def test_poll_sensor_routes_raw_readings_through_processors():
 
 
 def test_poll_sensor_caches_processed_readings_as_is():
-    # No processors configured for "processed" -- unlike "raw", it's
+    # No signals configured for "processed" -- unlike "raw", it's
     # cached directly rather than run through a pipeline (see
     # poll_sensor()'s docstring).
     _reset_globals(["pond_main"])
@@ -304,11 +304,11 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
 
     thread_main = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor_main, {"raw": _PassthroughProcessor()}, "raw", stop_event, 0.001),
+        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, "raw", stop_event, 0.001),
     )
     thread_barrel = threading.Thread(
         target=server.poll_sensor,
-        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughProcessor()}, "raw", stop_event, 0.001),
+        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, "raw", stop_event, 0.001),
     )
     thread_main.start()
     thread_barrel.start()
@@ -345,11 +345,11 @@ def test_level_returns_current_reading():
         rolling_avg_mm=850.0,
         primary_name="rolling_avg",
         emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
-        processors={
+        signals={
             "rolling_median5": {"value": 500.0},
             "rolling_avg": {
                 "value": 850.0,
-                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+                "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
             },
             "instantaneous_raw": {"value": 101.0},
         },
@@ -411,7 +411,7 @@ def test_level_unrecognized_mode_falls_back_to_raw():
         rolling_avg_mm=850.0,
         primary_name="rolling_avg",
         emit_flags={"rolling_avg": True},
-        processors={"rolling_avg": {"value": 850.0}},
+        signals={"rolling_avg": {"value": 850.0}},
     )
     server._polling_interval_ms = 10
     server._default_sensor_name = "pond_main"
@@ -439,7 +439,7 @@ def test_sensor_level_targets_named_sensor_independently_of_default():
         rolling_avg_mm=200.0,
         primary_name="raw",
         emit_flags={"raw": True},
-        processors={"raw": {"value": 200.0}},
+        signals={"raw": {"value": 200.0}},
     )
     server._polling_interval_ms = 150
     server._default_sensor_name = "pond_main"
@@ -461,7 +461,7 @@ def test_diag_returns_503_before_first_reading():
     assert resp.status_code == 503
 
 
-def test_diag_returns_config_and_output_for_every_processor():
+def test_diag_returns_config_and_output_for_every_signal():
     _reset_globals(["pond_main"])
     server._state["pond_main"].update(
         instantaneous_mm=101.0,
@@ -469,11 +469,11 @@ def test_diag_returns_config_and_output_for_every_processor():
             "rolling_median5": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
             "rolling_avg": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
         },
-        processors={
+        signals={
             "rolling_median5": {"value": 500.0},
             "rolling_avg": {
                 "value": 850.0,
-                "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+                "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
             },
         },
     )
@@ -485,7 +485,7 @@ def test_diag_returns_config_and_output_for_every_processor():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data == {
-        "processors": {
+        "signals": {
             "rolling_median5": {
                 "config": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
                 "output": {"distance_cm": 50.0},
@@ -494,7 +494,7 @@ def test_diag_returns_config_and_output_for_every_processor():
                 "config": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
                 "output": {
                     "distance_cm": 85.0,
-                    "steps": [{"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+                    "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
                 },
             },
         },

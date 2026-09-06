@@ -10,7 +10,7 @@ sensor's current reading over a small HTTP API.
 Each configured sensor is driven by its own `LevelSensor` driver instance
 (see [Sensor drivers](#sensor-drivers) below) polled on its own background
 thread. A driver's readings are run through that sensor's own configured
-`LevelSignalProcessor` instances (see [Signal processing](#signal-processing));
+`LevelSignal` instances (see [Signal processing](#signal-processing));
 a Flask server exposes every sensor's output on `GET /level` (the
 configured *default* sensor) and `GET /sensors/<name>/level` (any sensor,
 by name).
@@ -18,7 +18,7 @@ by name).
 ```
 ┌────────────────┐  read()  ┌──────────────────┐  add()  ┌────────────────────────────┐
 │ LevelSensor      │ ───────>│ poll_sensor()      │───────> │ that sensor's configured     │
-│ driver (sensors/)│         │ (one thread/sensor)│         │ LevelSignalProcessor instances│
+│ driver (sensors/)│         │ (one thread/sensor)│         │ LevelSignal instances        │
 └────────────────┘         └──────────┬─────────┘         └──────────────┬─────────────┘
         ▲ one instance per                │ writes that sensor's own state              │
         │ config/sensors.yaml entry       v                                            v
@@ -47,10 +47,10 @@ pondpi/
 │   ├── read_sensor.py
 │   ├── sensor_mode.py
 │   ├── sensor_power.py
-│   ├── signal_processors/    # one LevelSignalProcessor subclass per <type>_processor.py file
+│   ├── signals/               # one LevelSignal subclass per <type>_signal.py file
 │   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
-│   │                           # not signal processors themselves, see below
-│   ├── signal_processor_config.py
+│   │                           # not signals themselves, see below
+│   ├── signal_config.py
 │   ├── commit_sha.py
 │   └── duration.py
 ├── tests/                   # mirrors src/pondpi/, not shipped/deployed as code
@@ -61,14 +61,14 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). `supports_reset`/`reset()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
-| `sensors/a02yyuw_sensor.py` | `A02YYUWSensor` — the A02YYUW driver. Consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. Discovered dynamically like signal processors — see [Sensor drivers](#sensor-drivers). |
-| `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal processor pipeline. |
+| `sensors/a02yyuw_sensor.py` | `A02YYUWSensor` — the A02YYUW driver. Consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. Discovered dynamically like signals — see [Sensor drivers](#sensor-drivers). |
+| `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. |
 | `read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `sensor_mode.py` | Drives the A02YYUW's RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensor_power.py` | Drives the A02YYUW's power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
-| `signal_processors/` | `LevelSignalProcessor` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_processor.py` (`raw_processor.py`, `rolling_median_processor.py`, `rolling_average_processor.py`, `exponential_smoothing_processor.py`, `chain_processor.py`) — see [Signal processing](#signal-processing). |
-| `signal_processors/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignalProcessor` classes. Not signal processors themselves (they don't implement the `LevelSignalProcessor` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_processor`. |
-| `signal_processor_config.py` | `load_signal_processors()`/`build_processors()` — builds named `LevelSignalProcessor` instances from a `processors:` list (a standalone file, or nested under a sensor in `config/sensors.yaml`). |
+| `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`raw_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`, `chain_signal.py`) — see [Signal processing](#signal-processing). |
+| `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
+| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from a `signals:` list (a standalone file, or nested under a sensor in `config/sensors.yaml`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts one background polling thread per configured sensor and the Flask app. Owns all CLI configuration. |
@@ -124,8 +124,8 @@ default sensor, or the named one.
 | `units` | The unit every `_cm`/`value` field in this response is in — always `"cm"`. |
 | `mode` | Which of the sensor's two hardware output modes this response reflects — see `?mode=` below. |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
-| `primary_signal` | `{value, name}` for whichever processor is marked `primary: true` — `name` is that processor's actual configured name, so this stays correct even if you rename it. |
-| `signals` | A curated `{name: distance_cm}` view of just the processors meant to be read as final output — every configured processor *except* whichever ones are marked `emit: false` in this sensor's `processors:` list in `config/sensors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
+| `primary_signal` | `{value, name}` for whichever signal is marked `primary: true` — `name` is that signal's actual configured name, so this stays correct even if you rename it. |
+| `signals` | A curated `{name: distance_cm}` view of just the signals meant to be read as final output — every configured signal *except* whichever ones are marked `emit: false` in this sensor's `signals:` list in `config/sensors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
@@ -153,7 +153,7 @@ separately.
 entirely) is the response shown above. `?mode=processed` returns a
 different, much simpler shape instead — there's no `primary_signal` or
 `signals` for it, since the sensor's own processed-mode output isn't run
-through this sensor's `processors:` pipeline at all (it's already
+through this sensor's `signals:` pipeline at all (it's already
 hardware-smoothed):
 
 ```json
@@ -171,13 +171,13 @@ startup).
 
 ### `GET /diag` / `GET /sensors/<name>/diag`
 
-The config and live output of **every** configured signal processor for
-the default sensor, or the named one, regardless of `emit` — the full
+The config and live output of **every** configured signal for the
+default sensor, or the named one, regardless of `emit` — the full
 diagnostic view that `/level`'s `signals` deliberately leaves out.
 
 ```json
 {
-  "processors": {
+  "signals": {
     "rolling_median5": {
       "config": {
         "type": "rolling_median",
@@ -206,8 +206,8 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
       "output": {
         "distance_cm": 11.2,
         "steps": [
-          {"processor": "rolling_median5", "window_size": 5, "samples_in_window": 5},
-          {"processor": "rolling_average", "window_size": 200, "samples_in_window": 200}
+          {"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5},
+          {"signal": "rolling_average", "window_size": 200, "samples_in_window": 200}
         ]
       }
     },
@@ -219,11 +219,11 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
 }
 ```
 
-Each processor's `config` is its *effective* configuration from this
-sensor's `processors:` list in `config/sensors.yaml` (defaults filled in,
+Each signal's `config` is its *effective* configuration from this
+sensor's `signals:` list in `config/sensors.yaml` (defaults filled in,
 so `primary`/`emit` are always present even if the YAML omitted them),
-and `output` is the same shape `/level`'s `signals`/`processors` used to
-expose — `distance_cm` plus that processor's own `extra_state()`.
+and `output` is the same shape `/level`'s `signals` used to expose —
+`distance_cm` plus that signal's own `extra_state()`.
 Returns `503 {"error": "no readings yet"}` under the same condition as
 `/level`.
 
@@ -275,7 +275,7 @@ service info:
       "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
-      "processors": ["rolling_avg", "instantaneous_raw"]
+      "signals": ["rolling_avg", "instantaneous_raw"]
     }
   }
 }
@@ -309,9 +309,9 @@ after startup, is normal).
 power-cycled that sensor, or `null` if it's never been called since this
 service started (not persisted across restarts).
 
-`processors` is just the list of that sensor's configured processor
-names, as a quick "did the config load correctly" signal — see `/level`
-for their actual output.
+`signals` is just the list of that sensor's configured signal names, as
+a quick "did the config load correctly" signal — see `/level` for their
+actual output.
 
 `uptime_human` is `uptime_seconds` formatted as `"1d 2h 3m 4s"`. Units
 below the largest non-zero one are always shown (so exactly one hour is
@@ -340,21 +340,21 @@ quantities with different sign conventions (an ultrasonic sensor's raw
 distance vs. a resistive sensor's submerged length, say), so each driver
 is responsible for converting its own reading into that shared
 millimeters-to-surface unit before returning it — nothing downstream
-(signal processors, the HTTP API) needs to know which sensing technology
+(signals, the HTTP API) needs to know which sensing technology
 produced a given value.
 
 Sensor types are discovered dynamically at startup, the same way
-[signal processor types](#signal-processing) are: each file in
-`sensors/` whose name ends in `_sensor` must define exactly one
-`LevelSensor` subclass *and* a module-level `create(params, simulate)`
-function, and the filename with that suffix stripped becomes the
-`type:` string used in `config/sensors.yaml`. Unlike signal processors
-(whose constructors take simple scalar params directly), most sensor
-drivers need real hardware objects — a serial connection, GPIO
-controllers — assembled around those params, and build entirely
-different (simulated) objects under `--simulate`; `create()` is where a
-driver type does that assembly, so `sensor_config.py` never needs to
-know a given type's own construction details. Adding a new sensor type
+[signal types](#signal-processing) are: each file in `sensors/` whose
+name ends in `_sensor` must define exactly one `LevelSensor` subclass
+*and* a module-level `create(params, simulate)` function, and the
+filename with that suffix stripped becomes the `type:` string used in
+`config/sensors.yaml`. Unlike signals (whose constructors take simple
+scalar params directly), most sensor drivers need real hardware
+objects — a serial connection, GPIO controllers — assembled around
+those params, and build entirely different (simulated) objects under
+`--simulate`; `create()` is where a driver type does that assembly, so
+`sensor_config.py` never needs to know a given type's own construction
+details. Adding a new sensor type
 means writing `sensors/<name>_sensor.py` and referencing `type: <name>`
 in `config/sensors.yaml` — nothing else to edit or register.
 
@@ -444,32 +444,30 @@ doesn't itself glitch the sensor's power).
 
 ## Signal processing
 
-Each sensor's raw readings are run through every signal processor
-configured in its own `processors:` list in `config/sensors.yaml` (a
-strategy pattern — one class per algorithm, in
-`src/pondpi/signal_processors/`), and every processor's output is
-returned side by side on that sensor's `/level`. This makes it possible
-to compare smoothing approaches against the live sensor stream without a
-code change or redeploy — just edit the YAML.
+Each sensor's raw readings are run through every signal configured in
+its own `signals:` list in `config/sensors.yaml` (a strategy pattern —
+one class per algorithm, in `src/pondpi/signals/`), and every signal's
+output is returned side by side on that sensor's `/level`. This makes
+it possible to compare smoothing approaches against the live sensor
+stream without a code change or redeploy — just edit the YAML.
 
-Signal processor types are discovered dynamically at server startup, not
-from a hand-maintained registry: each file in `signal_processors/` whose
-name ends in `_processor` must define exactly one `LevelSignalProcessor`
-subclass, and the name with that suffix stripped becomes the `type:`
-string used in the YAML. Files that don't end in `_processor` (`base.py`,
-or any future non-processor helper module) are ignored automatically —
-no hardcoded skip-list to maintain. Adding a new signal processor means
-writing `signal_processors/<name>_processor.py` and referencing
-`type: <name>` in a sensor's `processors:` list — nothing else to edit or
-register.
+Signal types are discovered dynamically at server startup, not from a
+hand-maintained registry: each file in `signals/` whose name ends in
+`_signal` must define exactly one `LevelSignal` subclass, and the name
+with that suffix stripped becomes the `type:` string used in the YAML.
+Files that don't end in `_signal` (`base.py`, or any future non-signal
+helper module) are ignored automatically — no hardcoded skip-list to
+maintain. Adding a new signal type means writing
+`signals/<name>_signal.py` and referencing `type: <name>` in a sensor's
+`signals:` list — nothing else to edit or register.
 
-Signal processors are unit-agnostic: `add()` takes a raw value in and
-returns a processed value out, with no notion of mm/cm baked in anywhere.
-Millimeter readings from the sensor go in, and whatever comes out is only
-interpreted as millimeters (and converted to cm) at the HTTP layer in
-`server.py`'s `/level` route — not inside any signal processor.
+Signals are unit-agnostic: `add()` takes a raw value in and returns a
+processed value out, with no notion of mm/cm baked in anywhere.
+Millimeter readings from the sensor go in, and whatever comes out is
+only interpreted as millimeters (and converted to cm) at the HTTP layer
+in `server.py`'s `/level` route — not inside any signal.
 
-Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
+Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
@@ -477,7 +475,7 @@ Built-in `LevelSignalProcessor` types (`type:` in the YAML) and their `params`:
 | `rolling_median` | `window_size` | Median-filters the raw reading over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages the raw reading over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
-| `chain` | `steps` | Runs a value through other processors in sequence, feeding each stage's output into the next. See below. |
+| `chain` | `steps` | Runs a value through other signals in sequence, feeding each stage's output into the next. See below. |
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `--polling-interval-ms`, default 150ms) — not once per reading of
@@ -493,7 +491,7 @@ seconds, at the default polling interval) lands near that cadence —
 roughly `alpha` in the 0.01-0.2 range for a 10-30s cadence.
 
 `chain`'s `steps` is a list where each entry is either `ref: <name>` —
-reuses another processor's `type`/`params` to build a fresh, **independent**
+reuses another signal's `type`/`params` to build a fresh, **independent**
 instance (a config alias, never the literal same object, so state is
 never shared between the two) — or an inline `type:`/`params:`, built
 directly (recursively, so a step can itself be a chain). This is how
@@ -502,7 +500,7 @@ built, without needing a dedicated hardcoded class for it.
 
 Example sensor entry in `config/sensors.yaml` (see [Sensor
 drivers](#sensor-drivers) for the `name`/`type`/`params` fields
-surrounding `processors:`):
+surrounding `signals:`):
 
 ```yaml
 sensors:
@@ -513,7 +511,7 @@ sensors:
       serial_port: /dev/serial0
       mode_select_pin: 25
       power_pin: 24
-    processors:
+    signals:
       - name: rolling_median5
         type: rolling_median
         emit: false
@@ -538,16 +536,16 @@ Assistant "Pond Level" sensor reads that field**
 (`sensor.pond_level`, a `rest` sensor in Home Assistant's
 `configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s via
 `value_json.primary_signal.value`), so don't remove or repurpose the
-default sensor's `primary` processor without updating that HA sensor's
-`value_template` too. `signals.instantaneous_raw` is unaffected by
-processors — it's always the raw last-valid reading — and is what
+default sensor's `primary` signal without updating that HA sensor's
+`value_template` too. `signals.instantaneous_raw` is unaffected by other
+signals — it's always the raw last-valid reading — and is what
 `sensor.pond_level_sensor_raw` reads (via
 `value_json.signals.instantaneous_raw`).
 
 Any entry can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
-while it still shows up in full on `/diag`. Use this for a processor
-that only exists as an intermediate stage feeding a `chain` (like
+while it still shows up in full on `/diag`. Use this for a signal that
+only exists as an intermediate stage feeding a `chain` (like
 `rolling_median5` above) and isn't a meaningful output on its own.
 
 ## Configuration
@@ -614,7 +612,7 @@ also puts the `pondpi-server` command on your `PATH` (equivalently, run
 `python -m pondpi.server` directly).
 
 Useful while developing: a small `rolling_window_size` in a sensor's
-`processors:` list in `config/sensors.yaml` (see the average react
+`signals:` list in `config/sensors.yaml` (see the average react
 faster) and `--polling-interval-ms 200` (slow the stream down to read it
 by eye). Pass `--sensors-config` to point at an alternate YAML file
 without touching the checked-in one.
@@ -627,15 +625,15 @@ ruff check .   # lint
 ```
 
 Tests live in `tests/`, import from the installed `pondpi` package (e.g.
-`from pondpi.signal_processors.utils.rolling_median_filter import RollingMedianFilter`),
+`from pondpi.signals.utils.rolling_median_filter import RollingMedianFilter`),
 and don't need any
 hardware or network access — `tests/test_read_sensor.py`,
 `tests/test_a02yyuw_sensor.py` (the A02YYUW driver, including its
 `create()` factory under `--simulate`), `tests/test_rolling_average.py`,
-`tests/test_signal_processors.py` (including the dynamic-discovery
-mechanism itself, against both the real `signal_processors/` package and
-small synthetic ones built in `tmp_path`), `tests/test_signal_processor_config.py`
-and `tests/test_sensor_config.py` (both using `tmp_path` YAML files)
+`tests/test_signals.py` (including the dynamic-discovery mechanism
+itself, against both the real `signals/` package and small synthetic
+ones built in `tmp_path`), `tests/test_signal_config.py` and
+`tests/test_sensor_config.py` (both using `tmp_path` YAML files)
 exercise pure functions directly, and `tests/test_server.py` uses
 Flask's test client against `pondpi.server.app` with
 `pondpi.server._state`/`_sensors` (both keyed by sensor name) set

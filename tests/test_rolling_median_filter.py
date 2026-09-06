@@ -1,4 +1,4 @@
-from pondpi.signal_processors.utils.rolling_median_filter import RollingMedianFilter
+from pondpi.signals.utils.rolling_median_filter import RollingMedianFilter
 
 
 def test_median_is_none_before_any_reading():
