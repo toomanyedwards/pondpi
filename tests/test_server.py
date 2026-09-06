@@ -13,30 +13,6 @@ class DummyThread:
         return self._alive
 
 
-class FakeSerial:
-    def __init__(self, data=b""):
-        self._buf = data
-        self.reset_count = 0
-
-    @property
-    def in_waiting(self):
-        return len(self._buf)
-
-    def read(self, n):
-        chunk, self._buf = self._buf[:n], self._buf[n:]
-        return chunk
-
-    def reset_input_buffer(self):
-        self.reset_count += 1
-        self._buf = b""
-
-
-def make_frame(data_h, data_l, checksum=None):
-    if checksum is None:
-        checksum = (0xFF + data_h + data_l) & 0xFF
-    return bytes([0xFF, data_h, data_l, checksum])
-
-
 class _PassthroughProcessor:
     def add(self, value):
         return value
@@ -45,26 +21,30 @@ class _PassthroughProcessor:
         return {}
 
 
-class FakeModeController:
-    def __init__(self):
-        self.calls = []
+class FakeSensorDriver:
+    """A LevelSensor test double: `read()` returns each entry of a
+    pre-scripted sequence in turn, then an empty dict forever once
+    exhausted (matching a real driver's "nothing new this call")."""
 
-    def set_mode(self, mode):
-        self.calls.append(mode)
+    def __init__(self, readings_sequence):
+        self._readings_sequence = list(readings_sequence)
+        self._index = 0
 
-    def close(self):
-        pass
+    def read(self):
+        if self._index < len(self._readings_sequence):
+            result = self._readings_sequence[self._index]
+            self._index += 1
+            return result
+        return {}
 
 
-class FakePowerController:
-    def __init__(self):
-        self.reset_calls = []
+class FakeResetSensor:
+    def __init__(self, supports_reset=True):
+        self.supports_reset = supports_reset
+        self.reset_calls = 0
 
-    def reset(self, off_duration_s=None):
-        self.reset_calls.append(off_duration_s)
-
-    def close(self):
-        pass
+    def reset(self):
+        self.reset_calls += 1
 
 
 def test_health_ok_when_poller_alive():
@@ -165,8 +145,8 @@ def test_health_reflects_last_reset_at():
 
 
 def test_reset_powercycles_sensor_and_records_last_reset_at():
-    fake_power = FakePowerController()
-    server._power_controller = fake_power
+    fake_sensor = FakeResetSensor()
+    server._sensor = fake_sensor
     server._state["last_reset_at"] = None
     client = server.app.test_client()
 
@@ -175,21 +155,28 @@ def test_reset_powercycles_sensor_and_records_last_reset_at():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["status"] == "reset"
-    assert len(fake_power.reset_calls) == 1
+    assert fake_sensor.reset_calls == 1
     assert server._state["last_reset_at"] is not None
     assert data["reset_at"] == server._state["last_reset_at"].isoformat()
 
 
-def test_poll_sensor_updates_state_on_valid_frame():
-    fake = FakeSerial(make_frame(0x00, 0x64))  # 100mm
+def test_reset_returns_501_when_sensor_does_not_support_reset():
+    server._sensor = FakeResetSensor(supports_reset=False)
+    client = server.app.test_client()
+
+    resp = client.post("/reset")
+
+    assert resp.status_code == 501
+
+
+def test_poll_sensor_routes_raw_readings_through_processors():
     processors = {"instantaneous_raw": _PassthroughProcessor()}
+    sensor = FakeSensorDriver([{"raw": 100}])
     stop_event = threading.Event()
 
-    # Driving the loop body directly would require exporting internals, so
-    # instead run the real loop in a thread and stop it once state updates.
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=(fake, processors, "instantaneous_raw", stop_event, 0.001, FakeModeController()),
+        args=(sensor, processors, "instantaneous_raw", stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -201,56 +188,31 @@ def test_poll_sensor_updates_state_on_valid_frame():
     thread.join(timeout=1)
 
     assert server._state["instantaneous_mm"] == 100
+    assert server._state["rolling_avg_mm"] == 100
     assert server._state["last_reading_monotonic"] is not None
 
 
-def test_poll_sensor_flushes_buffer_after_prolonged_no_valid_frame():
-    # Garbage that never forms a valid frame -- read_frame() will keep
-    # returning None forever without a watchdog forcing a resync.
-    fake = FakeSerial(bytes([0x01, 0x02, 0x03, 0x04]) * 50)
+def test_poll_sensor_caches_processed_readings_as_is():
+    # No processors configured for "processed" -- unlike "raw", it's
+    # cached directly rather than run through a pipeline (see
+    # poll_sensor()'s docstring).
+    sensor = FakeSensorDriver([{"processed": 123}])
     stop_event = threading.Event()
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=(fake, {}, "primary", stop_event, 0.001, FakeModeController()),
-        kwargs={"stale_threshold_s": 0.02},
+        args=(sensor, {}, "primary", stop_event, 0.001),
     )
     thread.start()
-    time.sleep(0.2)
-    stop_event.set()
-    thread.join(timeout=1)
-
-    assert fake.reset_count > 0
-
-
-def test_poll_sensor_cycles_into_processed_mode():
-    # A long repeating stream of the same valid frame (100mm) -- long
-    # enough to cover several mode-cycle iterations at this test's tiny
-    # poll interval.
-    fake = FakeSerial(make_frame(0x00, 0x64) * 5000)
-    processors = {"primary": _PassthroughProcessor()}
-    mode_controller = FakeModeController()
-    stop_event = threading.Event()
-
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=(fake, processors, "primary", stop_event, 0.001, mode_controller),
-        kwargs={"mode_cycle_interval_s": 0.1, "processed_mode_duration_s": 0.05, "mode_settle_s": 0.01},
-    )
-    thread.start()
-    for _ in range(400):
+    for _ in range(200):
         with server._state_lock:
-            if server._state["processed_mm"] == 100:
+            if server._state["processed_mm"] == 123:
                 break
         time.sleep(0.005)
     stop_event.set()
     thread.join(timeout=1)
 
-    assert server._state["processed_mm"] == 100
-    # Starts in raw (so a freshly-started service always defaults to raw,
-    # regardless of wall-clock time), and reaches processed at least once.
-    assert mode_controller.calls[0] == server.sensor_mode.RAW
-    assert server.sensor_mode.PROCESSED in mode_controller.calls
+    assert server._state["processed_mm"] == 123
 
 
 def test_level_returns_503_before_first_reading():
