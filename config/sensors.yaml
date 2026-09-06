@@ -26,14 +26,14 @@ sensors:
 # this schema in full (params.sensor, input:, emit: false, primary:
 # true).
 #
-# Only a `type: raw` signal reads directly from a sensor, via
+# Only a `type: sensor` signal reads directly from a sensor, via
 # params.sensor naming it. Every other signal reads another signal's
 # live output instead, named by `input:` -- this is how sequential
 # composition (e.g. median-then-average below) is expressed, without a
 # dedicated "chain" type.
 signals:
   - name: instantaneous_raw
-    type: raw
+    type: sensor
     params:
       sensor: pond_main
   - name: rolling_median5

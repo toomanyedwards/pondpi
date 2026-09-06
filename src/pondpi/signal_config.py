@@ -9,9 +9,9 @@ def load_signals(path, sensor_names):
     ultimately rooted at.
 
     `sensor_names` is the set of already-configured sensor names (from
-    sensor_config.py) -- every `type: raw` signal must name one of them
-    via `params.sensor`, since `raw` is the only signal type that reads
-    directly from a sensor. Every other signal type instead names
+    sensor_config.py) -- every `type: sensor` signal must name one of
+    them via `params.sensor`, since `sensor` is the only signal type
+    that reads directly from a sensor. Every other signal type instead names
     another, earlier-defined signal via a top-level `input:` key,
     reading *that* signal's live output rather than a sensor's raw
     reading -- this is how sequential composition (e.g.
@@ -62,16 +62,16 @@ def build_signals(entries, sensor_names, path):
         input_name = entry.get("input")
         params = dict(entry.get("params") or {})
 
-        if signal_type == "raw":
+        if signal_type == "sensor":
             if input_name is not None:
                 raise ValueError(
-                    f"{path}: signal '{name}' is type 'raw' and must not set 'input' "
-                    "(raw signals read from a sensor via params.sensor, not another signal)"
+                    f"{path}: signal '{name}' is type 'sensor' and must not set 'input' "
+                    "(sensor signals read from a sensor via params.sensor, not another signal)"
                 )
             sensor = params.get("sensor")
             if sensor not in sensor_names:
                 raise ValueError(
-                    f"{path}: signal '{name}' (type 'raw') has invalid or missing params.sensor "
+                    f"{path}: signal '{name}' (type 'sensor') has invalid or missing params.sensor "
                     f"'{sensor}' (expected one of {sorted(sensor_names)})"
                 )
             root_sensor[name] = sensor
@@ -79,7 +79,7 @@ def build_signals(entries, sensor_names, path):
             if not input_name:
                 raise ValueError(
                     f"{path}: signal '{name}' must set 'input' naming the signal it reads from "
-                    "(only 'raw' signals read directly from a sensor)"
+                    "(only 'sensor' signals read directly from a sensor)"
                 )
             if input_name not in entries_by_name:
                 raise ValueError(f"{path}: signal '{name}' references undefined input '{input_name}' (must be defined earlier in the file)")
@@ -110,7 +110,7 @@ def build_signals(entries, sensor_names, path):
 
     for sensor, group in grouped.items():
         if not group["signals"]:
-            raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'raw' signal with params.sensor: {sensor})")
+            raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with params.sensor: {sensor})")
         if group["primary_name"] is None:
             raise ValueError(f"{path}: sensor '{sensor}': exactly one signal must be marked 'primary: true'")
 

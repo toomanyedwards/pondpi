@@ -2,19 +2,19 @@ import pytest
 
 from pondpi.signals import discover_signal_types
 from pondpi.signals.exponential_smoothing_signal import ExponentialSmoothingSignal
-from pondpi.signals.raw_signal import RawSignal
 from pondpi.signals.rolling_average_signal import RollingAverageSignal
 from pondpi.signals.rolling_median_signal import RollingMedianSignal
+from pondpi.signals.sensor_signal import SensorSignal
 
 
-def test_raw_signal_passes_through_unchanged():
-    signal = RawSignal(sensor="pond_main")
+def test_sensor_signal_passes_through_unchanged():
+    signal = SensorSignal(sensor="pond_main")
     assert signal.add(101) == 101
     assert signal.add(999) == 999
 
 
-def test_raw_signal_extra_state_reports_its_sensor():
-    signal = RawSignal(sensor="pond_main")
+def test_sensor_signal_extra_state_reports_its_sensor():
+    signal = SensorSignal(sensor="pond_main")
     assert signal.extra_state() == {"sensor": "pond_main"}
 
 
@@ -65,7 +65,7 @@ def test_discover_signal_types_finds_all_built_ins():
     signal_types = discover_signal_types()
 
     assert signal_types == {
-        "raw": RawSignal,
+        "sensor": SensorSignal,
         "rolling_median": RollingMedianSignal,
         "rolling_average": RollingAverageSignal,
         "exponential_smoothing": ExponentialSmoothingSignal,

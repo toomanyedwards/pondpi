@@ -9,7 +9,7 @@ def load_sensors(path, simulate=False):
     each bundled with its own driver instance, plus that sensor's own
     slice of the file's top-level `signals:` list -- every signal
     ultimately rooted (via `input:` chains, see signal_config.py) at a
-    `raw` signal naming this sensor.
+    `sensor` signal naming this sensor.
 
     Returns dict[name -> {"driver", "signals", "primary_name",
     "emit_flags", "configs"}] -- the last four fields are exactly what
