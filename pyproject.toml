@@ -11,6 +11,7 @@ dependencies = [
     "pyserial",
     "flask",
     "pyyaml",
+    "gpiozero",
 ]
 
 [project.optional-dependencies]

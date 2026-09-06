@@ -44,6 +44,17 @@ class _PassthroughProcessor:
         return {}
 
 
+class FakeModeController:
+    def __init__(self):
+        self.calls = []
+
+    def set_mode(self, mode):
+        self.calls.append(mode)
+
+    def close(self):
+        pass
+
+
 def test_health_ok_when_poller_alive():
     server._poll_thread = DummyThread(alive=True)
     server._state["processor_names"] = ["rolling_avg", "instantaneous_raw"]
@@ -127,7 +138,7 @@ def test_poll_sensor_updates_state_on_valid_frame():
     # instead run the real loop in a thread and stop it once state updates.
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=(fake, processors, "instantaneous_raw", stop_event, 0.001),
+        args=(fake, processors, "instantaneous_raw", stop_event, 0.001, FakeModeController()),
     )
     thread.start()
     for _ in range(200):
@@ -150,7 +161,7 @@ def test_poll_sensor_flushes_buffer_after_prolonged_no_valid_frame():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=(fake, {}, "primary", stop_event, 0.001),
+        args=(fake, {}, "primary", stop_event, 0.001, FakeModeController()),
         kwargs={"stale_threshold_s": 0.02},
     )
     thread.start()
@@ -159,6 +170,36 @@ def test_poll_sensor_flushes_buffer_after_prolonged_no_valid_frame():
     thread.join(timeout=1)
 
     assert fake.reset_count > 0
+
+
+def test_poll_sensor_cycles_into_processed_mode():
+    # A long repeating stream of the same valid frame (100mm) -- long
+    # enough to cover several mode-cycle iterations at this test's tiny
+    # poll interval.
+    fake = FakeSerial(make_frame(0x00, 0x64) * 5000)
+    processors = {"primary": _PassthroughProcessor()}
+    mode_controller = FakeModeController()
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=server.poll_sensor,
+        args=(fake, processors, "primary", stop_event, 0.001, mode_controller),
+        kwargs={"mode_cycle_interval_s": 0.1, "processed_mode_duration_s": 0.05, "mode_settle_s": 0.01},
+    )
+    thread.start()
+    for _ in range(400):
+        with server._state_lock:
+            if server._state["processed_mm"] == 100:
+                break
+        time.sleep(0.005)
+    stop_event.set()
+    thread.join(timeout=1)
+
+    assert server._state["processed_mm"] == 100
+    # Starts in raw (so a freshly-started service always defaults to raw,
+    # regardless of wall-clock time), and reaches processed at least once.
+    assert mode_controller.calls[0] == server.sensor_mode.RAW
+    assert server.sensor_mode.PROCESSED in mode_controller.calls
 
 
 def test_level_returns_503_before_first_reading():
@@ -199,6 +240,7 @@ def test_level_returns_current_reading():
     assert data == {
         "measure_name": "level",
         "units": "cm",
+        "mode": "raw",
         "polling_interval_ms": 10,
         "primary_signal": {"value": 85.0, "name": "rolling_avg"},
         # rolling_median5 is emit: false -- absent from `signals`.
@@ -207,6 +249,48 @@ def test_level_returns_current_reading():
             "instantaneous_raw": 10.1,
         },
     }
+
+
+def test_level_processed_mode_returns_503_before_first_processed_reading():
+    server._state.update(processed_mm=None)
+    client = server.app.test_client()
+
+    resp = client.get("/level?mode=processed")
+
+    assert resp.status_code == 503
+
+
+def test_level_processed_mode_returns_current_reading():
+    server._state.update(processed_mm=123.0)
+    client = server.app.test_client()
+
+    resp = client.get("/level?mode=processed")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data == {
+        "measure_name": "level",
+        "units": "cm",
+        "mode": "processed",
+        "distance_cm": 12.3,
+    }
+
+
+def test_level_unrecognized_mode_falls_back_to_raw():
+    server._state.update(
+        instantaneous_mm=101.0,
+        rolling_avg_mm=850.0,
+        polling_interval_ms=10,
+        primary_name="rolling_avg",
+        emit_flags={"rolling_avg": True},
+        processors={"rolling_avg": {"value": 850.0}},
+    )
+    client = server.app.test_client()
+
+    resp = client.get("/level?mode=bogus")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["mode"] == "raw"
 
 
 def test_diag_returns_503_before_first_reading():
