@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from pondpi import sensor_mode
 from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor, create
 
@@ -110,6 +112,69 @@ def test_read_cycles_into_processed_mode():
     # once.
     assert mode_controller.calls[0] == sensor_mode.RAW
     assert sensor_mode.PROCESSED in mode_controller.calls
+
+
+def test_read_mode_raw_never_switches_to_processed():
+    fake_serial = FakeSerial(make_frame(0x00, 0x64) * 5000)
+    mode_controller = FakeModeController()
+    sensor = A02YYUWSensor(
+        fake_serial,
+        mode_controller,
+        FakePowerController(),
+        mode_cycle_interval_s=0.05,
+        processed_mode_duration_s=0.02,
+        mode_settle_s=0.01,
+        read_mode=sensor_mode.RAW,
+    )
+
+    deadline = time.monotonic() + 0.3
+    readings = []
+    while time.monotonic() < deadline:
+        readings.append(sensor.read())
+        time.sleep(0.001)
+
+    assert any(r.get("raw") == 100 for r in readings)
+    assert not any("processed" in r for r in readings)
+    # Only ever set once, at construction -- no mid-run switching.
+    assert mode_controller.calls == [sensor_mode.RAW]
+
+
+def test_read_mode_processed_never_switches_to_raw():
+    fake_serial = FakeSerial(make_frame(0x00, 0x64) * 5000)
+    mode_controller = FakeModeController()
+    sensor = A02YYUWSensor(
+        fake_serial,
+        mode_controller,
+        FakePowerController(),
+        mode_cycle_interval_s=0.05,
+        processed_mode_duration_s=0.02,
+        mode_settle_s=0.01,
+        read_mode=sensor_mode.PROCESSED,
+    )
+
+    deadline = time.monotonic() + 0.3
+    readings = []
+    while time.monotonic() < deadline:
+        readings.append(sensor.read())
+        time.sleep(0.001)
+
+    assert any(r.get("processed") == 100 for r in readings)
+    assert not any("raw" in r for r in readings)
+    assert mode_controller.calls == [sensor_mode.PROCESSED]
+
+
+def test_create_accepts_valid_read_mode():
+    sensor = create({"read_mode": "processed"}, simulate=True)
+
+    assert isinstance(sensor, A02YYUWSensor)
+    readings = [sensor.read() for _ in range(10)]
+    assert any("processed" in r for r in readings)
+    assert not any("raw" in r for r in readings)
+
+
+def test_create_rejects_invalid_read_mode():
+    with pytest.raises(ValueError, match="invalid read_mode 'smoothed'"):
+        create({"read_mode": "smoothed"}, simulate=True)
 
 
 def test_reset_delegates_to_power_controller():
