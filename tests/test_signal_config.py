@@ -1,7 +1,7 @@
 import pytest
 
 from pondpi.signal_config import load_signals
-from pondpi.signals.raw_signal import RawSignal
+from pondpi.signals.sensor_signal import SensorSignal
 
 
 def write_yaml(tmp_path, content):
@@ -16,7 +16,7 @@ def test_loads_valid_config(tmp_path):
         """
         signals:
           - name: instantaneous_raw
-            type: raw
+            type: sensor
             params:
               sensor: pond_main
           - name: rolling_median5
@@ -38,7 +38,7 @@ def test_loads_valid_config(tmp_path):
 
     assert group["primary_name"] == "rolling_avg"
     assert set(group["signals"]) == {"instantaneous_raw", "rolling_median5", "rolling_avg"}
-    assert isinstance(group["signals"]["instantaneous_raw"], RawSignal)
+    assert isinstance(group["signals"]["instantaneous_raw"], SensorSignal)
     # emit defaults to True when not specified
     assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": True, "rolling_avg": True}
     assert group["configs"]["rolling_median5"] == {
@@ -49,7 +49,7 @@ def test_loads_valid_config(tmp_path):
         "input": "instantaneous_raw",
     }
     assert group["configs"]["instantaneous_raw"] == {
-        "type": "raw",
+        "type": "sensor",
         "params": {"sensor": "pond_main"},
         "primary": False,
         "emit": True,
@@ -62,7 +62,7 @@ def test_emit_false_is_respected(tmp_path):
         """
         signals:
           - name: instantaneous_raw
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main
@@ -87,12 +87,12 @@ def test_signals_grouped_independently_per_sensor(tmp_path):
         """
         signals:
           - name: pond_raw
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main
           - name: barrel_raw
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: rain_barrel
@@ -118,7 +118,7 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
         """
         signals:
           - name: instantaneous_raw
-            type: raw
+            type: sensor
             params:
               sensor: pond_main
           - name: rolling_median5
@@ -139,13 +139,13 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
     assert group["pond_main"]["primary_name"] == "rolling_avg"
 
 
-def test_raw_with_input_set_raises(tmp_path):
+def test_sensor_with_input_set_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             input: b
             primary: true
             params:
@@ -153,11 +153,11 @@ def test_raw_with_input_set_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="is type 'raw' and must not set 'input'"):
+    with pytest.raises(ValueError, match="is type 'sensor' and must not set 'input'"):
         load_signals(path, {"pond_main"})
 
 
-def test_non_raw_without_input_raises(tmp_path):
+def test_non_sensor_without_input_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -204,7 +204,7 @@ def test_input_referencing_signal_defined_later_raises(tmp_path):
             params:
               window_size: 5
           - name: b
-            type: raw
+            type: sensor
             params:
               sensor: pond_main
         """,
@@ -238,7 +238,7 @@ def test_missing_sensor_param_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params: {}
         """,
@@ -254,7 +254,7 @@ def test_unknown_sensor_param_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: not_a_real_sensor
@@ -271,7 +271,7 @@ def test_sensor_with_no_signals_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main
@@ -288,7 +288,7 @@ def test_missing_primary_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             params:
               sensor: pond_main
         """,
@@ -304,7 +304,7 @@ def test_multiple_primaries_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main
@@ -344,12 +344,12 @@ def test_duplicate_name_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main
           - name: a
-            type: raw
+            type: sensor
             params:
               sensor: pond_main
         """,
@@ -365,7 +365,7 @@ def test_invalid_params_raises(tmp_path):
         """
         signals:
           - name: a
-            type: raw
+            type: sensor
             primary: true
             params:
               sensor: pond_main

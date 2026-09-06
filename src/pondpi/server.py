@@ -53,8 +53,8 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
     calls `sensor.read()` and routes whichever named readings it returns
     into that sensor's own state slot. "raw" readings are run through
     this sensor's own signal graph -- each signal either reads the raw
-    reading directly (a `raw`-type signal, config's `configs[name]` has
-    no `"input"`) or reads whatever its `input:`-named signal just
+    reading directly (a `sensor`-type signal, config's `configs[name]`
+    has no `"input"`) or reads whatever its `input:`-named signal just
     computed this same poll cycle (`configs[name]["input"]`, already
     resolved into `results` since `signals`' iteration order is a valid
     dependency order -- see signal_config.py). "processed" readings (if
