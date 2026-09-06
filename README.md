@@ -23,7 +23,8 @@ by name).
         ▲ one instance per                │ writes that sensor's own state              │
         │ config/sensors.yaml entry       v                                            v
         └──────────────────────  Flask app: GET /level, GET /sensors, GET /sensors/<name>/level,
-                                  GET /health, GET /diag, POST /reset
+                                  GET /health, GET /diag, POST /reset, GET /signals,
+                                  GET /signals/<name>, GET /signals/<name>/diag
 ```
 
 ### Project layout
@@ -75,7 +76,8 @@ pondpi/
 
 ## API
 
-Every endpoint below except `GET /sensors` has two forms: a bare route
+Two families of routes here. Sensor-scoped routes (`/level`, `/diag`,
+`POST /reset`, and `GET /sensors`) come in two forms: a bare route
 (`/level`, `/diag`, `POST /reset`) that operates on the *default* sensor —
 the one entry in `config/sensors.yaml` marked `default: true` — and a
 sensor-named route (`/sensors/<name>/level`, `/sensors/<name>/diag`,
@@ -84,6 +86,12 @@ name, default or not. A single-sensor deployment's existing integrations
 (e.g. Home Assistant's REST sensors, built against the bare routes) keep
 working unchanged as more sensors are added, as long as that original
 sensor stays marked default.
+
+Signal-scoped routes (`GET /signals`, `GET /signals/<name>`, `GET
+/signals/<name>/diag`) have no such bare-vs-named split, since signals
+aren't nested under a sensor at all (see [Signal
+processing](#signal-processing)) — each signal is addressed directly by
+its own globally-unique name.
 
 ### `GET /sensors`
 
@@ -221,6 +229,70 @@ non-`sensor` signal's `input` is included too), and `output` is the same
 shape `/level`'s `signals` used to expose — `distance_cm` plus that
 signal's own `extra_state()`. Returns `503 {"error": "no readings
 yet"}` under the same condition as `/level`.
+
+### `GET /signals`
+
+Lists every configured signal's name, across every sensor — signals
+aren't nested under a sensor in `config/sensors.yaml` (see [Signal
+processing](#signal-processing)), so unlike the routes above there's no
+bare-vs-sensor-named distinction here; this is the one flat list:
+
+```json
+{
+  "signals": ["instantaneous_raw", "rolling_median5", "rolling_avg"]
+}
+```
+
+### `GET /signals/<name>` / `GET /signals/<name>/diag`
+
+A single named signal's current value, regardless of which sensor it's
+rooted at or whether it's marked `emit: false` (unlike `/level`'s
+`signals`, which is scoped to one sensor and excludes `emit: false`
+entries):
+
+```json
+{
+  "name": "rolling_avg",
+  "sensor": "pond_main",
+  "units": "cm",
+  "distance_cm": 11.2,
+  "window_size": 200,
+  "samples_in_window": 200
+}
+```
+
+`sensor` is which configured sensor this signal is ultimately rooted at
+(traced through any `input:` chain back to a `sensor`-type signal's
+`params.sensor`). Every field past `units` is this signal's own
+`extra_state()` alongside its value — varies by signal type, same as
+`/diag`'s `output`.
+
+`/signals/<name>/diag` returns this signal's effective `config` (as
+`/diag` would show it) alongside that same `output`, instead of just
+the flattened value:
+
+```json
+{
+  "name": "rolling_avg",
+  "sensor": "pond_main",
+  "config": {
+    "type": "rolling_average",
+    "input": "rolling_median5",
+    "params": {"window_size": 200},
+    "primary": true,
+    "emit": true
+  },
+  "output": {
+    "distance_cm": 11.2,
+    "window_size": 200,
+    "samples_in_window": 200
+  }
+}
+```
+
+Both return `404 {"error": "unknown signal '<name>'"}` for a name not
+in `config/sensors.yaml`'s `signals:` list, and `503 {"error": "no
+readings yet"}` under the same condition as `/level`.
 
 ### `POST /reset` / `POST /sensors/<name>/reset`
 

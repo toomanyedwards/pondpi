@@ -28,6 +28,7 @@ _default_sensor_name = None
 _poll_threads = {}  # dict[sensor_name -> Thread]
 _reset_locks = {}  # dict[sensor_name -> Lock], so one sensor's reset never blocks another's
 _polling_interval_ms = None
+_signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
 _commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
@@ -255,6 +256,52 @@ def sensors_list():
     return jsonify(sensors=list(_sensors), default=_default_sensor_name)
 
 
+@app.route("/signals")
+def signals_list():
+    return jsonify(signals=list(_signal_owner))
+
+
+@app.route("/signals/<name>")
+def signal_detail(name):
+    """A single signal's current value plus whatever else its own
+    `extra_state()` reports (window_size, samples_in_window, alpha,
+    sensor, ...) -- unlike /diag's per-signal `output`, this isn't
+    nested under a `config`/`output` split, since there's exactly one
+    signal here, not a whole sensor's worth. See GET /signals/<name>/diag
+    for this signal's effective config alongside the same output."""
+    sensor_name = _signal_owner.get(name)
+    if sensor_name is None:
+        return jsonify(error=f"unknown signal '{name}'"), 404
+
+    with _state_lock:
+        if _state[sensor_name]["instantaneous_mm"] is None:
+            return jsonify(error="no readings yet"), 503
+
+        result = _state[sensor_name]["signals"][name]
+        payload = {"name": name, "sensor": sensor_name, "units": "cm"}
+        payload.update(_signal_output(result))
+        return jsonify(payload)
+
+
+@app.route("/signals/<name>/diag")
+def signal_diag(name):
+    sensor_name = _signal_owner.get(name)
+    if sensor_name is None:
+        return jsonify(error=f"unknown signal '{name}'"), 404
+
+    with _state_lock:
+        if _state[sensor_name]["instantaneous_mm"] is None:
+            return jsonify(error="no readings yet"), 503
+
+        result = _state[sensor_name]["signals"][name]
+        return jsonify(
+            name=name,
+            sensor=sensor_name,
+            config=_state[sensor_name]["configs"][name],
+            output=_signal_output(result),
+        )
+
+
 def main():
     global _default_sensor_name, _polling_interval_ms
 
@@ -294,6 +341,9 @@ def main():
         _state[name]["emit_flags"] = cfg["emit_flags"]
         _state[name]["configs"] = cfg["configs"]
         _state[name]["primary_name"] = cfg["primary_name"]
+
+        for signal_name in cfg["signals"]:
+            _signal_owner[signal_name] = name
 
         poll_thread = threading.Thread(
             target=poll_sensor,

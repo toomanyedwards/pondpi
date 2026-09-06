@@ -63,6 +63,7 @@ def _reset_globals(names):
     server._poll_threads = {}
     server._reset_locks = {}
     server._state = {}
+    server._signal_owner = {}
     for name in names:
         server._state[name] = server._new_sensor_state()
         server._reset_locks[name] = threading.Lock()
@@ -572,3 +573,101 @@ def test_sensors_list_returns_names_and_default():
     data = resp.get_json()
     assert set(data["sensors"]) == {"pond_main", "rain_barrel"}
     assert data["default"] == "pond_main"
+
+
+def test_signals_list_returns_every_configured_signal_name():
+    _reset_globals(["pond_main", "rain_barrel"])
+    server._signal_owner = {"instantaneous_raw": "pond_main", "rolling_avg": "pond_main", "barrel_raw": "rain_barrel"}
+    client = server.app.test_client()
+
+    resp = client.get("/signals")
+
+    assert resp.status_code == 200
+    assert set(resp.get_json()["signals"]) == {"instantaneous_raw", "rolling_avg", "barrel_raw"}
+
+
+def test_signal_detail_returns_value_and_extra_state():
+    _reset_globals(["pond_main"])
+    server._signal_owner = {"rolling_avg": "pond_main"}
+    server._state["pond_main"].update(
+        instantaneous_mm=101.0,
+        signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
+    )
+    client = server.app.test_client()
+
+    resp = client.get("/signals/rolling_avg")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {
+        "name": "rolling_avg",
+        "sensor": "pond_main",
+        "units": "cm",
+        "distance_cm": 85.0,
+        "window_size": 400,
+        "samples_in_window": 400,
+    }
+
+
+def test_signal_detail_returns_404_for_unknown_signal():
+    _reset_globals(["pond_main"])
+    client = server.app.test_client()
+
+    resp = client.get("/signals/nonexistent")
+
+    assert resp.status_code == 404
+
+
+def test_signal_detail_returns_503_before_first_reading():
+    _reset_globals(["pond_main"])
+    server._signal_owner = {"rolling_avg": "pond_main"}
+    client = server.app.test_client()
+
+    resp = client.get("/signals/rolling_avg")
+
+    assert resp.status_code == 503
+
+
+def test_signal_diag_returns_config_and_output():
+    _reset_globals(["pond_main"])
+    server._signal_owner = {"rolling_avg": "pond_main"}
+    server._state["pond_main"].update(
+        instantaneous_mm=101.0,
+        configs={"rolling_avg": {"type": "rolling_average", "params": {"window_size": 400}, "primary": True, "emit": True, "input": "instantaneous_raw"}},
+        signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
+    )
+    client = server.app.test_client()
+
+    resp = client.get("/signals/rolling_avg/diag")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {
+        "name": "rolling_avg",
+        "sensor": "pond_main",
+        "config": {
+            "type": "rolling_average",
+            "params": {"window_size": 400},
+            "primary": True,
+            "emit": True,
+            "input": "instantaneous_raw",
+        },
+        "output": {"distance_cm": 85.0, "window_size": 400, "samples_in_window": 400},
+    }
+
+
+def test_signal_diag_returns_404_for_unknown_signal():
+    _reset_globals(["pond_main"])
+    client = server.app.test_client()
+
+    resp = client.get("/signals/nonexistent/diag")
+
+    assert resp.status_code == 404
+
+
+def test_signal_diag_returns_503_before_first_reading():
+    _reset_globals(["pond_main"])
+    server._signal_owner = {"rolling_avg": "pond_main"}
+    client = server.app.test_client()
+
+    resp = client.get("/signals/rolling_avg/diag")
+
+    assert resp.status_code == 503
