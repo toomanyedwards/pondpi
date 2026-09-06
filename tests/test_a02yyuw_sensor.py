@@ -1,7 +1,7 @@
 import time
 
 from pondpi import sensor_mode
-from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor
+from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor, create
 
 
 class FakeSerial:
@@ -125,6 +125,17 @@ def test_supports_reset_is_true():
     sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController())
 
     assert sensor.supports_reset is True
+
+
+def test_create_under_simulate_builds_a_working_sensor():
+    sensor = create({}, simulate=True)
+
+    assert isinstance(sensor, A02YYUWSensor)
+    # A real (simulated) reading should come back within a few calls --
+    # confirms create() wired up a genuinely functional SimulatedSerial,
+    # not just an object of the right type.
+    readings = [sensor.read() for _ in range(10)]
+    assert any("raw" in r for r in readings)
 
 
 def test_close_closes_serial_mode_and_power_controllers():

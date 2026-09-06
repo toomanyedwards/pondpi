@@ -4,73 +4,77 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import serial
 from flask import Flask, jsonify, request
 
-from pondpi import read_sensor, sensor_mode, sensor_power
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
-from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor
-from pondpi.signal_processor_config import load_signal_processors
+from pondpi.sensor_config import load_sensors
 
 app = Flask(__name__)
 
 # Comfortably above the sensor's ~100ms response time and our 150ms default
-# poll interval -- used to flag /health degraded if no valid "raw" reading
-# has landed in this long. A separate, driver-owned threshold of the same
-# name governs each sensor's own internal resync behavior (see
+# poll interval -- used to flag a sensor degraded in /health if no valid
+# "raw" reading has landed in this long. A separate, driver-owned threshold
+# of the same name governs each A02YYUW's own internal resync behavior (see
 # sensors/a02yyuw_sensor.py) -- the two are conceptually distinct even
 # though they default to the same value.
 STALE_READING_THRESHOLD_S = 3.0
 
 _state_lock = threading.Lock()
-_state = {
-    "instantaneous_mm": None,
-    "rolling_avg_mm": None,
-    "processed_mm": None,
-    "processors": {},
-    "processor_names": [],
-    "emit_flags": {},
-    "configs": {},
-    "primary_name": None,
-    "polling_interval_ms": None,
-    "commit_sha": read_commit_sha(Path.cwd()),
-    "last_reading_monotonic": None,
-    "last_reset_at": None,
-}
+_state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 
-_poll_thread = None
-_sensor = None
-_reset_lock = threading.Lock()
+_sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
+_default_sensor_name = None
+_poll_threads = {}  # dict[sensor_name -> Thread]
+_reset_locks = {}  # dict[sensor_name -> Lock], so one sensor's reset never blocks another's
+_polling_interval_ms = None
+_commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(sensor, processors, primary_name, stop_event, poll_interval_s):
-    """Sensor-agnostic polling loop: repeatedly calls `sensor.read()` and
-    routes whichever named signals it returns into shared state. "raw"
-    readings are run through the configured signal processor pipeline;
-    "processed" readings (if the sensor reports any -- not every driver
-    will) are cached as-is, since a sensor's own onboard smoothing isn't
-    something further Pi-side processing should second-guess."""
+def _new_sensor_state():
+    return {
+        "instantaneous_mm": None,
+        "rolling_avg_mm": None,
+        "processed_mm": None,
+        "processors": {},
+        "processor_names": [],
+        "emit_flags": {},
+        "configs": {},
+        "primary_name": None,
+        "last_reading_monotonic": None,
+        "last_reset_at": None,
+    }
+
+
+def poll_sensor(name, sensor, processors, primary_name, stop_event, poll_interval_s):
+    """Sensor-agnostic polling loop for one named sensor: repeatedly
+    calls `sensor.read()` and routes whichever named signals it returns
+    into that sensor's own state slot. "raw" readings are run through
+    the configured signal processor pipeline; "processed" readings (if
+    the sensor reports any -- not every driver will) are cached as-is,
+    since a sensor's own onboard smoothing isn't something further
+    Pi-side processing should second-guess. One of these runs per
+    configured sensor, each in its own thread."""
     while not stop_event.is_set():
         readings = sensor.read()
 
         if "raw" in readings:
             distance_mm = readings["raw"]
             results = {}
-            for name, processor in processors.items():
-                results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
+            for pname, processor in processors.items():
+                results[pname] = {"value": processor.add(distance_mm), **processor.extra_state()}
 
             with _state_lock:
-                _state["instantaneous_mm"] = distance_mm
-                _state["processors"] = results
-                _state["rolling_avg_mm"] = results[primary_name]["value"]
-                _state["last_reading_monotonic"] = time.monotonic()
+                _state[name]["instantaneous_mm"] = distance_mm
+                _state[name]["processors"] = results
+                _state[name]["rolling_avg_mm"] = results[primary_name]["value"]
+                _state[name]["last_reading_monotonic"] = time.monotonic()
 
         if "processed" in readings:
             with _state_lock:
-                _state["processed_mm"] = readings["processed"]
+                _state[name]["processed_mm"] = readings["processed"]
 
         time.sleep(poll_interval_s)
 
@@ -85,60 +89,84 @@ def _processor_output(result):
 
 @app.route("/health")
 def health():
-    poller_alive = _poll_thread is not None and _poll_thread.is_alive()
+    sensors_health = {}
+    overall_ok = True
+
+    for name in _sensors:
+        poll_thread = _poll_threads.get(name)
+        poller_alive = poll_thread is not None and poll_thread.is_alive()
+
+        last_reading_monotonic = _state[name]["last_reading_monotonic"]
+        if last_reading_monotonic is None:
+            last_reading_age_s = None
+            stale = False
+        else:
+            last_reading_age_s = round(time.monotonic() - last_reading_monotonic, 1)
+            stale = last_reading_age_s > STALE_READING_THRESHOLD_S
+
+        status = "ok" if poller_alive and not stale else "degraded"
+        overall_ok = overall_ok and status == "ok"
+
+        last_reset_at = _state[name]["last_reset_at"]
+
+        sensors_health[name] = {
+            "status": status,
+            "poller_alive": poller_alive,
+            "last_reading_age_s": last_reading_age_s,
+            "last_reset_at": last_reset_at.isoformat() if last_reset_at else None,
+            "processors": _state[name]["processor_names"],
+        }
+
+    status = "ok" if overall_ok else "degraded"
     uptime_seconds = round(time.monotonic() - _started_monotonic, 1)
-
-    last_reading_monotonic = _state["last_reading_monotonic"]
-    if last_reading_monotonic is None:
-        last_reading_age_s = None
-        stale = False
-    else:
-        last_reading_age_s = round(time.monotonic() - last_reading_monotonic, 1)
-        stale = last_reading_age_s > STALE_READING_THRESHOLD_S
-
-    status = "ok" if poller_alive and not stale else "degraded"
-
-    last_reset_at = _state["last_reset_at"]
 
     payload = jsonify(
         status=status,
-        poller_alive=poller_alive,
-        last_reading_age_s=last_reading_age_s,
-        last_reset_at=last_reset_at.isoformat() if last_reset_at else None,
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
         uptime_human=format_duration(uptime_seconds),
-        processors=_state["processor_names"],
-        commit_sha=_state["commit_sha"],
+        commit_sha=_commit_sha,
+        default_sensor=_default_sensor_name,
+        sensors=sensors_health,
     )
     return payload if status == "ok" else (payload, 503)
 
 
-@app.route("/reset", methods=["POST"])
-def reset():
-    """Power-cycles the sensor to force a hardware reset -- e.g. if it
-    appears wedged/stuck and a serial buffer flush alone hasn't helped.
-    Not every sensor driver supports this; returns 501 if the current
-    one doesn't."""
-    if not _sensor.supports_reset:
+def _reset_response(name):
+    sensor = _sensors.get(name)
+    if sensor is None:
+        return jsonify(error=f"unknown sensor '{name}'"), 404
+    if not sensor.supports_reset:
         return jsonify(error="sensor does not support reset"), 501
 
-    with _reset_lock:
-        _sensor.reset()
+    with _reset_locks[name]:
+        sensor.reset()
         reset_at = datetime.now(timezone.utc)
         with _state_lock:
-            _state["last_reset_at"] = reset_at
+            _state[name]["last_reset_at"] = reset_at
 
-    return jsonify(status="reset", reset_at=reset_at.isoformat())
+    return jsonify(status="reset", sensor=name, reset_at=reset_at.isoformat())
 
 
-@app.route("/level")
-def level():
-    mode = request.args.get("mode", "raw")
+@app.route("/reset", methods=["POST"])
+def reset():
+    """Power-cycles the default sensor to force a hardware reset -- e.g.
+    if it appears wedged/stuck and a serial buffer flush alone hasn't
+    helped. Not every sensor driver supports this; returns 501 if it
+    doesn't. See POST /sensors/<name>/reset to target a specific
+    non-default sensor."""
+    return _reset_response(_default_sensor_name)
 
+
+@app.route("/sensors/<name>/reset", methods=["POST"])
+def sensor_reset(name):
+    return _reset_response(name)
+
+
+def _level_response(name, mode):
     if mode == "processed":
         with _state_lock:
-            processed_mm = _state["processed_mm"]
+            processed_mm = _state[name]["processed_mm"]
             if processed_mm is None:
                 return jsonify(error="no readings yet"), 503
 
@@ -150,113 +178,130 @@ def level():
             )
 
     with _state_lock:
-        if _state["instantaneous_mm"] is None:
+        if _state[name]["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
         signals = {}
-        for name, result in _state["processors"].items():
-            if _state["emit_flags"].get(name, True):
-                signals[name] = _processor_output(result)["distance_cm"]
+        for pname, result in _state[name]["processors"].items():
+            if _state[name]["emit_flags"].get(pname, True):
+                signals[pname] = _processor_output(result)["distance_cm"]
 
-        rolling_avg_distance_cm = round(_state["rolling_avg_mm"] / 10.0, 1)
+        rolling_avg_distance_cm = round(_state[name]["rolling_avg_mm"] / 10.0, 1)
 
         return jsonify(
             measure_name="level",
             units="cm",
             mode="raw",
-            polling_interval_ms=_state["polling_interval_ms"],
-            primary_signal={"value": rolling_avg_distance_cm, "name": _state["primary_name"]},
+            polling_interval_ms=_polling_interval_ms,
+            primary_signal={"value": rolling_avg_distance_cm, "name": _state[name]["primary_name"]},
             signals=signals,
         )
 
 
-@app.route("/diag")
-def diag():
-    """Full config + live output for every configured signal processor,
-    regardless of `emit` -- unlike /level's `signals`, which only shows
-    processors meant to be read as final output."""
+@app.route("/level")
+def level():
+    """Current reading from the default sensor. See GET
+    /sensors/<name>/level to target a specific non-default sensor."""
+    return _level_response(_default_sensor_name, request.args.get("mode", "raw"))
+
+
+@app.route("/sensors/<name>/level")
+def sensor_level(name):
+    if name not in _state:
+        return jsonify(error=f"unknown sensor '{name}'"), 404
+    return _level_response(name, request.args.get("mode", "raw"))
+
+
+def _diag_response(name):
+    """Full config + live output for every one of this sensor's
+    configured signal processors, regardless of `emit` -- unlike
+    /level's `signals`, which only shows processors meant to be read as
+    final output."""
     with _state_lock:
-        if _state["instantaneous_mm"] is None:
+        if _state[name]["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
 
         processors = {
-            name: {"config": _state["configs"][name], "output": _processor_output(result)}
-            for name, result in _state["processors"].items()
+            pname: {"config": _state[name]["configs"][pname], "output": _processor_output(result)}
+            for pname, result in _state[name]["processors"].items()
         }
 
         return jsonify(processors=processors)
 
 
-def main():
-    global _poll_thread, _sensor
+@app.route("/diag")
+def diag():
+    """Diagnostic view for the default sensor. See GET
+    /sensors/<name>/diag to target a specific non-default sensor."""
+    return _diag_response(_default_sensor_name)
 
-    parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
+
+@app.route("/sensors/<name>/diag")
+def sensor_diag(name):
+    if name not in _state:
+        return jsonify(error=f"unknown sensor '{name}'"), 404
+    return _diag_response(name)
+
+
+@app.route("/sensors")
+def sensors_list():
+    return jsonify(sensors=list(_sensors), default=_default_sensor_name)
+
+
+def main():
+    global _default_sensor_name, _polling_interval_ms
+
+    parser = argparse.ArgumentParser(description="Multi-sensor water level HTTP server")
     parser.add_argument(
-        "--processors-config",
+        "--sensors-config",
         type=Path,
-        default=Path.cwd() / "config" / "processors.yaml",
-        help="path to the YAML file configuring level-processing processors (default: config/processors.yaml)",
+        default=Path.cwd() / "config" / "sensors.yaml",
+        help="path to the YAML file configuring sensors and their level-processing pipelines (default: config/sensors.yaml)",
     )
     parser.add_argument(
         "--polling-interval-ms",
         type=int,
         default=150,
-        help="how often to check for a new sensor reading, in milliseconds (default: 150)",
+        help="how often to check every sensor for a new reading, in milliseconds (default: 150)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="address to bind the HTTP server to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="port to bind the HTTP server to (default: 8080)")
     parser.add_argument(
-        "--mode-select-pin",
-        type=int,
-        default=25,
-        help="BCM GPIO pin wired to the sensor's RX/mode-select line (default: 25)",
-    )
-    parser.add_argument(
-        "--power-pin",
-        type=int,
-        default=24,
-        help="BCM GPIO pin wired to the sensor's power supply, used by POST /reset (default: 24)",
-    )
-    parser.add_argument(
         "--simulate",
         action="store_true",
-        help="use synthetic sensor data instead of a real serial connection (for local development)",
+        help="use synthetic sensor data instead of opening real hardware, for every configured sensor (for local development)",
     )
     args = parser.parse_args()
 
-    if args.simulate:
-        ser = read_sensor.SimulatedSerial()
-        mode_controller = sensor_mode.NullModeController()
-        power_controller = sensor_power.NullPowerController()
-    else:
-        # Initialize serial port at 9600 baud rate
-        ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
-        mode_controller = sensor_mode.GpioModeController(args.mode_select_pin)
-        power_controller = sensor_power.GpioPowerController(args.power_pin)
+    _polling_interval_ms = args.polling_interval_ms
 
-    _sensor = A02YYUWSensor(ser, mode_controller, power_controller)
-
-    processors, primary_name, emit_flags, configs = load_signal_processors(args.processors_config)
-    _state["processor_names"] = list(processors)
-    _state["emit_flags"] = emit_flags
-    _state["configs"] = configs
-    _state["primary_name"] = primary_name
-    _state["polling_interval_ms"] = args.polling_interval_ms
+    sensor_configs, _default_sensor_name = load_sensors(args.sensors_config, simulate=args.simulate)
 
     stop_event = threading.Event()
-    poll_thread = threading.Thread(
-        target=poll_sensor,
-        args=(_sensor, processors, primary_name, stop_event, args.polling_interval_ms / 1000),
-        daemon=True,
-    )
-    poll_thread.start()
-    _poll_thread = poll_thread
+    for name, cfg in sensor_configs.items():
+        _sensors[name] = cfg["driver"]
+        _reset_locks[name] = threading.Lock()
+
+        _state[name] = _new_sensor_state()
+        _state[name]["processor_names"] = list(cfg["processors"])
+        _state[name]["emit_flags"] = cfg["emit_flags"]
+        _state[name]["configs"] = cfg["configs"]
+        _state[name]["primary_name"] = cfg["primary_name"]
+
+        poll_thread = threading.Thread(
+            target=poll_sensor,
+            args=(name, cfg["driver"], cfg["processors"], cfg["primary_name"], stop_event, args.polling_interval_ms / 1000),
+            daemon=True,
+        )
+        poll_thread.start()
+        _poll_threads[name] = poll_thread
 
     try:
         app.run(host=args.host, port=args.port)
     finally:
         stop_event.set()
-        _sensor.close()
+        for sensor in _sensors.values():
+            sensor.close()
 
 
 if __name__ == "__main__":

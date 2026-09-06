@@ -33,14 +33,26 @@ def load_signal_processors(path):
       - `{type: ..., params: ...}` — builds a fresh instance directly,
         recursively (so a step can itself be a chain).
     """
-    processor_types = discover_signal_processor_types()
-
     with open(path) as f:
         config = yaml.safe_load(f)
 
     entries = (config or {}).get("processors")
     if not entries:
         raise ValueError(f"{path}: 'processors' must be a non-empty list")
+
+    return build_processors(entries, path)
+
+
+def build_processors(entries, path):
+    """Builds named LevelSignalProcessor instances from an already-parsed
+    list of processor entries -- the shared core `load_signal_processors`
+    also uses after reading its own top-level `processors:` key from a
+    standalone file. A sensor's own `processors:` list, nested directly
+    in config/sensors.yaml, is built the same way via this function
+    without needing a separate file per sensor. `path` is used only for
+    error messages (e.g. a sensor's own config file, even though this
+    isn't reading it directly)."""
+    processor_types = discover_signal_processor_types()
 
     processors = {}
     entries_by_name = {}
