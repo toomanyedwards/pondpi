@@ -58,6 +58,7 @@ pondpi/
 | `signal_processor_config.py` | `load_signal_processors()` — reads `config/processors.yaml` into named `LevelSignalProcessor` instances. |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
+| `sensor_mode.py` | Drives the sensor's RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
 ## API
@@ -70,6 +71,7 @@ Returns the current instantaneous and smoothed distance readings.
 {
   "measure_name": "level",
   "units": "cm",
+  "mode": "raw",
   "polling_interval_ms": 150,
   "primary_signal": {
     "value": 11.2,
@@ -86,6 +88,7 @@ Returns the current instantaneous and smoothed distance readings.
 |---|---|
 | `measure_name` | What this endpoint measures — always `"level"`. Self-describing metadata, useful if the response is logged or forwarded without the URL for context. |
 | `units` | The unit every `_cm`/`value` field in this response is in — always `"cm"`. |
+| `mode` | Which of the sensor's two hardware output modes this response reflects — see `?mode=` below. |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
 | `primary_signal` | `{value, name}` for whichever processor is marked `primary: true` — `name` is that processor's actual configured name, so this stays correct even if you rename it. |
 | `signals` | A curated `{name: distance_cm}` view of just the processors meant to be read as final output — every configured processor *except* whichever ones are marked `emit: false` in `config/processors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
@@ -101,6 +104,35 @@ since the server started.
 Distance is measured from the sensor down to the water surface — it's not
 a depth/level in absolute terms unless you subtract it from the sensor's
 fixed mounting height.
+
+#### `?mode=raw|processed`
+
+The A02YYUW has two hardware output modes, selected by the level on its
+RX pin — see [Sensor notes](#sensor-notes) below. `poll_sensor()` spends
+most of its time with the sensor in `raw` mode (so `signals`/
+`primary_signal` above keep being fed by a near-continuous stream, same
+as before this param existed) and briefly switches to `processed` mode
+once per cycle just to keep that reading fresh too, caching it
+separately.
+
+`?mode=raw` (the default; also what you get by omitting the param
+entirely) is the response shown above. `?mode=processed` returns a
+different, much simpler shape instead — there's no `primary_signal` or
+`signals` for it, since the sensor's own processed-mode output isn't run
+through `config/processors.yaml` at all (it's already hardware-smoothed):
+
+```json
+{
+  "measure_name": "level",
+  "units": "cm",
+  "mode": "processed",
+  "distance_cm": 11.0
+}
+```
+
+Also returns `503 {"error": "no readings yet"}` if the cycle hasn't
+reached a settled `processed`-mode reading yet (e.g. right after
+startup).
 
 ### `GET /diag`
 
@@ -247,6 +279,40 @@ These two numbers directly shape the polling and smoothing defaults:
   mm between samples; that can be within the sensor's own accuracy
   budget rather than a real water level change.
 
+### RX pin: raw vs. processed hardware mode
+
+The sensor's RX pin isn't a data line here (nothing is ever written to
+it over UART) -- it's a mode-select input, per DFRobot's wiki: driven
+**low** selects **real-time** ("raw") output, driven **high or left
+floating** selects the sensor's own internally-smoothed ("processed")
+output, response time ~100-300ms either way. This is a genuine hardware
+behavior, not something `read_sensor.py`/`server.py` invent -- see
+`sensor_mode.py`.
+
+This deployment wires that pin to a GPIO (`--mode-select-pin`, default
+`25`) so `poll_sensor()` can drive it directly, rather than leaving it
+hardwired to one mode. It can't read both modes at once from a single
+physical sensor, so it alternates: mostly `raw` (`MODE_CYCLE_INTERVAL_S`
+/ `PROCESSED_MODE_DURATION_S` in `server.py`, default 9s raw / 1s
+processed per 10s cycle), briefly dipping into `processed` just often
+enough to keep that reading fresh too. Frames read within
+`MODE_SETTLE_S` of a mode switch are discarded rather than cached, since
+the sensor's response time means a reading right after a switch can
+still reflect the *previous* mode. See `GET /level`'s `?mode=` param
+above for how to read each stream.
+
+One consequence worth knowing: because the `raw` pipeline (the one
+feeding `config/processors.yaml`'s `rolling_avg` etc.) only actually
+gets sensor data during its ~90% share of each cycle, a `rolling_avg`
+window sized in samples at the poll rate (see above) now represents a
+correspondingly longer wall-clock span than it would with continuous
+polling -- at the defaults, the raw pipeline only gets fresh samples
+during ~86% of wall-clock time (9s of `raw` per 10s cycle, minus
+`MODE_SETTLE_S` lost right after switching back into it), so a "~60s
+window" (`rolling_avg`'s `window_size: 400` in `config/processors.yaml`)
+is closer to ~70s in practice. Not large enough to bother retuning, but
+worth remembering if that math is ever redone.
+
 ## Signal processing
 
 Raw readings are run through every signal processor configured in
@@ -359,7 +425,8 @@ above.
 | `--polling-interval-ms` | `150` | How often (ms) to check the serial buffer for a new frame. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
-| `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) instead of opening `/dev/serial0`. For local development with no sensor hardware attached. |
+| `--mode-select-pin` | `25` | BCM GPIO pin wired to the sensor's RX/mode-select line — see [Sensor notes](#sensor-notes). Ignored under `--simulate`. |
+| `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) and a no-op mode controller instead of opening `/dev/serial0` and driving real GPIO. For local development with no sensor hardware attached. |
 
 `--processors-config`'s default (and where `/health`'s `commit_sha`
 resolves from) is relative to the working directory, not the installed

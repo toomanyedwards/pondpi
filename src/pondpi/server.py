@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import serial
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
-from pondpi import read_sensor
+from pondpi import read_sensor, sensor_mode
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
 from pondpi.signal_processor_config import load_signal_processors
@@ -21,10 +21,26 @@ app = Flask(__name__)
 # flag /health degraded.
 STALE_READING_THRESHOLD_S = 3.0
 
+# poll_sensor() spends most of its time with the sensor in "raw" mode (so
+# the existing signal processors -- tuned assuming a near-continuous feed
+# -- keep behaving as they always have) and only briefly dips into
+# "processed" mode once per cycle to keep that reading fresh. E.g. with the
+# defaults below: 1s of "processed" out of every 10s, so the raw pipeline
+# still sees samples ~90% of the time.
+MODE_CYCLE_INTERVAL_S = 10.0
+PROCESSED_MODE_DURATION_S = 1.0
+
+# After switching the mode-select pin, frames read within this window are
+# discarded rather than cached -- the sensor's documented response time is
+# 100-300ms, and this gives comfortable margin above that so a stale
+# reading from the previous mode is never mistaken for the new one.
+MODE_SETTLE_S = 0.4
+
 _state_lock = threading.Lock()
 _state = {
     "instantaneous_mm": None,
     "rolling_avg_mm": None,
+    "processed_mm": None,
     "processors": {},
     "processor_names": [],
     "emit_flags": {},
@@ -40,23 +56,62 @@ _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(ser, processors, primary_name, stop_event, poll_interval_s, stale_threshold_s=STALE_READING_THRESHOLD_S):
+def poll_sensor(
+    ser,
+    processors,
+    primary_name,
+    stop_event,
+    poll_interval_s,
+    mode_controller,
+    stale_threshold_s=STALE_READING_THRESHOLD_S,
+    mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
+    processed_mode_duration_s=PROCESSED_MODE_DURATION_S,
+    mode_settle_s=MODE_SETTLE_S,
+):
     last_valid_monotonic = time.monotonic()
+    current_mode = sensor_mode.RAW
+    mode_controller.set_mode(current_mode)
+    # Backdated, not just time.monotonic(): there's no prior mode's stale
+    # readings to guard against on a fresh start, so the very first frames
+    # shouldn't be discarded as "settling" the way frames right after a
+    # real mid-run mode switch are.
+    last_mode_switch_monotonic = time.monotonic() - mode_settle_s
+    cycle_start_monotonic = time.monotonic()
 
     while not stop_event.is_set():
+        now = time.monotonic()
+
+        # Which mode we *should* be in right now, as a function of time
+        # elapsed since this loop started (not wall-clock time -- that
+        # would make a freshly-started poll_sensor()'s initial mode depend
+        # on what moment it happened to start at). Always begins in "raw".
+        phase = (now - cycle_start_monotonic) % mode_cycle_interval_s
+        desired_mode = sensor_mode.PROCESSED if phase >= (mode_cycle_interval_s - processed_mode_duration_s) else sensor_mode.RAW
+        if desired_mode != current_mode:
+            current_mode = desired_mode
+            mode_controller.set_mode(current_mode)
+            last_mode_switch_monotonic = now
+
         distance_mm = read_sensor.read_frame(ser)
+        settling = (now - last_mode_switch_monotonic) < mode_settle_s
 
         if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
             last_valid_monotonic = time.monotonic()
-            results = {}
-            for name, processor in processors.items():
-                results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
 
-            with _state_lock:
-                _state["instantaneous_mm"] = distance_mm
-                _state["processors"] = results
-                _state["rolling_avg_mm"] = results[primary_name]["value"]
-                _state["last_reading_monotonic"] = last_valid_monotonic
+            if not settling:
+                if current_mode == sensor_mode.RAW:
+                    results = {}
+                    for name, processor in processors.items():
+                        results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
+
+                    with _state_lock:
+                        _state["instantaneous_mm"] = distance_mm
+                        _state["processors"] = results
+                        _state["rolling_avg_mm"] = results[primary_name]["value"]
+                        _state["last_reading_monotonic"] = last_valid_monotonic
+                else:
+                    with _state_lock:
+                        _state["processed_mm"] = distance_mm
         elif time.monotonic() - last_valid_monotonic > stale_threshold_s:
             # No valid frame in a while -- read_frame()'s incremental
             # header-hunting resync can get permanently wedged if the byte
@@ -109,6 +164,21 @@ def health():
 
 @app.route("/level")
 def level():
+    mode = request.args.get("mode", sensor_mode.RAW)
+
+    if mode == sensor_mode.PROCESSED:
+        with _state_lock:
+            processed_mm = _state["processed_mm"]
+            if processed_mm is None:
+                return jsonify(error="no readings yet"), 503
+
+            return jsonify(
+                measure_name="level",
+                units="cm",
+                mode=sensor_mode.PROCESSED,
+                distance_cm=round(processed_mm / 10.0, 1),
+            )
+
     with _state_lock:
         if _state["instantaneous_mm"] is None:
             return jsonify(error="no readings yet"), 503
@@ -123,6 +193,7 @@ def level():
         return jsonify(
             measure_name="level",
             units="cm",
+            mode=sensor_mode.RAW,
             polling_interval_ms=_state["polling_interval_ms"],
             primary_signal={"value": rolling_avg_distance_cm, "name": _state["primary_name"]},
             signals=signals,
@@ -165,6 +236,12 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="address to bind the HTTP server to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="port to bind the HTTP server to (default: 8080)")
     parser.add_argument(
+        "--mode-select-pin",
+        type=int,
+        default=25,
+        help="BCM GPIO pin wired to the sensor's RX/mode-select line (default: 25)",
+    )
+    parser.add_argument(
         "--simulate",
         action="store_true",
         help="use synthetic sensor data instead of a real serial connection (for local development)",
@@ -173,9 +250,11 @@ def main():
 
     if args.simulate:
         ser = read_sensor.SimulatedSerial()
+        mode_controller = sensor_mode.NullModeController()
     else:
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
+        mode_controller = sensor_mode.GpioModeController(args.mode_select_pin)
 
     processors, primary_name, emit_flags, configs = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
@@ -187,7 +266,7 @@ def main():
     stop_event = threading.Event()
     poll_thread = threading.Thread(
         target=poll_sensor,
-        args=(ser, processors, primary_name, stop_event, args.polling_interval_ms / 1000),
+        args=(ser, processors, primary_name, stop_event, args.polling_interval_ms / 1000, mode_controller),
         daemon=True,
     )
     poll_thread.start()
@@ -198,6 +277,7 @@ def main():
     finally:
         stop_event.set()
         ser.close()
+        mode_controller.close()
 
 
 if __name__ == "__main__":
