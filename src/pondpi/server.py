@@ -10,31 +10,18 @@ from flask import Flask, jsonify, request
 from pondpi import read_sensor, sensor_mode, sensor_power
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
+from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor
 from pondpi.signal_processor_config import load_signal_processors
 
 app = Flask(__name__)
 
 # Comfortably above the sensor's ~100ms response time and our 150ms default
-# poll interval -- if this long passes with no valid frame, read_frame()
-# has likely lost byte alignment with the sensor's stream and isn't going
-# to resync on its own. Used both to force a resync in poll_sensor() and to
-# flag /health degraded.
+# poll interval -- used to flag /health degraded if no valid "raw" reading
+# has landed in this long. A separate, driver-owned threshold of the same
+# name governs each sensor's own internal resync behavior (see
+# sensors/a02yyuw_sensor.py) -- the two are conceptually distinct even
+# though they default to the same value.
 STALE_READING_THRESHOLD_S = 3.0
-
-# poll_sensor() spends most of its time with the sensor in "raw" mode (so
-# the existing signal processors -- tuned assuming a near-continuous feed
-# -- keep behaving as they always have) and only briefly dips into
-# "processed" mode once per cycle to keep that reading fresh. E.g. with the
-# defaults below: 1s of "processed" out of every 10s, so the raw pipeline
-# still sees samples ~90% of the time.
-MODE_CYCLE_INTERVAL_S = 10.0
-PROCESSED_MODE_DURATION_S = 1.0
-
-# After switching the mode-select pin, frames read within this window are
-# discarded rather than cached -- the sensor's documented response time is
-# 100-300ms, and this gives comfortable margin above that so a stale
-# reading from the previous mode is never mistaken for the new one.
-MODE_SETTLE_S = 0.4
 
 _state_lock = threading.Lock()
 _state = {
@@ -53,78 +40,37 @@ _state = {
 }
 
 _poll_thread = None
-_power_controller = None
+_sensor = None
 _reset_lock = threading.Lock()
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
 
-def poll_sensor(
-    ser,
-    processors,
-    primary_name,
-    stop_event,
-    poll_interval_s,
-    mode_controller,
-    stale_threshold_s=STALE_READING_THRESHOLD_S,
-    mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
-    processed_mode_duration_s=PROCESSED_MODE_DURATION_S,
-    mode_settle_s=MODE_SETTLE_S,
-):
-    last_valid_monotonic = time.monotonic()
-    current_mode = sensor_mode.RAW
-    mode_controller.set_mode(current_mode)
-    # Backdated, not just time.monotonic(): there's no prior mode's stale
-    # readings to guard against on a fresh start, so the very first frames
-    # shouldn't be discarded as "settling" the way frames right after a
-    # real mid-run mode switch are.
-    last_mode_switch_monotonic = time.monotonic() - mode_settle_s
-    cycle_start_monotonic = time.monotonic()
-
+def poll_sensor(sensor, processors, primary_name, stop_event, poll_interval_s):
+    """Sensor-agnostic polling loop: repeatedly calls `sensor.read()` and
+    routes whichever named signals it returns into shared state. "raw"
+    readings are run through the configured signal processor pipeline;
+    "processed" readings (if the sensor reports any -- not every driver
+    will) are cached as-is, since a sensor's own onboard smoothing isn't
+    something further Pi-side processing should second-guess."""
     while not stop_event.is_set():
-        now = time.monotonic()
+        readings = sensor.read()
 
-        # Which mode we *should* be in right now, as a function of time
-        # elapsed since this loop started (not wall-clock time -- that
-        # would make a freshly-started poll_sensor()'s initial mode depend
-        # on what moment it happened to start at). Always begins in "raw".
-        phase = (now - cycle_start_monotonic) % mode_cycle_interval_s
-        desired_mode = sensor_mode.PROCESSED if phase >= (mode_cycle_interval_s - processed_mode_duration_s) else sensor_mode.RAW
-        if desired_mode != current_mode:
-            current_mode = desired_mode
-            mode_controller.set_mode(current_mode)
-            last_mode_switch_monotonic = now
+        if "raw" in readings:
+            distance_mm = readings["raw"]
+            results = {}
+            for name, processor in processors.items():
+                results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
 
-        distance_mm = read_sensor.read_frame(ser)
-        settling = (now - last_mode_switch_monotonic) < mode_settle_s
+            with _state_lock:
+                _state["instantaneous_mm"] = distance_mm
+                _state["processors"] = results
+                _state["rolling_avg_mm"] = results[primary_name]["value"]
+                _state["last_reading_monotonic"] = time.monotonic()
 
-        if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
-            last_valid_monotonic = time.monotonic()
-
-            if not settling:
-                if current_mode == sensor_mode.RAW:
-                    results = {}
-                    for name, processor in processors.items():
-                        results[name] = {"value": processor.add(distance_mm), **processor.extra_state()}
-
-                    with _state_lock:
-                        _state["instantaneous_mm"] = distance_mm
-                        _state["processors"] = results
-                        _state["rolling_avg_mm"] = results[primary_name]["value"]
-                        _state["last_reading_monotonic"] = last_valid_monotonic
-                else:
-                    with _state_lock:
-                        _state["processed_mm"] = distance_mm
-        elif time.monotonic() - last_valid_monotonic > stale_threshold_s:
-            # No valid frame in a while -- read_frame()'s incremental
-            # header-hunting resync can get permanently wedged if the byte
-            # stream is knocked out of alignment (e.g. by a wiring
-            # disturbance) in just the wrong way. A plain buffer flush is
-            # enough to force a fresh resync, so do that rather than wait
-            # forever. Reset the timer so we don't flush every loop
-            # iteration while genuinely disconnected.
-            ser.reset_input_buffer()
-            last_valid_monotonic = time.monotonic()
+        if "processed" in readings:
+            with _state_lock:
+                _state["processed_mm"] = readings["processed"]
 
         time.sleep(poll_interval_s)
 
@@ -172,10 +118,13 @@ def health():
 def reset():
     """Power-cycles the sensor to force a hardware reset -- e.g. if it
     appears wedged/stuck and a serial buffer flush alone hasn't helped.
-    Blocks for `sensor_power.RESET_OFF_DURATION_S` while the sensor is
-    powered off."""
+    Not every sensor driver supports this; returns 501 if the current
+    one doesn't."""
+    if not _sensor.supports_reset:
+        return jsonify(error="sensor does not support reset"), 501
+
     with _reset_lock:
-        _power_controller.reset()
+        _sensor.reset()
         reset_at = datetime.now(timezone.utc)
         with _state_lock:
             _state["last_reset_at"] = reset_at
@@ -185,9 +134,9 @@ def reset():
 
 @app.route("/level")
 def level():
-    mode = request.args.get("mode", sensor_mode.RAW)
+    mode = request.args.get("mode", "raw")
 
-    if mode == sensor_mode.PROCESSED:
+    if mode == "processed":
         with _state_lock:
             processed_mm = _state["processed_mm"]
             if processed_mm is None:
@@ -196,7 +145,7 @@ def level():
             return jsonify(
                 measure_name="level",
                 units="cm",
-                mode=sensor_mode.PROCESSED,
+                mode="processed",
                 distance_cm=round(processed_mm / 10.0, 1),
             )
 
@@ -214,7 +163,7 @@ def level():
         return jsonify(
             measure_name="level",
             units="cm",
-            mode=sensor_mode.RAW,
+            mode="raw",
             polling_interval_ms=_state["polling_interval_ms"],
             primary_signal={"value": rolling_avg_distance_cm, "name": _state["primary_name"]},
             signals=signals,
@@ -239,7 +188,7 @@ def diag():
 
 
 def main():
-    global _poll_thread, _power_controller
+    global _poll_thread, _sensor
 
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
     parser.add_argument(
@@ -278,12 +227,14 @@ def main():
     if args.simulate:
         ser = read_sensor.SimulatedSerial()
         mode_controller = sensor_mode.NullModeController()
-        _power_controller = sensor_power.NullPowerController()
+        power_controller = sensor_power.NullPowerController()
     else:
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
         mode_controller = sensor_mode.GpioModeController(args.mode_select_pin)
-        _power_controller = sensor_power.GpioPowerController(args.power_pin)
+        power_controller = sensor_power.GpioPowerController(args.power_pin)
+
+    _sensor = A02YYUWSensor(ser, mode_controller, power_controller)
 
     processors, primary_name, emit_flags, configs = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
@@ -295,7 +246,7 @@ def main():
     stop_event = threading.Event()
     poll_thread = threading.Thread(
         target=poll_sensor,
-        args=(ser, processors, primary_name, stop_event, args.polling_interval_ms / 1000, mode_controller),
+        args=(_sensor, processors, primary_name, stop_event, args.polling_interval_ms / 1000),
         daemon=True,
     )
     poll_thread.start()
@@ -305,9 +256,7 @@ def main():
         app.run(host=args.host, port=args.port)
     finally:
         stop_event.set()
-        ser.close()
-        mode_controller.close()
-        _power_controller.close()
+        _sensor.close()
 
 
 if __name__ == "__main__":
