@@ -34,10 +34,15 @@ class A02YYUWSensor(LevelSensor):
     two hardware output modes and why this driver alternates between
     them on a single physical unit rather than reading both at once.
 
-    Reports two named signals from `read()`:
-    - "raw": the sensor's real-time hardware mode, fed continuously.
-    - "processed": the sensor's own internally-smoothed hardware mode,
-      refreshed briefly once per `mode_cycle_interval_s`.
+    Reports named signals from `read()`:
+    - "raw": the sensor's real-time hardware mode.
+    - "processed": the sensor's own internally-smoothed hardware mode.
+
+    By default alternates between both (mostly raw, briefly dipping
+    into processed once per `mode_cycle_interval_s`) so both stay
+    fresh. Pass `read_mode=sensor_mode.RAW` or `sensor_mode.PROCESSED`
+    to pin it permanently in one mode instead -- no cycling, and
+    `read()` then only ever reports that one key.
 
     `read()` does at most one serial read per call and never blocks
     waiting for a frame -- callers must call it repeatedly from their
@@ -55,6 +60,7 @@ class A02YYUWSensor(LevelSensor):
         mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
         processed_mode_duration_s=PROCESSED_MODE_DURATION_S,
         mode_settle_s=MODE_SETTLE_S,
+        read_mode=None,
     ):
         self._ser = ser
         self._mode_controller = mode_controller
@@ -63,9 +69,10 @@ class A02YYUWSensor(LevelSensor):
         self._mode_cycle_interval_s = mode_cycle_interval_s
         self._processed_mode_duration_s = processed_mode_duration_s
         self._mode_settle_s = mode_settle_s
+        self._read_mode = read_mode
 
         self._last_valid_monotonic = time.monotonic()
-        self._current_mode = sensor_mode.RAW
+        self._current_mode = self._read_mode if self._read_mode is not None else sensor_mode.RAW
         self._mode_controller.set_mode(self._current_mode)
         # Backdated, not just time.monotonic(): there's no prior mode's
         # stale readings to guard against on a fresh start, so the very
@@ -77,17 +84,20 @@ class A02YYUWSensor(LevelSensor):
     def read(self):
         now = time.monotonic()
 
-        # Which mode we *should* be in right now, as a function of time
-        # elapsed since this driver was constructed (not wall-clock time
-        # -- that would make a freshly-started driver's initial mode
-        # depend on what moment it happened to start at). Always begins
-        # in "raw".
-        phase = (now - self._cycle_start_monotonic) % self._mode_cycle_interval_s
-        desired_mode = (
-            sensor_mode.PROCESSED
-            if phase >= (self._mode_cycle_interval_s - self._processed_mode_duration_s)
-            else sensor_mode.RAW
-        )
+        if self._read_mode is not None:
+            desired_mode = self._read_mode
+        else:
+            # Which mode we *should* be in right now, as a function of
+            # time elapsed since this driver was constructed (not
+            # wall-clock time -- that would make a freshly-started
+            # driver's initial mode depend on what moment it happened to
+            # start at). Always begins in "raw".
+            phase = (now - self._cycle_start_monotonic) % self._mode_cycle_interval_s
+            desired_mode = (
+                sensor_mode.PROCESSED
+                if phase >= (self._mode_cycle_interval_s - self._processed_mode_duration_s)
+                else sensor_mode.RAW
+            )
         if desired_mode != self._current_mode:
             self._current_mode = desired_mode
             self._mode_controller.set_mode(self._current_mode)
@@ -134,12 +144,20 @@ def create(params, simulate):
 
     Recognized params (all optional):
       serial_port (default "/dev/serial0"), mode_select_pin (default 25),
-      power_pin (default 24).
-
-    Under `simulate`, params are ignored entirely -- always builds
-    SimulatedSerial plus no-op mode/power controllers instead of opening
-    real hardware.
+      power_pin (default 24) -- hardware wiring, ignored entirely under
+      `simulate`.
+      read_mode ("raw" or "processed"; omitted alternates between both,
+      see A02YYUWSensor) -- governs this driver's own mode-cycling
+      logic rather than hardware wiring, so it still applies under
+      `simulate` too.
     """
+    read_mode = params.get("read_mode")
+    if read_mode is not None and read_mode not in (sensor_mode.RAW, sensor_mode.PROCESSED):
+        raise ValueError(
+            f"a02yyuw: invalid read_mode '{read_mode}' "
+            f"(expected '{sensor_mode.RAW}', '{sensor_mode.PROCESSED}', or omitted for the default alternating cycle)"
+        )
+
     if simulate:
         ser = read_sensor.SimulatedSerial()
         mode_controller = sensor_mode.NullModeController()
@@ -149,4 +167,4 @@ def create(params, simulate):
         mode_controller = sensor_mode.GpioModeController(params.get("mode_select_pin", 25))
         power_controller = sensor_power.GpioPowerController(params.get("power_pin", 24))
 
-    return A02YYUWSensor(ser, mode_controller, power_controller)
+    return A02YYUWSensor(ser, mode_controller, power_controller, read_mode=read_mode)

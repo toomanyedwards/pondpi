@@ -412,6 +412,15 @@ are discarded rather than cached, since the sensor's response time means
 a reading right after a switch can still reflect the *previous* mode.
 See `GET /level`'s `?mode=` param above for how to read each stream.
 
+An optional `read_mode` param (`"raw"` or `"processed"`; omitted keeps
+the alternating cycle above) pins the driver permanently in one mode
+instead — no cycling, no settling windows after the first frame, and
+`read()` only ever reports that one key. Pinning to `"processed"` means
+the sensor's default (`?mode=raw`) `/level`/`/diag` never populate
+(nothing ever feeds this sensor's `signals:` graph, since none of them
+are rooted at a `raw` reading) — only `?mode=processed` does. Pinning
+to `"raw"` is the inverse: `?mode=processed` never populates.
+
 One consequence worth knowing: because the `raw` pipeline (the one
 feeding this sensor's `rolling_avg` etc.) only actually gets sensor data
 during its ~90% share of each cycle, a `rolling_avg` window sized in
