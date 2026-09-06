@@ -187,8 +187,8 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
 {
   "signals": {
     "instantaneous_raw": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main"}, "primary": false, "emit": true},
-      "output": {"distance_cm": 11.3, "sensor": "pond_main"}
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "units": "mm"}, "primary": false, "emit": true, "units": "mm"},
+      "output": {"distance_cm": 11.3, "units": "mm", "sensor": "pond_main"}
     },
     "rolling_median5": {
       "config": {
@@ -196,10 +196,12 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "input": "instantaneous_raw",
         "params": {"window_size": 5},
         "primary": false,
-        "emit": false
+        "emit": false,
+        "units": "mm"
       },
       "output": {
         "distance_cm": 11.2,
+        "units": "mm",
         "window_size": 5,
         "samples_in_window": 5
       }
@@ -210,10 +212,12 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "input": "rolling_median5",
         "params": {"window_size": 200},
         "primary": true,
-        "emit": true
+        "emit": true,
+        "units": "mm"
       },
       "output": {
         "distance_cm": 11.2,
+        "units": "mm",
         "window_size": 200,
         "samples_in_window": 200
       }
@@ -229,6 +233,18 @@ non-`sensor` signal's `input` is included too), and `output` is the same
 shape `/level`'s `signals` used to expose — `distance_cm` plus that
 signal's own `extra_state()`. Returns `503 {"error": "no readings
 yet"}` under the same condition as `/level`.
+
+Every signal's `config`/`output` includes `units` — the physical unit
+its own value is actually in (e.g. `"mm"`), as declared in
+`params.units` for a `sensor`-type signal or derived automatically from
+`input` for every other type. See [Signal
+processing](#signal-processing). `distance_cm` itself is unaffected by
+`units` — it's always computed by dividing the signal's internal value
+by 10, correct only when `units` is `"mm"` (true of every signal today,
+since the only sensor type is the A02YYUW). A signal declaring
+different units wouldn't get a differently-converted `distance_cm` --
+`units` is reported as informational metadata only, not yet wired into
+the conversion itself.
 
 ### `GET /signals`
 
@@ -254,8 +270,8 @@ entries):
 {
   "name": "rolling_avg",
   "sensor": "pond_main",
-  "units": "cm",
   "distance_cm": 11.2,
+  "units": "mm",
   "window_size": 200,
   "samples_in_window": 200
 }
@@ -263,9 +279,10 @@ entries):
 
 `sensor` is which configured sensor this signal is ultimately rooted at
 (traced through any `input:` chain back to a `sensor`-type signal's
-`params.sensor`). Every field past `units` is this signal's own
-`extra_state()` alongside its value — varies by signal type, same as
-`/diag`'s `output`.
+`params.sensor`). `units` is this signal's own configured/derived unit
+(see [Signal processing](#signal-processing)) — every field past that
+is this signal's own `extra_state()` alongside its value, varying by
+signal type, same as `/diag`'s `output`.
 
 `/signals/<name>/diag` returns this signal's effective `config` (as
 `/diag` would show it) alongside that same `output`, instead of just
@@ -280,10 +297,12 @@ the flattened value:
     "input": "rolling_median5",
     "params": {"window_size": 200},
     "primary": true,
-    "emit": true
+    "emit": true,
+    "units": "mm"
   },
   "output": {
     "distance_cm": 11.2,
+    "units": "mm",
     "window_size": 200,
     "samples_in_window": 200
   }
@@ -553,13 +572,24 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
-| `sensor` | `sensor` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `sensor` | `sensor`, `units` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,
 naming the signal (defined earlier in the file) whose output feeds it.
+
+A `sensor` signal must also set `params.units` (e.g. `"mm"`) -- the
+physical unit its readings are actually in, required since it's the
+boundary where a value enters the signal graph and nothing upstream
+can tell us that. Every other signal type derives its `units`
+automatically from whichever signal its `input:` names, since none of
+them perform any unit conversion -- a rolling average of millimeters is
+still in millimeters -- and must not set `params.units` itself (that
+raises a config error, since it would silently be ignored otherwise).
+This is reported on `/diag` and `/signals/<name>`; see those endpoints
+above.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `--polling-interval-ms`, default 150ms) — not once per reading of
@@ -592,6 +622,7 @@ signals:
     type: sensor
     params:
       sensor: pond_main
+      units: mm
   - name: rolling_median5
     type: rolling_median
     input: instantaneous_raw

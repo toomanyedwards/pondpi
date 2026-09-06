@@ -381,6 +381,11 @@ def test_level_returns_current_reading():
         rolling_avg_mm=850.0,
         primary_name="rolling_avg",
         emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
+        configs={
+            "rolling_median5": {"units": "mm"},
+            "rolling_avg": {"units": "mm"},
+            "instantaneous_raw": {"units": "mm"},
+        },
         signals={
             "rolling_median5": {"value": 500.0, "window_size": 5, "samples_in_window": 5},
             "rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400},
@@ -444,6 +449,7 @@ def test_level_unrecognized_mode_falls_back_to_raw():
         rolling_avg_mm=850.0,
         primary_name="rolling_avg",
         emit_flags={"rolling_avg": True},
+        configs={"rolling_avg": {"units": "mm"}},
         signals={"rolling_avg": {"value": 850.0}},
     )
     server._polling_interval_ms = 10
@@ -472,6 +478,7 @@ def test_sensor_level_targets_named_sensor_independently_of_default():
         rolling_avg_mm=200.0,
         primary_name="raw",
         emit_flags={"raw": True},
+        configs={"raw": {"units": "mm"}},
         signals={"raw": {"value": 200.0}},
     )
     server._polling_interval_ms = 150
@@ -505,6 +512,7 @@ def test_diag_returns_config_and_output_for_every_signal():
                 "primary": False,
                 "emit": False,
                 "input": "instantaneous_raw",
+                "units": "mm",
             },
             "rolling_avg": {
                 "type": "rolling_average",
@@ -512,6 +520,7 @@ def test_diag_returns_config_and_output_for_every_signal():
                 "primary": True,
                 "emit": True,
                 "input": "rolling_median5",
+                "units": "mm",
             },
         },
         signals={
@@ -535,8 +544,9 @@ def test_diag_returns_config_and_output_for_every_signal():
                     "primary": False,
                     "emit": False,
                     "input": "instantaneous_raw",
+                    "units": "mm",
                 },
-                "output": {"distance_cm": 50.0, "window_size": 5, "samples_in_window": 5},
+                "output": {"distance_cm": 50.0, "units": "mm", "window_size": 5, "samples_in_window": 5},
             },
             "rolling_avg": {
                 "config": {
@@ -545,8 +555,9 @@ def test_diag_returns_config_and_output_for_every_signal():
                     "primary": True,
                     "emit": True,
                     "input": "rolling_median5",
+                    "units": "mm",
                 },
-                "output": {"distance_cm": 85.0, "window_size": 200, "samples_in_window": 200},
+                "output": {"distance_cm": 85.0, "units": "mm", "window_size": 200, "samples_in_window": 200},
             },
         },
     }
@@ -591,6 +602,7 @@ def test_signal_detail_returns_value_and_extra_state():
     server._signal_owner = {"rolling_avg": "pond_main"}
     server._state["pond_main"].update(
         instantaneous_mm=101.0,
+        configs={"rolling_avg": {"units": "mm"}},
         signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
     )
     client = server.app.test_client()
@@ -601,7 +613,7 @@ def test_signal_detail_returns_value_and_extra_state():
     assert resp.get_json() == {
         "name": "rolling_avg",
         "sensor": "pond_main",
-        "units": "cm",
+        "units": "mm",
         "distance_cm": 85.0,
         "window_size": 400,
         "samples_in_window": 400,
@@ -632,7 +644,16 @@ def test_signal_diag_returns_config_and_output():
     server._signal_owner = {"rolling_avg": "pond_main"}
     server._state["pond_main"].update(
         instantaneous_mm=101.0,
-        configs={"rolling_avg": {"type": "rolling_average", "params": {"window_size": 400}, "primary": True, "emit": True, "input": "instantaneous_raw"}},
+        configs={
+            "rolling_avg": {
+                "type": "rolling_average",
+                "params": {"window_size": 400},
+                "primary": True,
+                "emit": True,
+                "input": "instantaneous_raw",
+                "units": "mm",
+            }
+        },
         signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
     )
     client = server.app.test_client()
@@ -649,8 +670,9 @@ def test_signal_diag_returns_config_and_output():
             "primary": True,
             "emit": True,
             "input": "instantaneous_raw",
+            "units": "mm",
         },
-        "output": {"distance_cm": 85.0, "window_size": 400, "samples_in_window": 400},
+        "output": {"distance_cm": 85.0, "units": "mm", "window_size": 400, "samples_in_window": 400},
     }
 
 
