@@ -48,15 +48,20 @@ def _new_sensor_state():
     }
 
 
-def poll_sensor(name, sensor, signals, primary_name, stop_event, poll_interval_s):
+def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_interval_s):
     """Sensor-agnostic polling loop for one named sensor: repeatedly
     calls `sensor.read()` and routes whichever named readings it returns
     into that sensor's own state slot. "raw" readings are run through
-    the configured signal pipeline; "processed" readings (if the sensor
-    reports any -- not every driver will) are cached as-is, since a
-    sensor's own onboard smoothing isn't something further Pi-side
-    processing should second-guess. One of these runs per configured
-    sensor, each in its own thread."""
+    this sensor's own signal graph -- each signal either reads the raw
+    reading directly (a `raw`-type signal, config's `configs[name]` has
+    no `"input"`) or reads whatever its `input:`-named signal just
+    computed this same poll cycle (`configs[name]["input"]`, already
+    resolved into `results` since `signals`' iteration order is a valid
+    dependency order -- see signal_config.py). "processed" readings (if
+    the sensor reports any -- not every driver will) are cached as-is,
+    since a sensor's own onboard smoothing isn't something further
+    Pi-side processing should second-guess. One of these runs per
+    configured sensor, each in its own thread."""
     while not stop_event.is_set():
         readings = sensor.read()
 
@@ -64,7 +69,9 @@ def poll_sensor(name, sensor, signals, primary_name, stop_event, poll_interval_s
             distance_mm = readings["raw"]
             results = {}
             for sname, signal in signals.items():
-                results[sname] = {"value": signal.add(distance_mm), **signal.extra_state()}
+                input_name = configs[sname].get("input")
+                value = distance_mm if input_name is None else results[input_name]["value"]
+                results[sname] = {"value": signal.add(value), **signal.extra_state()}
 
             with _state_lock:
                 _state[name]["instantaneous_mm"] = distance_mm
@@ -290,7 +297,15 @@ def main():
 
         poll_thread = threading.Thread(
             target=poll_sensor,
-            args=(name, cfg["driver"], cfg["signals"], cfg["primary_name"], stop_event, args.polling_interval_ms / 1000),
+            args=(
+                name,
+                cfg["driver"],
+                cfg["signals"],
+                cfg["configs"],
+                cfg["primary_name"],
+                stop_event,
+                args.polling_interval_ms / 1000,
+            ),
             daemon=True,
         )
         poll_thread.start()

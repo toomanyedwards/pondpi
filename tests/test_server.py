@@ -21,6 +21,14 @@ class _PassthroughSignal:
         return {}
 
 
+class _DoublingSignal:
+    def add(self, value):
+        return value * 2
+
+    def extra_state(self):
+        return {}
+
+
 class FakeSensorDriver:
     """A LevelSensor test double: `read()` returns each entry of a
     pre-scripted sequence in turn, then an empty dict forever once
@@ -251,12 +259,13 @@ def test_sensor_reset_targets_named_sensor_independently():
 def test_poll_sensor_routes_raw_readings_through_signals():
     _reset_globals(["pond_main"])
     signals = {"instantaneous_raw": _PassthroughSignal()}
+    configs = {"instantaneous_raw": {}}
     sensor = FakeSensorDriver([{"raw": 100}])
     stop_event = threading.Event()
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, signals, "instantaneous_raw", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, "instantaneous_raw", stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -272,6 +281,32 @@ def test_poll_sensor_routes_raw_readings_through_signals():
     assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
 
+def test_poll_sensor_downstream_signal_receives_upstream_signals_output():
+    # "downstream" doubles whatever it's fed. If it wrongly received the
+    # raw sensor reading directly instead of "root"'s own (already
+    # doubled) output, it'd land on 200 instead of 400.
+    _reset_globals(["pond_main"])
+    signals = {"root": _DoublingSignal(), "downstream": _DoublingSignal()}
+    configs = {"root": {}, "downstream": {"input": "root"}}
+    sensor = FakeSensorDriver([{"raw": 100}])
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=server.poll_sensor,
+        args=("pond_main", sensor, signals, configs, "downstream", stop_event, 0.001),
+    )
+    thread.start()
+    for _ in range(200):
+        with server._state_lock:
+            if server._state["pond_main"]["rolling_avg_mm"] is not None:
+                break
+        time.sleep(0.005)
+    stop_event.set()
+    thread.join(timeout=1)
+
+    assert server._state["pond_main"]["rolling_avg_mm"] == 400
+
+
 def test_poll_sensor_caches_processed_readings_as_is():
     # No signals configured for "processed" -- unlike "raw", it's
     # cached directly rather than run through a pipeline (see
@@ -282,7 +317,7 @@ def test_poll_sensor_caches_processed_readings_as_is():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, {}, "primary", stop_event, 0.001),
+        args=("pond_main", sensor, {}, {}, "primary", stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -304,11 +339,11 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
 
     thread_main = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, "raw", stop_event, 0.001),
+        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {}}, "raw", stop_event, 0.001),
     )
     thread_barrel = threading.Thread(
         target=server.poll_sensor,
-        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, "raw", stop_event, 0.001),
+        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {}}, "raw", stop_event, 0.001),
     )
     thread_main.start()
     thread_barrel.start()
@@ -346,12 +381,9 @@ def test_level_returns_current_reading():
         primary_name="rolling_avg",
         emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
         signals={
-            "rolling_median5": {"value": 500.0},
-            "rolling_avg": {
-                "value": 850.0,
-                "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
-            },
-            "instantaneous_raw": {"value": 101.0},
+            "rolling_median5": {"value": 500.0, "window_size": 5, "samples_in_window": 5},
+            "rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400},
+            "instantaneous_raw": {"value": 101.0, "sensor": "pond_main"},
         },
     )
     server._polling_interval_ms = 10
@@ -466,15 +498,24 @@ def test_diag_returns_config_and_output_for_every_signal():
     server._state["pond_main"].update(
         instantaneous_mm=101.0,
         configs={
-            "rolling_median5": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
-            "rolling_avg": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
+            "rolling_median5": {
+                "type": "rolling_median",
+                "params": {"window_size": 5},
+                "primary": False,
+                "emit": False,
+                "input": "instantaneous_raw",
+            },
+            "rolling_avg": {
+                "type": "rolling_average",
+                "params": {"window_size": 200},
+                "primary": True,
+                "emit": True,
+                "input": "rolling_median5",
+            },
         },
         signals={
-            "rolling_median5": {"value": 500.0},
-            "rolling_avg": {
-                "value": 850.0,
-                "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
-            },
+            "rolling_median5": {"value": 500.0, "window_size": 5, "samples_in_window": 5},
+            "rolling_avg": {"value": 850.0, "window_size": 200, "samples_in_window": 200},
         },
     )
     server._default_sensor_name = "pond_main"
@@ -487,15 +528,24 @@ def test_diag_returns_config_and_output_for_every_signal():
     assert data == {
         "signals": {
             "rolling_median5": {
-                "config": {"type": "rolling_median", "params": {"window_size": 5}, "primary": False, "emit": False},
-                "output": {"distance_cm": 50.0},
+                "config": {
+                    "type": "rolling_median",
+                    "params": {"window_size": 5},
+                    "primary": False,
+                    "emit": False,
+                    "input": "instantaneous_raw",
+                },
+                "output": {"distance_cm": 50.0, "window_size": 5, "samples_in_window": 5},
             },
             "rolling_avg": {
-                "config": {"type": "chain", "params": {"steps": [{"ref": "rolling_median5"}]}, "primary": True, "emit": True},
-                "output": {
-                    "distance_cm": 85.0,
-                    "steps": [{"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5}],
+                "config": {
+                    "type": "rolling_average",
+                    "params": {"window_size": 200},
+                    "primary": True,
+                    "emit": True,
+                    "input": "rolling_median5",
                 },
+                "output": {"distance_cm": 85.0, "window_size": 200, "samples_in_window": 200},
             },
         },
     }

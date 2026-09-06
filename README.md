@@ -66,9 +66,9 @@ pondpi/
 | `read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `sensor_mode.py` | Drives the A02YYUW's RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensor_power.py` | Drives the A02YYUW's power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
-| `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`raw_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`, `chain_signal.py`) — see [Signal processing](#signal-processing). |
+| `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`raw_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
-| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from a `signals:` list (a standalone file, or nested under a sensor in `config/sensors.yaml`). |
+| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `raw` signal's `params.sensor`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts one background polling thread per configured sensor and the Flask app. Owns all CLI configuration. |
@@ -125,12 +125,12 @@ default sensor, or the named one.
 | `mode` | Which of the sensor's two hardware output modes this response reflects — see `?mode=` below. |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
 | `primary_signal` | `{value, name}` for whichever signal is marked `primary: true` — `name` is that signal's actual configured name, so this stays correct even if you rename it. |
-| `signals` | A curated `{name: distance_cm}` view of just the signals meant to be read as final output — every configured signal *except* whichever ones are marked `emit: false` in this sensor's `signals:` list in `config/sensors.yaml` (e.g. an intermediate stage that only exists to feed a `chain`). See [Signal processing](#signal-processing). |
+| `signals` | A curated `{name: distance_cm}` view of just the signals meant to be read as final output — every signal rooted at this sensor *except* whichever ones are marked `emit: false` in `config/sensors.yaml`'s `signals:` list (e.g. an intermediate stage that only exists to feed another signal). See [Signal processing](#signal-processing). |
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
-`rolling_avg`'s chain, not as a meaningful output on its own. Its full
-state is still visible on `/diag`.
+`rolling_avg` via `input:`, not as a meaningful output on its own. Its
+full state is still visible on `/diag`.
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
 since the server started.
@@ -178,9 +178,14 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
 ```json
 {
   "signals": {
+    "instantaneous_raw": {
+      "config": {"type": "raw", "params": {"sensor": "pond_main"}, "primary": false, "emit": true},
+      "output": {"distance_cm": 11.3, "sensor": "pond_main"}
+    },
     "rolling_median5": {
       "config": {
         "type": "rolling_median",
+        "input": "instantaneous_raw",
         "params": {"window_size": 5},
         "primary": false,
         "emit": false
@@ -193,39 +198,29 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
     },
     "rolling_avg": {
       "config": {
-        "type": "chain",
-        "params": {
-          "steps": [
-            {"ref": "rolling_median5"},
-            {"type": "rolling_average", "params": {"window_size": 200}}
-          ]
-        },
+        "type": "rolling_average",
+        "input": "rolling_median5",
+        "params": {"window_size": 200},
         "primary": true,
         "emit": true
       },
       "output": {
         "distance_cm": 11.2,
-        "steps": [
-          {"signal": "rolling_median5", "window_size": 5, "samples_in_window": 5},
-          {"signal": "rolling_average", "window_size": 200, "samples_in_window": 200}
-        ]
+        "window_size": 200,
+        "samples_in_window": 200
       }
-    },
-    "instantaneous_raw": {
-      "config": {"type": "raw", "params": {}, "primary": false, "emit": true},
-      "output": {"distance_cm": 11.3}
     }
   }
 }
 ```
 
-Each signal's `config` is its *effective* configuration from this
-sensor's `signals:` list in `config/sensors.yaml` (defaults filled in,
-so `primary`/`emit` are always present even if the YAML omitted them),
-and `output` is the same shape `/level`'s `signals` used to expose —
-`distance_cm` plus that signal's own `extra_state()`.
-Returns `503 {"error": "no readings yet"}` under the same condition as
-`/level`.
+Each signal's `config` is its *effective* configuration from
+`config/sensors.yaml`'s `signals:` list (defaults filled in, so
+`primary`/`emit` are always present even if the YAML omitted them; a
+non-`raw` signal's `input` is included too), and `output` is the same
+shape `/level`'s `signals` used to expose — `distance_cm` plus that
+signal's own `extra_state()`. Returns `503 {"error": "no readings
+yet"}` under the same condition as `/level`.
 
 ### `POST /reset` / `POST /sensors/<name>/reset`
 
@@ -444,12 +439,18 @@ doesn't itself glitch the sensor's power).
 
 ## Signal processing
 
-Each sensor's raw readings are run through every signal configured in
-its own `signals:` list in `config/sensors.yaml` (a strategy pattern —
-one class per algorithm, in `src/pondpi/signals/`), and every signal's
-output is returned side by side on that sensor's `/level`. This makes
-it possible to compare smoothing approaches against the live sensor
-stream without a code change or redeploy — just edit the YAML.
+Signals live in their own top-level `signals:` list in
+`config/sensors.yaml`, independent of the `sensors:` list — not nested
+under a sensor. Only a `type: raw` signal reads directly from a sensor,
+named by `params.sensor`; every other signal reads another signal's
+*live output* instead, named by a top-level `input:` key. This is how
+sequential composition (e.g. median-then-average) is expressed — no
+dedicated "chain" type needed, just two flat entries linked by
+`input:`. Each configured sensor's `/level` shows the output of every
+signal ultimately rooted at it (traced by following `input:` chains
+back to whichever `raw` signal names that sensor), side by side. This
+makes it possible to compare smoothing approaches against the live
+sensor stream without a code change or redeploy — just edit the YAML.
 
 Signal types are discovered dynamically at server startup, not from a
 hand-maintained registry: each file in `signals/` whose name ends in
@@ -458,10 +459,10 @@ with that suffix stripped becomes the `type:` string used in the YAML.
 Files that don't end in `_signal` (`base.py`, or any future non-signal
 helper module) are ignored automatically — no hardcoded skip-list to
 maintain. Adding a new signal type means writing
-`signals/<name>_signal.py` and referencing `type: <name>` in a sensor's
+`signals/<name>_signal.py` and referencing `type: <name>` in the
 `signals:` list — nothing else to edit or register.
 
-Signals are unit-agnostic: `add()` takes a raw value in and returns a
+Signals are unit-agnostic: `add()` takes a value in and returns a
 processed value out, with no notion of mm/cm baked in anywhere.
 Millimeter readings from the sensor go in, and whatever comes out is
 only interpreted as millimeters (and converted to cm) at the HTTP layer
@@ -471,11 +472,13 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
-| `raw` | none | Passes the raw reading through unchanged. |
-| `rolling_median` | `window_size` | Median-filters the raw reading over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size` | Averages the raw reading over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
-| `exponential_smoothing` | `alpha` | Exponentially-weighted moving average — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
-| `chain` | `steps` | Runs a value through other signals in sequence, feeding each stage's output into the next. See below. |
+| `raw` | `sensor` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
+| `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
+| `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
+
+Every type except `raw` also requires a top-level `input: <name>`,
+naming the signal (defined earlier in the file) whose output feeds it.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `--polling-interval-ms`, default 150ms) — not once per reading of
@@ -490,17 +493,8 @@ cadence, pick `alpha` so the half-life (`0.15 * ln(0.5)/ln(1-alpha)`
 seconds, at the default polling interval) lands near that cadence —
 roughly `alpha` in the 0.01-0.2 range for a 10-30s cadence.
 
-`chain`'s `steps` is a list where each entry is either `ref: <name>` —
-reuses another signal's `type`/`params` to build a fresh, **independent**
-instance (a config alias, never the literal same object, so state is
-never shared between the two) — or an inline `type:`/`params:`, built
-directly (recursively, so a step can itself be a chain). This is how
-today's production pipeline (rolling-median-then-rolling-average) is
-built, without needing a dedicated hardcoded class for it.
-
-Example sensor entry in `config/sensors.yaml` (see [Sensor
-drivers](#sensor-drivers) for the `name`/`type`/`params` fields
-surrounding `signals:`):
+Example `config/sensors.yaml` (see [Sensor drivers](#sensor-drivers) for
+the `sensors:` entry's own `name`/`type`/`params` fields):
 
 ```yaml
 sensors:
@@ -511,28 +505,34 @@ sensors:
       serial_port: /dev/serial0
       mode_select_pin: 25
       power_pin: 24
-    signals:
-      - name: rolling_median5
-        type: rolling_median
-        emit: false
-        params:
-          window_size: 5
-      - name: rolling_avg
-        type: chain
-        primary: true
-        params:
-          steps:
-            - ref: rolling_median5
-            - type: rolling_average
-              params:
-                window_size: 200
-      - name: instantaneous_raw
-        type: raw
+
+signals:
+  - name: instantaneous_raw
+    type: raw
+    params:
+      sensor: pond_main
+  - name: rolling_median5
+    type: rolling_median
+    input: instantaneous_raw
+    emit: false
+    params:
+      window_size: 5
+  - name: rolling_avg
+    type: rolling_average
+    input: rolling_median5
+    primary: true
+    params:
+      window_size: 200
 ```
 
-Exactly one entry per sensor must be marked `primary: true`. Its output
-becomes `primary_signal` in that sensor's `/level` — **the deployed Home
-Assistant "Pond Level" sensor reads that field**
+Here `rolling_avg` reads `rolling_median5`'s output, which in turn reads
+`instantaneous_raw`'s output (the sensor's raw reading) — a
+median-then-average pipeline built entirely from `input:` references,
+with each stage its own independently named signal.
+
+Exactly one signal rooted at each sensor must be marked `primary: true`.
+Its output becomes `primary_signal` in that sensor's `/level` — **the
+deployed Home Assistant "Pond Level" sensor reads that field**
 (`sensor.pond_level`, a `rest` sensor in Home Assistant's
 `configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s via
 `value_json.primary_signal.value`), so don't remove or repurpose the
@@ -542,10 +542,10 @@ signals — it's always the raw last-valid reading — and is what
 `sensor.pond_level_sensor_raw` reads (via
 `value_json.signals.instantaneous_raw`).
 
-Any entry can also set `emit: false` (default `true`) to keep it out of
+Any signal can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
 while it still shows up in full on `/diag`. Use this for a signal that
-only exists as an intermediate stage feeding a `chain` (like
+only exists as an intermediate stage feeding another signal (like
 `rolling_median5` above) and isn't a meaningful output on its own.
 
 ## Configuration
@@ -611,11 +611,11 @@ under `src/pondpi/` take effect immediately — no reinstall needed. It
 also puts the `pondpi-server` command on your `PATH` (equivalently, run
 `python -m pondpi.server` directly).
 
-Useful while developing: a small `rolling_window_size` in a sensor's
-`signals:` list in `config/sensors.yaml` (see the average react
-faster) and `--polling-interval-ms 200` (slow the stream down to read it
-by eye). Pass `--sensors-config` to point at an alternate YAML file
-without touching the checked-in one.
+Useful while developing: a small `window_size` on a `rolling_average`/
+`rolling_median` signal in `config/sensors.yaml`'s `signals:` list (see
+the average react faster) and `--polling-interval-ms 200` (slow the
+stream down to read it by eye). Pass `--sensors-config` to point at an
+alternate YAML file without touching the checked-in one.
 
 ## Testing
 

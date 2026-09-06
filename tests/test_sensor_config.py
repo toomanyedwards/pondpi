@@ -19,10 +19,12 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
             type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
+        signals:
+          - name: instantaneous_raw
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
         """,
     )
 
@@ -44,17 +46,20 @@ def test_loads_multiple_sensors(tmp_path):
             type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
           - name: rain_barrel
             type: a02yyuw
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
+        signals:
+          - name: pond_raw
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
+          - name: barrel_raw
+            type: raw
+            primary: true
+            params:
+              sensor: rain_barrel
         """,
     )
 
@@ -64,6 +69,8 @@ def test_loads_multiple_sensors(tmp_path):
     assert set(sensors) == {"pond_main", "rain_barrel"}
     # Distinct instances -- not the same driver object reused.
     assert sensors["pond_main"]["driver"] is not sensors["rain_barrel"]["driver"]
+    assert set(sensors["pond_main"]["signals"]) == {"pond_raw"}
+    assert set(sensors["rain_barrel"]["signals"]) == {"barrel_raw"}
 
 
 def test_simulate_true_ignores_hardware_params(tmp_path):
@@ -81,10 +88,12 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
               serial_port: /dev/does_not_exist
               mode_select_pin: 99
               power_pin: 98
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
+        signals:
+          - name: instantaneous_raw
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
         """,
     )
 
@@ -101,10 +110,6 @@ def test_missing_default_raises(tmp_path):
           - name: pond_main
             type: a02yyuw
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
         """,
     )
 
@@ -121,18 +126,10 @@ def test_multiple_defaults_raises(tmp_path):
             type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
           - name: rain_barrel
             type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
         """,
     )
 
@@ -149,10 +146,6 @@ def test_unknown_sensor_type_raises(tmp_path):
             type: not_a_real_sensor
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
         """,
     )
 
@@ -169,17 +162,9 @@ def test_duplicate_sensor_name_raises(tmp_path):
             type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
           - name: pond_main
             type: a02yyuw
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
         """,
     )
 
@@ -195,10 +180,6 @@ def test_missing_name_raises(tmp_path):
           - type: a02yyuw
             default: true
             params: {}
-            signals:
-              - name: instantaneous_raw
-                type: raw
-                primary: true
         """,
     )
 
@@ -215,11 +196,36 @@ def test_empty_signals_list_raises(tmp_path):
             type: a02yyuw
             default: true
             params: {}
-            signals: []
+        signals: []
         """,
     )
 
-    with pytest.raises(ValueError, match="must have a non-empty 'signals' list"):
+    with pytest.raises(ValueError, match="'signals' must be a non-empty list"):
+        load_sensors(path, simulate=True)
+
+
+def test_sensor_with_no_matching_signal_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        sensors:
+          - name: pond_main
+            type: a02yyuw
+            default: true
+            params: {}
+          - name: rain_barrel
+            type: a02yyuw
+            params: {}
+        signals:
+          - name: pond_raw
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
+        """,
+    )
+
+    with pytest.raises(ValueError, match="sensor 'rain_barrel' has no signals rooted at it"):
         load_sensors(path, simulate=True)
 
 
