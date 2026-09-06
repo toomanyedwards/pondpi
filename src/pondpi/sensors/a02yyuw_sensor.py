@@ -1,6 +1,8 @@
 import time
 
-from pondpi import read_sensor, sensor_mode
+import serial
+
+from pondpi import read_sensor, sensor_mode, sensor_power
 from pondpi.sensors.base import LevelSensor
 
 # Comfortably above the sensor's ~100ms response time -- if this long
@@ -123,3 +125,28 @@ class A02YYUWSensor(LevelSensor):
         self._ser.close()
         self._mode_controller.close()
         self._power_controller.close()
+
+
+def create(params, simulate):
+    """Builds an A02YYUWSensor from a sensor config entry's `params`
+    dict -- see discover_sensor_types() for why driver types need a
+    factory function rather than being constructed directly.
+
+    Recognized params (all optional):
+      serial_port (default "/dev/serial0"), mode_select_pin (default 25),
+      power_pin (default 24).
+
+    Under `simulate`, params are ignored entirely -- always builds
+    SimulatedSerial plus no-op mode/power controllers instead of opening
+    real hardware.
+    """
+    if simulate:
+        ser = read_sensor.SimulatedSerial()
+        mode_controller = sensor_mode.NullModeController()
+        power_controller = sensor_power.NullPowerController()
+    else:
+        ser = serial.Serial(params.get("serial_port", "/dev/serial0"), baudrate=9600, timeout=1)
+        mode_controller = sensor_mode.GpioModeController(params.get("mode_select_pin", 25))
+        power_controller = sensor_power.GpioPowerController(params.get("power_pin", 24))
+
+    return A02YYUWSensor(ser, mode_controller, power_controller)

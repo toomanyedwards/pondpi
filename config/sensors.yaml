@@ -1,0 +1,50 @@
+# Named sensor instances, each built by the driver `type`'s create()
+# function in src/pondpi/sensors/. A type name is just its file's
+# filename with the "_sensor" suffix stripped (e.g.
+# sensors/a02yyuw_sensor.py -> type: a02yyuw), discovered dynamically at
+# startup -- adding a new sensor type means writing
+# sensors/<name>_sensor.py, not editing anything here or in code.
+#
+# Exactly one sensor must be marked `default: true`. server.py's bare
+# routes (/level, /diag, POST /reset -- i.e. not under /sensors/<name>/)
+# operate on that one, so a single-sensor deployment's existing
+# integrations (e.g. Home Assistant's REST sensors, configured against
+# these exact bare routes) keep working unchanged as more sensors are
+# added. Every sensor, default or not, is also reachable at
+# /sensors/<name>/level and /sensors/<name>/diag.
+#
+# Each sensor's own `processors:` list uses the exact same schema as
+# this file's single-sensor predecessor, config/processors.yaml --
+# named, parameterized instances of the LevelSignalProcessor classes in
+# src/pondpi/signal_processors/. See README.md's "Signal processing"
+# section for that schema in full (chain/ref steps, emit: false,
+# primary: true).
+sensors:
+  - name: pond_main
+    type: a02yyuw
+    default: true
+    params:
+      serial_port: /dev/serial0
+      mode_select_pin: 25
+      power_pin: 24
+    processors:
+      - name: rolling_median5
+        type: rolling_median
+        emit: false
+        params:
+          window_size: 5
+      - name: rolling_avg
+        type: chain
+        primary: true
+        params:
+          steps:
+            - ref: rolling_median5
+            - type: rolling_average
+              params:
+                # 400 samples * 150ms poll interval = ~60s window, matched
+                # to Home Assistant's scan_interval so primary_signal
+                # represents a full averaged interval per HA poll rather
+                # than a ~6s slice of it.
+                window_size: 400
+      - name: instantaneous_raw
+        type: raw

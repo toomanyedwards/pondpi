@@ -10,7 +10,8 @@ class ChainSignalProcessor(LevelSignalProcessor):
     step always gets its own independent instance -- referencing another
     processor by name (`ref:`) reuses its type/params to build a fresh
     instance, never the literal same object, so state is never shared
-    across processors. See config/processors.yaml for examples.
+    across processors. See config/sensors.yaml for examples (each
+    sensor's own `processors:` list uses this same schema).
     """
 
     def __init__(self, steps):
