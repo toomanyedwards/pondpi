@@ -12,8 +12,8 @@ from pondpi.sensors.base import LevelSensor
 STALE_READING_THRESHOLD_S = 3.0
 
 # This driver spends most of its time with the sensor in "raw" mode (so
-# downstream signal processors -- tuned assuming a near-continuous feed
-# -- keep behaving as they always have) and only briefly dips into
+# downstream signals -- tuned assuming a near-continuous feed -- keep
+# behaving as they always have) and only briefly dips into
 # "processed" mode once per cycle to keep that reading fresh too. E.g.
 # with the defaults below: 1s of "processed" out of every 10s, so "raw"
 # still sees samples ~90% of the time.

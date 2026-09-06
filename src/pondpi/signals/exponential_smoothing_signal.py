@@ -1,7 +1,7 @@
-from pondpi.signal_processors.base import LevelSignalProcessor
+from pondpi.signals.base import LevelSignal
 
 
-class ExponentialSmoothingSignalProcessor(LevelSignalProcessor):
+class ExponentialSmoothingSignal(LevelSignal):
     """Exponentially-weighted moving average: each new reading gets
     weight `alpha`, with every prior reading's weight decaying
     geometrically by (1 - alpha). Unlike a rolling window, there's no

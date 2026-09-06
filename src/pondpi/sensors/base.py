@@ -1,7 +1,7 @@
 class LevelSensor:
     """Base class every sensor driver implements, one file per sensor
-    type (e.g. `a02yyuw_sensor.py`), mirroring how
-    `signal_processors/` is structured.
+    type (e.g. `a02yyuw_sensor.py`), mirroring how `signals/` is
+    structured.
 
     `read()` returns canonical readings -- distance from the sensor's
     mount point down to the water surface, in millimeters -- regardless
@@ -10,8 +10,8 @@ class LevelSensor:
     sensor's raw distance vs. a resistive sensor's submerged length,
     with opposite sign conventions), so each driver is responsible for
     converting its own native reading into this shared unit before
-    returning it; nothing downstream (signal processors, the HTTP API)
-    needs to know which sensing technology produced a given value.
+    returning it; nothing downstream (signals, the HTTP API) needs to
+    know which sensing technology produced a given value.
 
     A driver reports one or more named signals -- e.g. `A02YYUWSensor`
     reports "raw" and "processed", corresponding to the sensor's two

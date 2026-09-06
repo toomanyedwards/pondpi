@@ -1,8 +1,8 @@
-from pondpi.signal_processors.base import LevelSignalProcessor
-from pondpi.signal_processors.utils.rolling_median_filter import RollingMedianFilter
+from pondpi.signals.base import LevelSignal
+from pondpi.signals.utils.rolling_median_filter import RollingMedianFilter
 
 
-class RollingMedianSignalProcessor(LevelSignalProcessor):
+class RollingMedianSignal(LevelSignal):
     """Median-filters the raw reading over a rolling window."""
 
     def __init__(self, window_size):

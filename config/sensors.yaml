@@ -13,12 +13,10 @@
 # added. Every sensor, default or not, is also reachable at
 # /sensors/<name>/level and /sensors/<name>/diag.
 #
-# Each sensor's own `processors:` list uses the exact same schema as
-# this file's single-sensor predecessor, config/processors.yaml --
-# named, parameterized instances of the LevelSignalProcessor classes in
-# src/pondpi/signal_processors/. See README.md's "Signal processing"
-# section for that schema in full (chain/ref steps, emit: false,
-# primary: true).
+# Each sensor's own `signals:` list is a set of named, parameterized
+# instances of the LevelSignal classes in src/pondpi/signals/. See
+# README.md's "Signal processing" section for that schema in full
+# (chain/ref steps, emit: false, primary: true).
 sensors:
   - name: pond_main
     type: a02yyuw
@@ -27,7 +25,7 @@ sensors:
       serial_port: /dev/serial0
       mode_select_pin: 25
       power_pin: 24
-    processors:
+    signals:
       - name: rolling_median5
         type: rolling_median
         emit: false

@@ -1,12 +1,12 @@
 import pytest
 
-from pondpi.signal_processor_config import load_signal_processors
-from pondpi.signal_processors.chain_processor import ChainSignalProcessor
-from pondpi.signal_processors.raw_processor import RawSignalProcessor
+from pondpi.signal_config import load_signals
+from pondpi.signals.chain_signal import ChainSignal
+from pondpi.signals.raw_signal import RawSignal
 
 
 def write_yaml(tmp_path, content):
-    path = tmp_path / "processors.yaml"
+    path = tmp_path / "signals.yaml"
     path.write_text(content)
     return path
 
@@ -15,7 +15,7 @@ def test_loads_valid_config(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_median5
             type: rolling_median
             params:
@@ -34,12 +34,12 @@ def test_loads_valid_config(tmp_path):
         """,
     )
 
-    processors, primary_name, emit_flags, configs = load_signal_processors(path)
+    signals, primary_name, emit_flags, configs = load_signals(path)
 
     assert primary_name == "rolling_avg"
-    assert set(processors) == {"rolling_median5", "rolling_avg", "instantaneous_raw"}
-    assert isinstance(processors["rolling_avg"], ChainSignalProcessor)
-    assert isinstance(processors["instantaneous_raw"], RawSignalProcessor)
+    assert set(signals) == {"rolling_median5", "rolling_avg", "instantaneous_raw"}
+    assert isinstance(signals["rolling_avg"], ChainSignal)
+    assert isinstance(signals["instantaneous_raw"], RawSignal)
     # emit defaults to True when not specified
     assert emit_flags == {"rolling_median5": True, "rolling_avg": True, "instantaneous_raw": True}
     assert configs["rolling_median5"] == {
@@ -60,7 +60,7 @@ def test_emit_false_is_respected(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_median5
             type: rolling_median
             emit: false
@@ -72,7 +72,7 @@ def test_emit_false_is_respected(tmp_path):
         """,
     )
 
-    _, _, emit_flags, configs = load_signal_processors(path)
+    _, _, emit_flags, configs = load_signals(path)
 
     assert emit_flags == {"rolling_median5": False, "instantaneous_raw": True}
     assert configs["rolling_median5"]["emit"] is False
@@ -82,7 +82,7 @@ def test_config_summary_reflects_effective_primary_and_chain_params(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_median5
             type: rolling_median
             params:
@@ -99,7 +99,7 @@ def test_config_summary_reflects_effective_primary_and_chain_params(tmp_path):
         """,
     )
 
-    _, _, _, configs = load_signal_processors(path)
+    _, _, _, configs = load_signals(path)
 
     assert configs["rolling_avg"] == {
         "type": "chain",
@@ -118,7 +118,7 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_median5
             type: rolling_median
             params:
@@ -135,9 +135,9 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
         """,
     )
 
-    processors, _, _, _ = load_signal_processors(path)
-    rolling_median5 = processors["rolling_median5"]
-    rolling_avg = processors["rolling_avg"]
+    signals, _, _, _ = load_signals(path)
+    rolling_median5 = signals["rolling_median5"]
+    rolling_avg = signals["rolling_avg"]
 
     # Feed distinct values into the standalone rolling_median5 vs. the chain (which
     # also starts with a median-5 step). If the chain's ref step shared
@@ -149,14 +149,14 @@ def test_chain_ref_step_builds_an_independent_instance(tmp_path):
     assert rolling_median5.extra_state()["samples_in_window"] == 1
     chain_median_state = rolling_avg.extra_state()["steps"][0]
     assert chain_median_state["samples_in_window"] == 1
-    assert chain_median_state["processor"] == "rolling_median5"
+    assert chain_median_state["signal"] == "rolling_median5"
 
 
 def test_nested_chain_of_chains(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: outer
             type: chain
             primary: true
@@ -174,8 +174,8 @@ def test_nested_chain_of_chains(tmp_path):
         """,
     )
 
-    processors, _, _, _ = load_signal_processors(path)
-    outer = processors["outer"]
+    signals, _, _, _ = load_signals(path)
+    outer = signals["outer"]
 
     assert outer.add(10) == 10  # median([10]) = 10 -> rolling([10]) = 10
 
@@ -183,11 +183,11 @@ def test_nested_chain_of_chains(tmp_path):
     assert outer.add(30) == 15
 
 
-def test_ref_to_undefined_processor_raises(tmp_path):
+def test_ref_to_undefined_signal_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_avg
             type: chain
             primary: true
@@ -197,15 +197,15 @@ def test_ref_to_undefined_processor_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined processor 'does_not_exist'"):
-        load_signal_processors(path)
+    with pytest.raises(ValueError, match="references undefined signal 'does_not_exist'"):
+        load_signals(path)
 
 
-def test_ref_to_processor_defined_later_raises(tmp_path):
+def test_ref_to_signal_defined_later_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_avg
             type: chain
             primary: true
@@ -219,15 +219,15 @@ def test_ref_to_processor_defined_later_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined processor 'rolling_median5'"):
-        load_signal_processors(path)
+    with pytest.raises(ValueError, match="references undefined signal 'rolling_median5'"):
+        load_signals(path)
 
 
 def test_chain_step_self_reference_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_avg
             type: chain
             primary: true
@@ -237,15 +237,15 @@ def test_chain_step_self_reference_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined processor 'rolling_avg'"):
-        load_signal_processors(path)
+    with pytest.raises(ValueError, match="references undefined signal 'rolling_avg'"):
+        load_signals(path)
 
 
 def test_chain_with_empty_steps_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: rolling_avg
             type: chain
             primary: true
@@ -255,28 +255,28 @@ def test_chain_with_empty_steps_raises(tmp_path):
     )
 
     with pytest.raises(ValueError, match="must have at least one step"):
-        load_signal_processors(path)
+        load_signals(path)
 
 
 def test_missing_primary_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: raw
             type: raw
         """,
     )
 
     with pytest.raises(ValueError, match="primary"):
-        load_signal_processors(path)
+        load_signals(path)
 
 
 def test_multiple_primaries_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: a
             type: raw
             primary: true
@@ -286,15 +286,15 @@ def test_multiple_primaries_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="multiple processors marked primary"):
-        load_signal_processors(path)
+    with pytest.raises(ValueError, match="multiple signals marked primary"):
+        load_signals(path)
 
 
 def test_unknown_type_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: a
             type: exponential_moving_average
             primary: true
@@ -302,14 +302,14 @@ def test_unknown_type_raises(tmp_path):
     )
 
     with pytest.raises(ValueError, match="unknown type"):
-        load_signal_processors(path)
+        load_signals(path)
 
 
 def test_duplicate_name_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: a
             type: raw
             primary: true
@@ -318,15 +318,15 @@ def test_duplicate_name_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="duplicate processor name"):
-        load_signal_processors(path)
+    with pytest.raises(ValueError, match="duplicate signal name"):
+        load_signals(path)
 
 
 def test_invalid_params_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
-        processors:
+        signals:
           - name: a
             type: rolling_median
             primary: true
@@ -336,16 +336,16 @@ def test_invalid_params_raises(tmp_path):
     )
 
     with pytest.raises(ValueError, match="invalid params"):
-        load_signal_processors(path)
+        load_signals(path)
 
 
-def test_empty_processors_list_raises(tmp_path):
-    path = write_yaml(tmp_path, "processors: []\n")
+def test_empty_signals_list_raises(tmp_path):
+    path = write_yaml(tmp_path, "signals: []\n")
 
     with pytest.raises(ValueError, match="non-empty list"):
-        load_signal_processors(path)
+        load_signals(path)
 
 
 def test_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        load_signal_processors(tmp_path / "does_not_exist.yaml")
+        load_signals(tmp_path / "does_not_exist.yaml")

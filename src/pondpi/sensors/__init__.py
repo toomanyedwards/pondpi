@@ -13,19 +13,19 @@ _TYPE_SUFFIX = "_sensor"
 def discover_sensor_types(package=None):
     """Returns {type_name: create_function} for every module in this
     package whose filename ends in "_sensor" (mirrors
-    signal_processors.discover_signal_processor_types() -- see that
-    docstring for the general approach).
+    signals.discover_signal_types() -- see that docstring for the
+    general approach).
 
     type_name is the module's filename with that suffix stripped (e.g.
     sensors/a02yyuw_sensor.py -> type "a02yyuw"). Each such module must
     define exactly one LevelSensor subclass, and a module-level
     `create(params, simulate)` function that builds and returns an
-    instance of it. Unlike signal processors (whose constructors take
-    simple scalar params directly), most sensor drivers need real
-    hardware objects -- a serial connection, GPIO controllers --
-    assembled around those params, and build entirely different
-    (simulated) objects under `--simulate`; `create()` is where a driver
-    does that assembly, so callers never need to know a given type's own
+    instance of it. Unlike signals (whose constructors take simple
+    scalar params directly), most sensor drivers need real hardware
+    objects -- a serial connection, GPIO controllers -- assembled
+    around those params, and build entirely different (simulated)
+    objects under `--simulate`; `create()` is where a driver does that
+    assembly, so callers never need to know a given type's own
     construction details.
     """
     if package is None:
