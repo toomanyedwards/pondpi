@@ -59,6 +59,7 @@ pondpi/
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `sensor_mode.py` | Drives the sensor's RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
+| `sensor_power.py` | Drives the sensor's power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `server.py` | Service entrypoint (`pondpi-server`). Starts the background polling thread and the Flask app. Owns all CLI configuration. |
 
 ## API
@@ -191,6 +192,27 @@ shape `/level`'s `signals`/`processors` used to expose — `distance_cm`
 plus that processor's own `extra_state()`. Returns `503 {"error": "no
 readings yet"}` under the same condition as `/level`.
 
+### `POST /reset`
+
+Power-cycles the sensor to force a hardware reset — for when it appears
+wedged/stuck (e.g. a stale, unchanging reading) and the automatic serial
+buffer flush in `poll_sensor()` (see `/health` below) hasn't resolved it
+on its own. Drives the sensor's power pin (`--power-pin`, default `24`)
+low for `sensor_power.RESET_OFF_DURATION_S` (1s) and back high, so the
+request blocks for about that long.
+
+```json
+{
+  "status": "reset",
+  "reset_at": "2026-09-05T22:05:40.132812+00:00"
+}
+```
+
+`reset_at` is also recorded as `/health`'s `last_reset_at` below. There's
+no readiness check afterward — the sensor typically resumes producing
+valid frames within its normal ~100-300ms response time, same as at
+startup.
+
 ### `GET /health`
 
 ```json
@@ -198,6 +220,7 @@ readings yet"}` under the same condition as `/level`.
   "status": "ok",
   "poller_alive": true,
   "last_reading_age_s": 0.1,
+  "last_reset_at": null,
   "started_at": "2026-08-29T19:31:24.633421+00:00",
   "uptime_seconds": 93780.4,
   "uptime_human": "1d 2h 3m 0s",
@@ -226,6 +249,10 @@ stale data forever with no signal anything was wrong:
 before the first ever reading (not itself a degraded condition — a poller
 that's alive but just hasn't read anything yet, e.g. right after startup,
 is normal).
+
+`last_reset_at` is when `POST /reset` last power-cycled the sensor, or
+`null` if it's never been called since this service started (not
+persisted across restarts).
 
 `uptime_human` is `uptime_seconds` formatted as `"1d 2h 3m 4s"`. Units
 below the largest non-zero one are always shown (so exactly one hour is
@@ -312,6 +339,18 @@ during ~86% of wall-clock time (9s of `raw` per 10s cycle, minus
 window" (`rolling_avg`'s `window_size: 400` in `config/processors.yaml`)
 is closer to ~70s in practice. Not large enough to bother retuning, but
 worth remembering if that math is ever redone.
+
+### Power pin: software-triggered reset
+
+The sensor's power supply is also wired through a GPIO (`--power-pin`,
+default `24`) rather than a fixed always-on rail, so it can be
+power-cycled from software via `POST /reset` (above) instead of requiring
+someone to physically unplug it. That GPIO is also driven high at boot
+via `/boot/firmware/config.txt`'s `gpio=24=op,dh` directive, so the
+sensor already has power before this service starts — `sensor_power.py`'s
+`GpioPowerController` takes over control of that same pin at startup
+(initialized high, matching its already-high boot state, so acquiring it
+doesn't itself glitch the sensor's power).
 
 ## Signal processing
 
@@ -426,6 +465,7 @@ above.
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
 | `--mode-select-pin` | `25` | BCM GPIO pin wired to the sensor's RX/mode-select line — see [Sensor notes](#sensor-notes). Ignored under `--simulate`. |
+| `--power-pin` | `24` | BCM GPIO pin wired to the sensor's power supply, used by `POST /reset` — see [Sensor notes](#sensor-notes). Ignored under `--simulate`. |
 | `--simulate` | off | Use `SimulatedSerial` (synthetic sine-wave + noise data) and a no-op mode controller instead of opening `/dev/serial0` and driving real GPIO. For local development with no sensor hardware attached. |
 
 `--processors-config`'s default (and where `/health`'s `commit_sha`
