@@ -7,7 +7,7 @@ from pathlib import Path
 import serial
 from flask import Flask, jsonify, request
 
-from pondpi import read_sensor, sensor_mode
+from pondpi import read_sensor, sensor_mode, sensor_power
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
 from pondpi.signal_processor_config import load_signal_processors
@@ -49,9 +49,12 @@ _state = {
     "polling_interval_ms": None,
     "commit_sha": read_commit_sha(Path.cwd()),
     "last_reading_monotonic": None,
+    "last_reset_at": None,
 }
 
 _poll_thread = None
+_power_controller = None
+_reset_lock = threading.Lock()
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
 
@@ -149,10 +152,13 @@ def health():
 
     status = "ok" if poller_alive and not stale else "degraded"
 
+    last_reset_at = _state["last_reset_at"]
+
     payload = jsonify(
         status=status,
         poller_alive=poller_alive,
         last_reading_age_s=last_reading_age_s,
+        last_reset_at=last_reset_at.isoformat() if last_reset_at else None,
         started_at=_started_at.isoformat(),
         uptime_seconds=uptime_seconds,
         uptime_human=format_duration(uptime_seconds),
@@ -160,6 +166,21 @@ def health():
         commit_sha=_state["commit_sha"],
     )
     return payload if status == "ok" else (payload, 503)
+
+
+@app.route("/reset", methods=["POST"])
+def reset():
+    """Power-cycles the sensor to force a hardware reset -- e.g. if it
+    appears wedged/stuck and a serial buffer flush alone hasn't helped.
+    Blocks for `sensor_power.RESET_OFF_DURATION_S` while the sensor is
+    powered off."""
+    with _reset_lock:
+        _power_controller.reset()
+        reset_at = datetime.now(timezone.utc)
+        with _state_lock:
+            _state["last_reset_at"] = reset_at
+
+    return jsonify(status="reset", reset_at=reset_at.isoformat())
 
 
 @app.route("/level")
@@ -218,7 +239,7 @@ def diag():
 
 
 def main():
-    global _poll_thread
+    global _poll_thread, _power_controller
 
     parser = argparse.ArgumentParser(description="A02YYUW distance HTTP server with rolling average smoothing")
     parser.add_argument(
@@ -242,6 +263,12 @@ def main():
         help="BCM GPIO pin wired to the sensor's RX/mode-select line (default: 25)",
     )
     parser.add_argument(
+        "--power-pin",
+        type=int,
+        default=24,
+        help="BCM GPIO pin wired to the sensor's power supply, used by POST /reset (default: 24)",
+    )
+    parser.add_argument(
         "--simulate",
         action="store_true",
         help="use synthetic sensor data instead of a real serial connection (for local development)",
@@ -251,10 +278,12 @@ def main():
     if args.simulate:
         ser = read_sensor.SimulatedSerial()
         mode_controller = sensor_mode.NullModeController()
+        _power_controller = sensor_power.NullPowerController()
     else:
         # Initialize serial port at 9600 baud rate
         ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
         mode_controller = sensor_mode.GpioModeController(args.mode_select_pin)
+        _power_controller = sensor_power.GpioPowerController(args.power_pin)
 
     processors, primary_name, emit_flags, configs = load_signal_processors(args.processors_config)
     _state["processor_names"] = list(processors)
@@ -278,6 +307,7 @@ def main():
         stop_event.set()
         ser.close()
         mode_controller.close()
+        _power_controller.close()
 
 
 if __name__ == "__main__":

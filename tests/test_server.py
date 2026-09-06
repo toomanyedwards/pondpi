@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 from pondpi import server
 
@@ -50,6 +51,17 @@ class FakeModeController:
 
     def set_mode(self, mode):
         self.calls.append(mode)
+
+    def close(self):
+        pass
+
+
+class FakePowerController:
+    def __init__(self):
+        self.reset_calls = []
+
+    def reset(self, off_duration_s=None):
+        self.reset_calls.append(off_duration_s)
 
     def close(self):
         pass
@@ -127,6 +139,45 @@ def test_health_degraded_when_reading_stale():
     # should drive degraded status here, not thread liveness.
     assert data["poller_alive"] is True
     assert data["last_reading_age_s"] > server.STALE_READING_THRESHOLD_S
+
+
+def test_health_last_reset_at_null_before_any_reset():
+    server._poll_thread = DummyThread(alive=True)
+    server._state["last_reading_monotonic"] = None
+    server._state["last_reset_at"] = None
+    client = server.app.test_client()
+
+    resp = client.get("/health")
+
+    assert resp.get_json()["last_reset_at"] is None
+
+
+def test_health_reflects_last_reset_at():
+    server._poll_thread = DummyThread(alive=True)
+    server._state["last_reading_monotonic"] = None
+    reset_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    server._state["last_reset_at"] = reset_at
+    client = server.app.test_client()
+
+    resp = client.get("/health")
+
+    assert resp.get_json()["last_reset_at"] == reset_at.isoformat()
+
+
+def test_reset_powercycles_sensor_and_records_last_reset_at():
+    fake_power = FakePowerController()
+    server._power_controller = fake_power
+    server._state["last_reset_at"] = None
+    client = server.app.test_client()
+
+    resp = client.post("/reset")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "reset"
+    assert len(fake_power.reset_calls) == 1
+    assert server._state["last_reset_at"] is not None
+    assert data["reset_at"] == server._state["last_reset_at"].isoformat()
 
 
 def test_poll_sensor_updates_state_on_valid_frame():
