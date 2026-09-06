@@ -12,11 +12,6 @@
 # these exact bare routes) keep working unchanged as more sensors are
 # added. Every sensor, default or not, is also reachable at
 # /sensors/<name>/level and /sensors/<name>/diag.
-#
-# Each sensor's own `signals:` list is a set of named, parameterized
-# instances of the LevelSignal classes in src/pondpi/signals/. See
-# README.md's "Signal processing" section for that schema in full
-# (chain/ref steps, emit: false, primary: true).
 sensors:
   - name: pond_main
     type: a02yyuw
@@ -25,24 +20,35 @@ sensors:
       serial_port: /dev/serial0
       mode_select_pin: 25
       power_pin: 24
-    signals:
-      - name: rolling_median5
-        type: rolling_median
-        emit: false
-        params:
-          window_size: 5
-      - name: rolling_avg
-        type: chain
-        primary: true
-        params:
-          steps:
-            - ref: rolling_median5
-            - type: rolling_average
-              params:
-                # 400 samples * 150ms poll interval = ~60s window, matched
-                # to Home Assistant's scan_interval so primary_signal
-                # represents a full averaged interval per HA poll rather
-                # than a ~6s slice of it.
-                window_size: 400
-      - name: instantaneous_raw
-        type: raw
+
+# Named, parameterized instances of the LevelSignal classes in
+# src/pondpi/signals/. See README.md's "Signal processing" section for
+# this schema in full (params.sensor, input:, emit: false, primary:
+# true).
+#
+# Only a `type: raw` signal reads directly from a sensor, via
+# params.sensor naming it. Every other signal reads another signal's
+# live output instead, named by `input:` -- this is how sequential
+# composition (e.g. median-then-average below) is expressed, without a
+# dedicated "chain" type.
+signals:
+  - name: instantaneous_raw
+    type: raw
+    params:
+      sensor: pond_main
+  - name: rolling_median5
+    type: rolling_median
+    input: instantaneous_raw
+    emit: false
+    params:
+      window_size: 5
+  - name: rolling_avg
+    type: rolling_average
+    input: rolling_median5
+    primary: true
+    params:
+      # 400 samples * 150ms poll interval = ~60s window, matched
+      # to Home Assistant's scan_interval so primary_signal
+      # represents a full averaged interval per HA poll rather
+      # than a ~6s slice of it.
+      window_size: 400

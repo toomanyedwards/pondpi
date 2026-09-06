@@ -1,7 +1,6 @@
 import pytest
 
 from pondpi.signals import discover_signal_types
-from pondpi.signals.chain_signal import ChainSignal
 from pondpi.signals.exponential_smoothing_signal import ExponentialSmoothingSignal
 from pondpi.signals.raw_signal import RawSignal
 from pondpi.signals.rolling_average_signal import RollingAverageSignal
@@ -9,10 +8,14 @@ from pondpi.signals.rolling_median_signal import RollingMedianSignal
 
 
 def test_raw_signal_passes_through_unchanged():
-    signal = RawSignal()
+    signal = RawSignal(sensor="pond_main")
     assert signal.add(101) == 101
     assert signal.add(999) == 999
-    assert signal.extra_state() == {}
+
+
+def test_raw_signal_extra_state_reports_its_sensor():
+    signal = RawSignal(sensor="pond_main")
+    assert signal.extra_state() == {"sensor": "pond_main"}
 
 
 def test_rolling_median_signal_delegates_to_rolling_median_filter():
@@ -58,41 +61,6 @@ def test_exponential_smoothing_signal_extra_state():
     assert signal.extra_state() == {"alpha": 0.3}
 
 
-def test_chain_signal_feeds_each_step_output_into_the_next():
-    chain = ChainSignal(
-        steps=[
-            ("rolling_median", RollingMedianSignal(window_size=3)),
-            ("rolling_average", RollingAverageSignal(window_size=2)),
-        ]
-    )
-
-    chain.add(10)  # median([10]) = 10 -> rolling([10]) = 10
-    chain.add(30)  # median([10, 30]) = 20 -> rolling([10, 20]) = 15
-
-    # median([10, 30, 20]) = 20 -> rolling([20, 20]) = 20
-    assert chain.add(20) == 20
-
-    # median([30, 20, 40]) = 30 -> rolling([20, 30]) = 25
-    assert chain.add(40) == 25
-
-
-def test_chain_signal_extra_state():
-    chain = ChainSignal(
-        steps=[
-            ("rolling_median5", RollingMedianSignal(window_size=3)),
-            ("rolling_average", RollingAverageSignal(window_size=2)),
-        ]
-    )
-    chain.add(10)
-
-    assert chain.extra_state() == {
-        "steps": [
-            {"signal": "rolling_median5", "window_size": 3, "samples_in_window": 1},
-            {"signal": "rolling_average", "window_size": 2, "samples_in_window": 1},
-        ]
-    }
-
-
 def test_discover_signal_types_finds_all_built_ins():
     signal_types = discover_signal_types()
 
@@ -101,7 +69,6 @@ def test_discover_signal_types_finds_all_built_ins():
         "rolling_median": RollingMedianSignal,
         "rolling_average": RollingAverageSignal,
         "exponential_smoothing": ExponentialSmoothingSignal,
-        "chain": ChainSignal,
     }
 
 

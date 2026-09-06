@@ -1,7 +1,6 @@
 import pytest
 
 from pondpi.signal_config import load_signals
-from pondpi.signals.chain_signal import ChainSignal
 from pondpi.signals.raw_signal import RawSignal
 
 
@@ -16,41 +15,42 @@ def test_loads_valid_config(tmp_path):
         tmp_path,
         """
         signals:
+          - name: instantaneous_raw
+            type: raw
+            params:
+              sensor: pond_main
           - name: rolling_median5
             type: rolling_median
+            input: instantaneous_raw
             params:
               window_size: 5
           - name: rolling_avg
-            type: chain
+            type: rolling_average
+            input: rolling_median5
             primary: true
             params:
-              steps:
-                - ref: rolling_median5
-                - type: rolling_average
-                  params:
-                    window_size: 40
-          - name: instantaneous_raw
-            type: raw
+              window_size: 40
         """,
     )
 
-    signals, primary_name, emit_flags, configs = load_signals(path)
+    grouped = load_signals(path, {"pond_main"})
+    group = grouped["pond_main"]
 
-    assert primary_name == "rolling_avg"
-    assert set(signals) == {"rolling_median5", "rolling_avg", "instantaneous_raw"}
-    assert isinstance(signals["rolling_avg"], ChainSignal)
-    assert isinstance(signals["instantaneous_raw"], RawSignal)
+    assert group["primary_name"] == "rolling_avg"
+    assert set(group["signals"]) == {"instantaneous_raw", "rolling_median5", "rolling_avg"}
+    assert isinstance(group["signals"]["instantaneous_raw"], RawSignal)
     # emit defaults to True when not specified
-    assert emit_flags == {"rolling_median5": True, "rolling_avg": True, "instantaneous_raw": True}
-    assert configs["rolling_median5"] == {
+    assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": True, "rolling_avg": True}
+    assert group["configs"]["rolling_median5"] == {
         "type": "rolling_median",
         "params": {"window_size": 5},
         "primary": False,
         "emit": True,
+        "input": "instantaneous_raw",
     }
-    assert configs["instantaneous_raw"] == {
+    assert group["configs"]["instantaneous_raw"] == {
         "type": "raw",
-        "params": {},
+        "params": {"sensor": "pond_main"},
         "primary": False,
         "emit": True,
     }
@@ -61,201 +61,225 @@ def test_emit_false_is_respected(tmp_path):
         tmp_path,
         """
         signals:
-          - name: rolling_median5
-            type: rolling_median
-            emit: false
-            params:
-              window_size: 5
           - name: instantaneous_raw
             type: raw
             primary: true
-        """,
-    )
-
-    _, _, emit_flags, configs = load_signals(path)
-
-    assert emit_flags == {"rolling_median5": False, "instantaneous_raw": True}
-    assert configs["rolling_median5"]["emit"] is False
-
-
-def test_config_summary_reflects_effective_primary_and_chain_params(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        signals:
+            params:
+              sensor: pond_main
           - name: rolling_median5
             type: rolling_median
-            params:
-              window_size: 5
-          - name: rolling_avg
-            type: chain
-            primary: true
-            params:
-              steps:
-                - ref: rolling_median5
-                - type: rolling_average
-                  params:
-                    window_size: 40
-        """,
-    )
-
-    _, _, _, configs = load_signals(path)
-
-    assert configs["rolling_avg"] == {
-        "type": "chain",
-        "primary": True,
-        "emit": True,
-        "params": {
-            "steps": [
-                {"ref": "rolling_median5"},
-                {"type": "rolling_average", "params": {"window_size": 40}},
-            ]
-        },
-    }
-
-
-def test_chain_ref_step_builds_an_independent_instance(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        signals:
-          - name: rolling_median5
-            type: rolling_median
-            params:
-              window_size: 5
-          - name: rolling_avg
-            type: chain
-            primary: true
-            params:
-              steps:
-                - ref: rolling_median5
-                - type: rolling_average
-                  params:
-                    window_size: 2
-        """,
-    )
-
-    signals, _, _, _ = load_signals(path)
-    rolling_median5 = signals["rolling_median5"]
-    rolling_avg = signals["rolling_avg"]
-
-    # Feed distinct values into the standalone rolling_median5 vs. the chain (which
-    # also starts with a median-5 step). If the chain's ref step shared
-    # rolling_median5's actual instance, these calls would corrupt each other's
-    # window -- assert they stay fully independent.
-    rolling_median5.add(100)
-    rolling_avg.add(999)
-
-    assert rolling_median5.extra_state()["samples_in_window"] == 1
-    chain_median_state = rolling_avg.extra_state()["steps"][0]
-    assert chain_median_state["samples_in_window"] == 1
-    assert chain_median_state["signal"] == "rolling_median5"
-
-
-def test_nested_chain_of_chains(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        signals:
-          - name: outer
-            type: chain
-            primary: true
-            params:
-              steps:
-                - type: chain
-                  params:
-                    steps:
-                      - type: rolling_median
-                        params:
-                          window_size: 3
-                - type: rolling_average
-                  params:
-                    window_size: 2
-        """,
-    )
-
-    signals, _, _, _ = load_signals(path)
-    outer = signals["outer"]
-
-    assert outer.add(10) == 10  # median([10]) = 10 -> rolling([10]) = 10
-
-    # median([10, 30]) = 20 (2-element window, average of the two) -> rolling average of [10, 20] = 15
-    assert outer.add(30) == 15
-
-
-def test_ref_to_undefined_signal_raises(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        signals:
-          - name: rolling_avg
-            type: chain
-            primary: true
-            params:
-              steps:
-                - ref: does_not_exist
-        """,
-    )
-
-    with pytest.raises(ValueError, match="references undefined signal 'does_not_exist'"):
-        load_signals(path)
-
-
-def test_ref_to_signal_defined_later_raises(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        signals:
-          - name: rolling_avg
-            type: chain
-            primary: true
-            params:
-              steps:
-                - ref: rolling_median5
-          - name: rolling_median5
-            type: rolling_median
+            input: instantaneous_raw
+            emit: false
             params:
               window_size: 5
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined signal 'rolling_median5'"):
-        load_signals(path)
+    group = load_signals(path, {"pond_main"})["pond_main"]
+
+    assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": False}
+    assert group["configs"]["rolling_median5"]["emit"] is False
 
 
-def test_chain_step_self_reference_raises(tmp_path):
+def test_signals_grouped_independently_per_sensor(tmp_path):
     path = write_yaml(
         tmp_path,
         """
         signals:
-          - name: rolling_avg
-            type: chain
+          - name: pond_raw
+            type: raw
             primary: true
             params:
-              steps:
-                - ref: rolling_avg
+              sensor: pond_main
+          - name: barrel_raw
+            type: raw
+            primary: true
+            params:
+              sensor: rain_barrel
+          - name: pond_smoothed
+            type: rolling_average
+            input: pond_raw
+            params:
+              window_size: 2
         """,
     )
 
-    with pytest.raises(ValueError, match="references undefined signal 'rolling_avg'"):
-        load_signals(path)
+    grouped = load_signals(path, {"pond_main", "rain_barrel"})
+
+    assert set(grouped["pond_main"]["signals"]) == {"pond_raw", "pond_smoothed"}
+    assert set(grouped["rain_barrel"]["signals"]) == {"barrel_raw"}
+    assert grouped["pond_main"]["primary_name"] == "pond_raw"
+    assert grouped["rain_barrel"]["primary_name"] == "barrel_raw"
 
 
-def test_chain_with_empty_steps_raises(tmp_path):
+def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
     path = write_yaml(
         tmp_path,
         """
         signals:
+          - name: instantaneous_raw
+            type: raw
+            params:
+              sensor: pond_main
+          - name: rolling_median5
+            type: rolling_median
+            input: instantaneous_raw
+            params:
+              window_size: 3
           - name: rolling_avg
-            type: chain
+            type: rolling_average
+            input: rolling_median5
             primary: true
             params:
-              steps: []
+              window_size: 2
         """,
     )
 
-    with pytest.raises(ValueError, match="must have at least one step"):
-        load_signals(path)
+    group = load_signals(path, {"pond_main"})
+    assert group["pond_main"]["primary_name"] == "rolling_avg"
+
+
+def test_raw_with_input_set_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: raw
+            input: b
+            primary: true
+            params:
+              sensor: pond_main
+        """,
+    )
+
+    with pytest.raises(ValueError, match="is type 'raw' and must not set 'input'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_non_raw_without_input_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: rolling_median
+            primary: true
+            params:
+              window_size: 5
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must set 'input'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_input_referencing_undefined_signal_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: rolling_median
+            input: does_not_exist
+            primary: true
+            params:
+              window_size: 5
+        """,
+    )
+
+    with pytest.raises(ValueError, match="references undefined input 'does_not_exist'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_input_referencing_signal_defined_later_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: rolling_median
+            input: b
+            primary: true
+            params:
+              window_size: 5
+          - name: b
+            type: raw
+            params:
+              sensor: pond_main
+        """,
+    )
+
+    with pytest.raises(ValueError, match="references undefined input 'b'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_input_self_reference_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: rolling_median
+            input: a
+            primary: true
+            params:
+              window_size: 5
+        """,
+    )
+
+    with pytest.raises(ValueError, match="references undefined input 'a'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_missing_sensor_param_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: raw
+            primary: true
+            params: {}
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid or missing params.sensor"):
+        load_signals(path, {"pond_main"})
+
+
+def test_unknown_sensor_param_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: raw
+            primary: true
+            params:
+              sensor: not_a_real_sensor
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid or missing params.sensor 'not_a_real_sensor'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_sensor_with_no_signals_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
+        """,
+    )
+
+    with pytest.raises(ValueError, match="sensor 'rain_barrel' has no signals rooted at it"):
+        load_signals(path, {"pond_main", "rain_barrel"})
 
 
 def test_missing_primary_raises(tmp_path):
@@ -263,13 +287,15 @@ def test_missing_primary_raises(tmp_path):
         tmp_path,
         """
         signals:
-          - name: raw
+          - name: a
             type: raw
+            params:
+              sensor: pond_main
         """,
     )
 
-    with pytest.raises(ValueError, match="primary"):
-        load_signals(path)
+    with pytest.raises(ValueError, match="exactly one signal must be marked 'primary: true'"):
+        load_signals(path, {"pond_main"})
 
 
 def test_multiple_primaries_raises(tmp_path):
@@ -280,14 +306,19 @@ def test_multiple_primaries_raises(tmp_path):
           - name: a
             type: raw
             primary: true
+            params:
+              sensor: pond_main
           - name: b
-            type: raw
+            type: rolling_median
+            input: a
             primary: true
+            params:
+              window_size: 5
         """,
     )
 
     with pytest.raises(ValueError, match="multiple signals marked primary"):
-        load_signals(path)
+        load_signals(path, {"pond_main"})
 
 
 def test_unknown_type_raises(tmp_path):
@@ -296,13 +327,15 @@ def test_unknown_type_raises(tmp_path):
         """
         signals:
           - name: a
-            type: exponential_moving_average
+            type: not_a_real_type
             primary: true
+            params:
+              sensor: pond_main
         """,
     )
 
     with pytest.raises(ValueError, match="unknown type"):
-        load_signals(path)
+        load_signals(path, {"pond_main"})
 
 
 def test_duplicate_name_raises(tmp_path):
@@ -313,13 +346,17 @@ def test_duplicate_name_raises(tmp_path):
           - name: a
             type: raw
             primary: true
+            params:
+              sensor: pond_main
           - name: a
             type: raw
+            params:
+              sensor: pond_main
         """,
     )
 
     with pytest.raises(ValueError, match="duplicate signal name"):
-        load_signals(path)
+        load_signals(path, {"pond_main"})
 
 
 def test_invalid_params_raises(tmp_path):
@@ -328,7 +365,13 @@ def test_invalid_params_raises(tmp_path):
         """
         signals:
           - name: a
+            type: raw
+            primary: true
+            params:
+              sensor: pond_main
+          - name: b
             type: rolling_median
+            input: a
             primary: true
             params:
               not_a_real_param: 5
@@ -336,16 +379,16 @@ def test_invalid_params_raises(tmp_path):
     )
 
     with pytest.raises(ValueError, match="invalid params"):
-        load_signals(path)
+        load_signals(path, {"pond_main"})
 
 
 def test_empty_signals_list_raises(tmp_path):
     path = write_yaml(tmp_path, "signals: []\n")
 
     with pytest.raises(ValueError, match="non-empty list"):
-        load_signals(path)
+        load_signals(path, {"pond_main"})
 
 
 def test_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        load_signals(tmp_path / "does_not_exist.yaml")
+        load_signals(tmp_path / "does_not_exist.yaml", {"pond_main"})

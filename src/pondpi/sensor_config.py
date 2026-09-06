@@ -1,18 +1,19 @@
 import yaml
 
 from pondpi.sensors import discover_sensor_types
-from pondpi.signal_config import build_signals
+from pondpi.signal_config import load_signals
 
 
 def load_sensors(path, simulate=False):
     """Loads named sensors from a YAML config file (config/sensors.yaml),
-    each bundled with its own driver instance and signal pipeline.
+    each bundled with its own driver instance, plus that sensor's own
+    slice of the file's top-level `signals:` list -- every signal
+    ultimately rooted (via `input:` chains, see signal_config.py) at a
+    `raw` signal naming this sensor.
 
     Returns dict[name -> {"driver", "signals", "primary_name",
     "emit_flags", "configs"}] -- the last four fields are exactly what
-    `signal_config.load_signals()` returns, since each sensor's
-    `signals:` list uses that identical schema, just nested under the
-    sensor instead of living in its own file.
+    `signal_config.load_signals()` returns for that sensor's group.
 
     Exactly one sensor must be marked `default: true` -- server.py's
     bare (not sensor-named) routes operate on that one, so existing
@@ -49,20 +50,8 @@ def load_sensors(path, simulate=False):
                 f"{path}: sensor '{name}' has unknown type '{sensor_type}' (expected one of {sorted(sensor_types)})"
             )
 
-        signal_entries = entry.get("signals")
-        if not signal_entries:
-            raise ValueError(f"{path}: sensor '{name}' must have a non-empty 'signals' list")
-
         driver = sensor_types[sensor_type](entry.get("params") or {}, simulate)
-        signals, primary_name, emit_flags, configs = build_signals(signal_entries, f"{path} (sensor '{name}')")
-
-        sensors[name] = {
-            "driver": driver,
-            "signals": signals,
-            "primary_name": primary_name,
-            "emit_flags": emit_flags,
-            "configs": configs,
-        }
+        sensors[name] = {"driver": driver}
 
         if entry.get("default", False):
             if default_name is not None:
@@ -71,5 +60,9 @@ def load_sensors(path, simulate=False):
 
     if default_name is None:
         raise ValueError(f"{path}: exactly one sensor must be marked 'default: true'")
+
+    signal_groups = load_signals(path, set(sensors))
+    for name, sensor_entry in sensors.items():
+        sensor_entry.update(signal_groups[name])
 
     return sensors, default_name
