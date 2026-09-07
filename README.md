@@ -386,10 +386,13 @@ service info:
 ```
 
 The top-level `status` is `"degraded"` (HTTP 503) if **any** configured
-sensor's own `status` is degraded. Each sensor's `status` is degraded
-when no valid "raw" reading has landed in over `STALE_READING_THRESHOLD_S`
-(3s, `server.py`) — which would otherwise silently leave that sensor's
-raw-rooted signals (e.g. `pond_main_sensor_raw`, `rolling_avg`) serving
+sensor's own `status` is degraded. Each sensor's `status` comes entirely
+from that sensor's own `is_healthy()` (`LevelSensor.STALE_READING_THRESHOLD_S`,
+3s by default -- see [Sensor drivers](#sensor-drivers)) -- server.py holds
+no threshold of its own and makes no staleness judgment itself, it just
+asks. `is_healthy()` returning `False` means no reading has landed in
+over that sensor's own threshold, which would otherwise silently leave
+its rooted signals (e.g. `pond_main_sensor_raw`, `rolling_avg`) serving
 stale data forever with no signal anything was wrong. This also catches
 a driver's read thread dying outright (an unhandled exception in
 `poll_loop()`, say) within a few seconds of it happening, same as it
@@ -459,6 +462,15 @@ the hardware. A driver only needs to override `poll_loop()`/`reset()`
 itself if some future type genuinely needs something other than "plain
 polling thread, restarted around a hardware reset."
 
+`last_reading_monotonic()`/`last_reset_at()`/`is_healthy()` are also
+concrete, and are how `GET /health` (below) gets its per-sensor status --
+`STALE_READING_THRESHOLD_S` (a class attribute, default `3.0` seconds,
+any driver type free to override) plus `is_healthy()`'s comparison
+against it live entirely on `LevelSensor`, so server.py holds no
+threshold and makes no staleness judgment of its own; it just calls
+`sensor.is_healthy()` and trusts the answer. `reset()` also records its
+own `last_reset_at()` timestamp as part of the same call.
+
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw
 distance vs. a resistive sensor's submerged length, say), so each driver
@@ -470,14 +482,15 @@ produced a given value.
 Sensor types are discovered dynamically at startup, the same way
 [signal types](#signal-processing) are: each entry in `sensors/` whose
 name ends in `_sensor` must define exactly one `LevelSensor` subclass
-*and* a module-level `create(params, simulate)` function, and that
-entry's name with the suffix stripped becomes the `type:` string used
-in `config/sensors.yaml`. Unlike signals (whose constructors take
+*and* a module-level `create(params, simulate, on_reading)` function, and
+that entry's name with the suffix stripped becomes the `type:` string
+used in `config/sensors.yaml`. Unlike signals (whose constructors take
 simple scalar params directly), most sensor drivers need real hardware
 objects — a serial connection, GPIO controllers — assembled around
 those params, and build entirely different (simulated) objects under
-`--simulate`; `create()` is where a driver type does that assembly, so
-`sensor_config.py` never needs to know a given type's own construction
+`--simulate`; `create()` is where a driver type does that assembly (and
+forwards `on_reading` straight into its `LevelSensor.__init__()` call),
+so `sensor_config.py` never needs to know a given type's own construction
 details.
 
 An entry can be either a single `<name>_sensor.py` file (the class and

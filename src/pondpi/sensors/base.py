@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 
 class LevelSensor:
@@ -32,6 +33,16 @@ class LevelSensor:
     actually be power-cycled or otherwise reset in software. Callers
     must check it before calling `reset()`.
 
+    `STALE_READING_THRESHOLD_S`/`is_healthy()` are this driver's own
+    health check, the counterpart to `supports_reset`/`reset_hardware()`:
+    a class attribute (default 3s, comfortably above a typical sensor's
+    response time and default poll interval) any driver type can
+    override with its own value, and a concrete method built on it.
+    Callers (server.py's `/health`) rely entirely on `is_healthy()` for
+    the ok/degraded verdict -- they hold no threshold and make no
+    judgment call of their own about what counts as stale for a given
+    sensor type.
+
     `read()` and `reset_hardware()` must be safe to call concurrently
     from different threads -- this driver's own background thread calls
     `read()` continuously while `POST /reset` calls `reset()` (which
@@ -43,6 +54,7 @@ class LevelSensor:
     """
 
     supports_reset = False
+    STALE_READING_THRESHOLD_S = 3.0
 
     def __init__(self, on_reading, poll_interval_s):
         """Every subclass must call this as the LAST line of its own
@@ -57,8 +69,9 @@ class LevelSensor:
         arrives, staying fully unaware of signals."""
         self._on_reading = on_reading
         self._poll_interval_s = poll_interval_s
-        self._reading_lock = threading.Lock()
+        self._lock = threading.Lock()
         self._last_reading_monotonic = None
+        self._last_reset_at = None
         self._begin_polling()
 
     def read(self):
@@ -81,12 +94,14 @@ class LevelSensor:
         exit *before* power-cycling the hardware (`reset_hardware()`)
         and starting a fresh thread -- so there's never a moment where
         the old thread could still call `read()`/`_on_reading()`
-        against state we're in the middle of resetting."""
+        against state we're in the middle of resetting. Also records
+        this reset's own timestamp (`last_reset_at()`)."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         self.reset_hardware()
-        with self._reading_lock:
+        with self._lock:
             self._last_reading_monotonic = None
+            self._last_reset_at = datetime.now(timezone.utc)
         self._begin_polling()
 
     def close(self):
@@ -95,15 +110,31 @@ class LevelSensor:
     def last_reading_monotonic(self):
         """`time.monotonic()` timestamp of this driver's last non-empty
         `read()` result (any reading key, not just "raw"), or None
-        before its first -- used by /health's staleness check."""
-        with self._reading_lock:
+        before its first -- the raw fact `is_healthy()` is built on."""
+        with self._lock:
             return self._last_reading_monotonic
+
+    def last_reset_at(self):
+        """`datetime` this driver was last `reset()`, or None if it
+        never has been since construction."""
+        with self._lock:
+            return self._last_reset_at
+
+    def is_healthy(self):
+        """True if no reading is expected yet (right after construction
+        -- not itself a degraded condition), or if the last one arrived
+        within `STALE_READING_THRESHOLD_S`. server.py's `/health` relies
+        on this alone for its ok/degraded verdict."""
+        last = self.last_reading_monotonic()
+        if last is None:
+            return True
+        return (time.monotonic() - last) <= self.STALE_READING_THRESHOLD_S
 
     def _poll_loop(self):
         while not self._stop_event.is_set():
             readings = self.read()
             if readings:
-                with self._reading_lock:
+                with self._lock:
                     self._last_reading_monotonic = time.monotonic()
             for reading_key, distance_mm in readings.items():
                 self._on_reading(reading_key, distance_mm)

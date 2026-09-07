@@ -1,11 +1,70 @@
+import time
+
 import pytest
 
 from pondpi.sensors import discover_sensor_types
 from pondpi.sensors.a02yyuw_sensor import create
+from pondpi.sensors.base import LevelSensor
 
 
 def test_discover_sensor_types_finds_all_built_ins():
     assert discover_sensor_types() == {"a02yyuw": create}
+
+
+class _StubSensor(LevelSensor):
+    """Minimal concrete LevelSensor -- never produces a reading on its
+    own (read() always returns {}, so its background thread never
+    touches last_reading_monotonic), letting tests drive
+    is_healthy()/last_reading_monotonic() directly without racing that
+    thread. A small poll_interval_s keeps reset()'s thread-join fast."""
+
+    def __init__(self, stale_threshold_s=None):
+        if stale_threshold_s is not None:
+            self.STALE_READING_THRESHOLD_S = stale_threshold_s
+        super().__init__(on_reading=lambda k, v: None, poll_interval_s=0.01)
+
+    def read(self):
+        return {}
+
+    def reset_hardware(self):
+        pass
+
+
+def test_is_healthy_true_before_first_reading():
+    sensor = _StubSensor()
+    assert sensor.last_reading_monotonic() is None
+    assert sensor.is_healthy() is True
+
+
+def test_is_healthy_true_when_reading_recent():
+    sensor = _StubSensor(stale_threshold_s=10)
+    with sensor._lock:
+        sensor._last_reading_monotonic = time.monotonic()
+
+    assert sensor.is_healthy() is True
+
+
+def test_is_healthy_false_when_reading_older_than_its_own_threshold():
+    sensor = _StubSensor(stale_threshold_s=0.05)
+    with sensor._lock:
+        sensor._last_reading_monotonic = time.monotonic() - 1
+
+    assert sensor.is_healthy() is False
+
+
+def test_stale_reading_threshold_s_defaults_to_three_seconds():
+    assert LevelSensor.STALE_READING_THRESHOLD_S == 3.0
+
+
+def test_last_reset_at_is_none_before_any_reset():
+    sensor = _StubSensor()
+    assert sensor.last_reset_at() is None
+
+
+def test_last_reset_at_updates_after_reset():
+    sensor = _StubSensor()
+    sensor.reset()
+    assert sensor.last_reset_at() is not None
 
 
 def _write_fake_flat_package(tmp_path, package_name, module_filename, module_source):

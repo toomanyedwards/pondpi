@@ -11,14 +11,6 @@ from pondpi.sensor_config import load_sensors
 
 app = Flask(__name__)
 
-# Comfortably above the sensor's ~100ms response time and its own default
-# poll interval -- used to flag a sensor degraded in /health if no valid
-# reading has landed in this long. A separate, driver-owned threshold of
-# the same name governs each A02YYUW's own internal resync behavior (see
-# sensors/a02yyuw_sensor.py) -- the two are conceptually distinct even
-# though they default to the same value.
-STALE_READING_THRESHOLD_S = 3.0
-
 _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 
 _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
@@ -33,7 +25,6 @@ def _new_sensor_state():
     return {
         "signal_names": [],
         "configs": {},
-        "last_reset_at": None,
     }
 
 
@@ -64,17 +55,18 @@ def health():
 
     for name, sensor in _sensors.items():
         last_reading_monotonic = sensor.last_reading_monotonic()
-        if last_reading_monotonic is None:
-            last_reading_age_s = None
-            stale = False
-        else:
-            last_reading_age_s = round(time.monotonic() - last_reading_monotonic, 1)
-            stale = last_reading_age_s > STALE_READING_THRESHOLD_S
+        last_reading_age_s = (
+            round(time.monotonic() - last_reading_monotonic, 1) if last_reading_monotonic is not None else None
+        )
 
-        status = "degraded" if stale else "ok"
+        # The ok/degraded verdict itself is entirely the sensor's own
+        # call (is_healthy(), see sensors/base.py) -- server.py holds no
+        # staleness threshold and makes no judgment of its own about
+        # what counts as stale for a given sensor type.
+        status = "ok" if sensor.is_healthy() else "degraded"
         overall_ok = overall_ok and status == "ok"
 
-        last_reset_at = _state[name]["last_reset_at"]
+        last_reset_at = sensor.last_reset_at()
 
         sensors_health[name] = {
             "status": status,
@@ -98,21 +90,16 @@ def health():
 
 
 def _reset_sensor(name, sensor):
-    """Power-cycles one sensor (restarting its own read thread as part
-    of what `reset()` does -- see sensors/base.py) and records when,
-    then cascades: resets every signal rooted at this sensor too, since
-    accumulated signal state (a rolling window, an average) built from
-    readings around the time something looked wrong enough to warrant
-    a reset is suspect too. No locking needed for `last_reset_at` --
-    this is only ever written from a request-handling thread, and
-    Flask's dev server (what this deploys as) handles one request at a
-    time."""
+    """Power-cycles one sensor (restarting its own read thread and
+    recording its own `last_reset_at` as part of what `reset()` does --
+    see sensors/base.py), then cascades: resets every signal rooted at
+    this sensor too, since accumulated signal state (a rolling window,
+    an average) built from readings around the time something looked
+    wrong enough to warrant a reset is suspect too."""
     sensor.reset()
-    reset_at = datetime.now(timezone.utc)
-    _state[name]["last_reset_at"] = reset_at
     for signal_name in _state[name]["signal_names"]:
         _signal_objects[signal_name].reset()
-    return reset_at
+    return sensor.last_reset_at()
 
 
 def _reset_response(name):

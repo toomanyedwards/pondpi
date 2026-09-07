@@ -22,23 +22,39 @@ class FakeSignal:
 
 
 class FakeSensor:
-    """Stand-in LevelSensor for /health tests -- last_reading_monotonic()
-    returns whatever it was constructed with, no real polling thread."""
+    """Stand-in LevelSensor for /health tests -- every value is exactly
+    whatever it was constructed with, no real polling thread or
+    staleness math (server.py no longer does that math itself either --
+    it just calls is_healthy()/last_reset_at() and trusts the answer,
+    same as this double gives it one directly)."""
 
-    def __init__(self, last_reading_monotonic=None):
+    def __init__(self, last_reading_monotonic=None, is_healthy=True, last_reset_at=None):
         self._last_reading_monotonic = last_reading_monotonic
+        self._is_healthy = is_healthy
+        self._last_reset_at = last_reset_at
 
     def last_reading_monotonic(self):
         return self._last_reading_monotonic
+
+    def is_healthy(self):
+        return self._is_healthy
+
+    def last_reset_at(self):
+        return self._last_reset_at
 
 
 class FakeResetSensor:
     def __init__(self, supports_reset=True):
         self.supports_reset = supports_reset
         self.reset_calls = 0
+        self._last_reset_at = None
 
     def reset(self):
         self.reset_calls += 1
+        self._last_reset_at = datetime.now(timezone.utc)
+
+    def last_reset_at(self):
+        return self._last_reset_at
 
 
 def _reset_globals(names):
@@ -76,9 +92,9 @@ def test_health_ok_before_first_reading():
     assert data["sensors"]["pond_main"]["signals"] == ["rolling_avg", "instantaneous_raw"]
 
 
-def test_health_ok_when_reading_recent():
+def test_health_ok_when_sensor_reports_healthy():
     _reset_globals(["pond_main"])
-    server._sensors = {"pond_main": FakeSensor(last_reading_monotonic=server.time.monotonic())}
+    server._sensors = {"pond_main": FakeSensor(last_reading_monotonic=server.time.monotonic(), is_healthy=True)}
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -86,13 +102,14 @@ def test_health_ok_when_reading_recent():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["status"] == "ok"
-    assert 0 <= data["sensors"]["pond_main"]["last_reading_age_s"] < server.STALE_READING_THRESHOLD_S
+    assert 0 <= data["sensors"]["pond_main"]["last_reading_age_s"] < 1
 
 
-def test_health_degraded_when_reading_stale():
+def test_health_degraded_when_sensor_reports_unhealthy():
+    # The verdict itself comes entirely from is_healthy() -- server.py
+    # holds no threshold of its own to recompute it against.
     _reset_globals(["pond_main"])
-    stale_monotonic = server.time.monotonic() - (server.STALE_READING_THRESHOLD_S + 1)
-    server._sensors = {"pond_main": FakeSensor(last_reading_monotonic=stale_monotonic)}
+    server._sensors = {"pond_main": FakeSensor(last_reading_monotonic=server.time.monotonic() - 10, is_healthy=False)}
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -100,7 +117,7 @@ def test_health_degraded_when_reading_stale():
     assert resp.status_code == 503
     data = resp.get_json()
     assert data["status"] == "degraded"
-    assert data["sensors"]["pond_main"]["last_reading_age_s"] > server.STALE_READING_THRESHOLD_S
+    assert data["sensors"]["pond_main"]["last_reading_age_s"] > 0
 
 
 def test_health_last_reset_at_null_before_any_reset():
@@ -115,9 +132,8 @@ def test_health_last_reset_at_null_before_any_reset():
 
 def test_health_reflects_last_reset_at():
     _reset_globals(["pond_main"])
-    server._sensors = {"pond_main": FakeSensor()}
     reset_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    server._state["pond_main"]["last_reset_at"] = reset_at
+    server._sensors = {"pond_main": FakeSensor(last_reset_at=reset_at)}
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -127,10 +143,9 @@ def test_health_reflects_last_reset_at():
 
 def test_health_reports_multiple_sensors_independently():
     _reset_globals(["pond_main", "rain_barrel"])
-    stale_monotonic = server.time.monotonic() - (server.STALE_READING_THRESHOLD_S + 1)
     server._sensors = {
-        "pond_main": FakeSensor(),
-        "rain_barrel": FakeSensor(last_reading_monotonic=stale_monotonic),
+        "pond_main": FakeSensor(is_healthy=True),
+        "rain_barrel": FakeSensor(is_healthy=False),
     }
     client = server.app.test_client()
 
@@ -156,8 +171,8 @@ def test_reset_powercycles_a_single_configured_sensor_and_records_last_reset_at(
     data = resp.get_json()
     assert data["sensors"]["pond_main"]["status"] == "reset"
     assert fake_sensor.reset_calls == 1
-    assert server._state["pond_main"]["last_reset_at"] is not None
-    assert data["sensors"]["pond_main"]["reset_at"] == server._state["pond_main"]["last_reset_at"].isoformat()
+    assert fake_sensor.last_reset_at() is not None
+    assert data["sensors"]["pond_main"]["reset_at"] == fake_sensor.last_reset_at().isoformat()
 
 
 def test_reset_powercycles_every_supporting_sensor():
@@ -175,8 +190,8 @@ def test_reset_powercycles_every_supporting_sensor():
     assert data["sensors"]["rain_barrel"]["status"] == "reset"
     assert fake_main.reset_calls == 1
     assert fake_barrel.reset_calls == 1
-    assert server._state["pond_main"]["last_reset_at"] is not None
-    assert server._state["rain_barrel"]["last_reset_at"] is not None
+    assert fake_main.last_reset_at() is not None
+    assert fake_barrel.last_reset_at() is not None
 
 
 def test_reset_reports_not_supported_without_failing_other_sensors():
@@ -194,7 +209,7 @@ def test_reset_reports_not_supported_without_failing_other_sensors():
     assert data["sensors"]["rain_barrel"] == {"status": "not_supported"}
     assert fake_main.reset_calls == 1
     assert unsupported_barrel.reset_calls == 0
-    assert server._state["rain_barrel"]["last_reset_at"] is None
+    assert unsupported_barrel.last_reset_at() is None
 
 
 def test_reset_cascades_to_every_signal_rooted_at_that_sensor():

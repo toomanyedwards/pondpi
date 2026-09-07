@@ -11,6 +11,10 @@ from . import read_sensor, sensor_mode, sensor_power
 # passes with no valid frame, read_frame() has likely lost byte
 # alignment with the sensor's stream and isn't going to resync on its
 # own. A plain input-buffer flush is enough to force a fresh resync.
+# Conceptually distinct from LevelSensor.STALE_READING_THRESHOLD_S (used
+# by is_healthy(), server.py's /health) even though they default to the
+# same value -- this one governs this driver's own internal resync,
+# nothing to do with what counts as healthy externally.
 STALE_READING_THRESHOLD_S = 3.0
 
 # This driver spends most of its time with the sensor in "raw" mode (so

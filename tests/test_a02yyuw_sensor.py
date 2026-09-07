@@ -217,9 +217,14 @@ def test_reset_restarts_polling_with_a_fresh_thread():
         poll_interval_s=0.005,
     )
     _wait_until(lambda: readings)
+    assert sensor.last_reset_at() is None
 
     sensor.reset()
     assert power_controller.reset_calls == 1
+    # last_reset_at() is inherited unchanged from LevelSensor -- proving
+    # it's actually wired up through this concrete driver, not just the
+    # abstract base (see test_sensors.py for the base-class behavior itself).
+    assert sensor.last_reset_at() is not None
 
     # A fresh reading arrives after reset() -- proves the read thread
     # actually restarted, not just that the hardware was power-cycled.
