@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from pondpi import sensor_mode
+from pondpi.sensors import sensor_mode
 from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor, create
 
 
