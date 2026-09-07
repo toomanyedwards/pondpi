@@ -429,10 +429,15 @@ drivers](#sensor-drivers)) -- server.py holds no health policy of its
 own and makes no judgment call itself, it just asks. This base class
 has no shared definition of "healthy" at all -- each driver decides for
 itself. `A02YYUWSensor.check_health()` is a **presence check, not a
-staleness one**: healthy once its "raw" reading has ever arrived, and
-stays that way even if its background thread later dies or the
-hardware goes stale -- unlike an age-based check, it won't flip back to
-degraded on its own. `last_reading_age_s` (below) is still there for a
+staleness one**: healthy once *both* its "raw" and "processed" readings
+have ever arrived (so briefly degraded right after startup/reset until
+the first processed-mode dip completes a cycle -- see [RX
+pin](#rx-pin-raw-vs-processed-hardware-mode)), and stays that way even
+if its background thread later dies or the hardware goes stale --
+unlike an age-based check, it won't flip back to degraded on its own.
+A driver permanently pinned to one mode (`settings.read_mode` in
+`config/sensors.yaml`) never populates the other, so it reports
+unhealthy forever. `last_reading_age_s` (below) is still there for a
 caller (or a future driver's own `check_health()`) that wants to notice
 staleness itself; `GET /health`'s top-level `status` currently doesn't.
 
@@ -537,8 +542,9 @@ class to guess at a shared default. `GET /health` (below) relies
 entirely on `is_healthy()` for its per-sensor status -- server.py holds
 no threshold and makes no judgment call of its own; it just calls
 `sensor.is_healthy()` and trusts the answer. `A02YYUWSensor.check_health()`
-is a presence check: healthy if its "raw" reading has ever arrived --
-see `GET /health` below for what that does and doesn't catch.
+is a presence check: healthy once both its "raw" and "processed"
+readings have ever arrived -- see `GET /health` below for what that
+does and doesn't catch.
 
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw

@@ -91,13 +91,17 @@ def test_read_returns_none_before_any_reading():
     assert sensor.read() is None
 
 
-def test_check_health_false_before_any_raw_reading():
+def test_check_health_false_before_any_reading():
     sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController(), poll_interval_s=1000)
     assert sensor.check_health() is False
     assert sensor.is_healthy() is False
 
 
-def test_check_health_true_once_a_raw_reading_arrives():
+def test_check_health_false_when_only_raw_has_arrived():
+    # A fixed-mode fake frame source only ever populates "raw" (this
+    # driver's cycling logic still starts in raw mode regardless of the
+    # frame data itself) -- "processed" never arrives, so check_health()
+    # must stay False even though raw is fine.
     sensor = A02YYUWSensor(
         FakeSerial(_frame(0x01, 0x2C)),
         FakeModeController(),
@@ -106,22 +110,42 @@ def test_check_health_true_once_a_raw_reading_arrives():
     )
 
     _wait_until(lambda: sensor.last_reading("raw") is not None)
+
+    assert sensor.last_reading("processed") is None
+    assert sensor.check_health() is False
+
+
+def test_check_health_true_once_both_readings_arrive():
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+    )
+
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
 
     assert sensor.check_health() is True
     assert sensor.is_healthy() is True
 
 
 def test_check_health_is_a_presence_check_not_a_staleness_one():
-    # Unlike the old threshold-based is_healthy(), a raw reading that
-    # arrived long ago still counts as healthy -- check_health() only
-    # asks whether one has ever arrived, not how recently.
+    # Unlike the old threshold-based is_healthy(), readings that arrived
+    # long ago still count as healthy -- check_health() only asks
+    # whether both have ever arrived, not how recently.
     sensor = A02YYUWSensor(
-        FakeSerial(_frame(0x01, 0x2C)),
+        read_sensor.SimulatedSerial(),
         FakeModeController(),
         FakePowerController(),
         poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
     )
-    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
     sensor._stop_event.set()  # freeze the poll loop -- no further readings will arrive
     sensor._thread.join(timeout=1)
 

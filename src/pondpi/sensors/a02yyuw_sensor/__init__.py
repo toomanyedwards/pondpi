@@ -73,13 +73,16 @@ class A02YYUWSensor(Sensor):
     (concrete on `Sensor`) to keep `last_reading_monotonic()` current.
 
     `check_health()` (required by `Sensor`, see there) is a presence
-    check, not a staleness one: healthy if `read()` (its "raw" reading,
-    specifically) has ever returned a value. This is deliberately
-    simpler than comparing `last_reading_monotonic()`'s age against a
-    threshold -- it won't notice this driver's own background thread
-    having died after at least one successful reading (unlike a
-    staleness check would); `GET /health`'s `last_reading_age_s` is
-    still there for a caller that wants to notice that itself.
+    check, not a staleness one: healthy once *both* its "raw" and
+    "processed" readings have ever arrived (assumes the default
+    alternating cycle -- a driver permanently pinned to one mode never
+    populates the other, so it reports unhealthy forever). This is
+    deliberately simpler than comparing `last_reading_monotonic()`'s age
+    against a threshold -- it won't notice this driver's own background
+    thread having died after both readings have arrived at least once
+    (unlike a staleness check would); `GET /health`'s
+    `last_reading_age_s` is still there for a caller that wants to
+    notice that itself.
 
     `_read_hardware()` and `reset_hardware()` are safe to call
     concurrently from different threads (this driver's own background
@@ -159,10 +162,13 @@ class A02YYUWSensor(Sensor):
             return self._last_readings.get(key)
 
     def check_health(self):
-        """Healthy if this driver's "raw" reading has ever arrived --
-        see the class docstring for why this is a presence check, not
-        a staleness one."""
-        return self.read() is not None
+        """Healthy once both the "raw" and "processed" readings have
+        ever arrived -- see the class docstring for why this is a
+        presence check, not a staleness one. A driver permanently
+        pinned to one mode (`read_mode` at construction) never
+        populates the other, so it reports unhealthy forever -- this
+        check assumes the default alternating cycle."""
+        return self.read({"read_mode": "raw"}) is not None and self.read({"read_mode": "processed"}) is not None
 
     def _read_hardware(self):
         with self._hardware_lock:
