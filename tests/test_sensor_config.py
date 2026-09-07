@@ -48,9 +48,8 @@ def test_loads_valid_config(tmp_path):
         signals:
           - name: raw
             type: sensor
-            params:
-              sensor: pond_main
-              unit: cm
+            sensor: pond_main
+            unit: cm
           - name: instantaneous_raw
             type: rolling_average
             input: raw
@@ -81,9 +80,8 @@ def test_loads_multiple_sensors(tmp_path):
         signals:
           - name: pond_raw_sensor
             type: sensor
-            params:
-              sensor: pond_main
-              unit: cm
+            sensor: pond_main
+            unit: cm
           - name: pond_raw
             type: rolling_average
             input: pond_raw_sensor
@@ -92,9 +90,8 @@ def test_loads_multiple_sensors(tmp_path):
               poll_interval_ms: 1000
           - name: barrel_raw_sensor
             type: sensor
-            params:
-              sensor: rain_barrel
-              unit: cm
+            sensor: rain_barrel
+            unit: cm
           - name: barrel_raw
             type: rolling_average
             input: barrel_raw_sensor
@@ -130,9 +127,8 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
         signals:
           - name: raw
             type: sensor
-            params:
-              sensor: pond_main
-              unit: cm
+            sensor: pond_main
+            unit: cm
           - name: instantaneous_raw
             type: rolling_average
             input: raw
@@ -224,9 +220,8 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
         signals:
           - name: pond_raw_sensor
             type: sensor
-            params:
-              sensor: pond_main
-              unit: cm
+            sensor: pond_main
+            unit: cm
           - name: pond_raw
             type: rolling_average
             input: pond_raw_sensor

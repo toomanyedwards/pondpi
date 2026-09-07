@@ -11,8 +11,8 @@ def load_signals(path, sensor_names):
     `sensor_names` is the set of already-configured sensor names (from
     sensor_config.py). Every signal type either sets `reads_from_sensor
     = True` (see LevelSignal.reads_from_sensor) and connects directly to
-    a sensor via its own params (currently just `SensorSignal`, via
-    `params.sensor`) -- validating those params, `sensor_names` included,
+    a sensor via its own top-level fields (currently just `SensorSignal`,
+    via `sensor:`) -- validating those fields, `sensor_names` included,
     is entirely that type's own responsibility, not something this
     module knows or checks -- or names another, earlier-defined signal
     via a top-level `input:` key instead, reading *that* signal's live
@@ -27,7 +27,7 @@ def load_signals(path, sensor_names):
     every other signal type inherits them automatically from whichever
     signal its `input:` names (they're pure numeric transforms -- a
     rolling average of centimeters is still in centimeters) and must not
-    set `params.unit`/`params.mode` directly.
+    set `unit`/`mode` directly.
 
     Returns dict[sensor_name -> {"signals", "emit_flags", "configs"}],
     one entry per name in `sensor_names` (even if that sensor ends up
@@ -100,6 +100,10 @@ def build_signals(entries, sensor_names, path):
                     f"({signal_type} signals read from a sensor directly, not another signal)"
                 )
             extra_kwargs["sensor_names"] = sensor_names
+            extra_kwargs["sensor"] = entry.get("sensor")
+            extra_kwargs["unit"] = entry.get("unit")
+            if "mode" in entry:
+                extra_kwargs["mode"] = entry["mode"]
         else:
             if not input_name:
                 raise ValueError(
@@ -108,14 +112,14 @@ def build_signals(entries, sensor_names, path):
                 )
             if input_name not in entries_by_name:
                 raise ValueError(f"{path}: signal '{name}' references undefined input '{input_name}' (must be defined earlier in the file)")
-            if "unit" in params:
+            if "unit" in entry:
                 raise ValueError(
-                    f"{path}: signal '{name}' must not set params.unit directly "
+                    f"{path}: signal '{name}' must not set 'unit' directly "
                     "(unit is derived automatically from 'input')"
                 )
-            if "mode" in params:
+            if "mode" in entry:
                 raise ValueError(
-                    f"{path}: signal '{name}' must not set params.mode directly "
+                    f"{path}: signal '{name}' must not set 'mode' directly "
                     "(mode is derived automatically from 'input')"
                 )
 
@@ -158,7 +162,7 @@ def build_signals(entries, sensor_names, path):
 
     for sensor, group in grouped.items():
         if not group["signals"]:
-            raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with params.sensor: {sensor})")
+            raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with sensor: {sensor})")
 
     return grouped
 

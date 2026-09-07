@@ -16,22 +16,22 @@ def test_sensor_signal_converts_mm_into_its_declared_unit():
 
 
 def test_sensor_signal_rejects_unsupported_unit():
-    with pytest.raises(ValueError, match="invalid params.unit 'mm'"):
+    with pytest.raises(ValueError, match="invalid 'unit' 'mm'"):
         SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="mm")
 
 
 def test_sensor_signal_rejects_missing_unit():
-    with pytest.raises(ValueError, match="is missing required params.unit"):
+    with pytest.raises(ValueError, match="missing required 'unit'"):
         SensorSignal(sensor_names={"pond_main"}, sensor="pond_main")
 
 
 def test_sensor_signal_rejects_unknown_sensor():
-    with pytest.raises(ValueError, match="invalid or missing params.sensor 'rain_barrel'"):
+    with pytest.raises(ValueError, match="invalid or missing 'sensor' 'rain_barrel'"):
         SensorSignal(sensor_names={"pond_main"}, sensor="rain_barrel", unit="cm")
 
 
 def test_sensor_signal_rejects_unsupported_mode():
-    with pytest.raises(ValueError, match="invalid params.mode 'smoothed'"):
+    with pytest.raises(ValueError, match="invalid 'mode' 'smoothed'"):
         SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="cm", mode="smoothed")
 
 
