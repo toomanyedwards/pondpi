@@ -1,5 +1,4 @@
 import threading
-from datetime import datetime, timezone
 
 
 class Signal:
@@ -7,36 +6,42 @@ class Signal:
     over a stream of numeric readings, with no notion of what those
     readings physically represent.
 
-    Most subclasses take raw sensor readings one at a time via `add()`
-    (pure computation, no caching) -- composable via `source:` in
-    config/sensors.yaml, fed by the sensor-to-signal wiring built in
-    sensor_config.py, which calls `feed()` (not `add()` directly) as
-    each reading arrives. Every signal type except `sensor` is
-    unit-agnostic — they don't know or care whether the values they're
-    passed are mm, cm, or anything else; `SensorSignal` is the one
-    deliberate exception, converting once at the boundary where a
-    sensor's canonical millimeter reading first enters the graph (see
-    signals/sensor_signal.py).
+    Nothing is ever pushed into a signal. `read()` (concrete, shared by
+    every signal type) is the sole way anything -- another signal via
+    `source:`, server.py, this signal's own `owns_read_loop` background
+    thread's caller -- ever gets this signal's value: it pulls
+    `_pull_source()` (also concrete, see below) and, if that's newer
+    than the last value this signal already incorporated, computes a
+    fresh one via `add()` (the one hook every subclass implements --
+    pure computation, no caching of its own) and caches it. Calling
+    `read()` any number of times with no new upstream data is safe and
+    cheap -- `add()` only runs when there's genuinely something new, so
+    a stateful accumulator (a rolling window, an EMA) is never
+    double-fed by two callers polling in quick succession. Every signal
+    type except `sensor` is unit-agnostic -- they don't know or care
+    whether the values they're passed are mm, cm, or anything else;
+    `SensorSignal` is the one deliberate exception, converting once at
+    the boundary where a sensor's canonical millimeter reading first
+    enters the graph (see signals/sensor_signal.py).
 
-    `feed()`/`current()` are concrete on this base class and shared by
-    every signal type, `owns_read_loop` or not: `feed()` computes (via
-    `add()`) and thread-safely caches this signal's new output;
-    `current()` reads that cache back as `{"value", "at",
-    **extra_state()}`, or None before the first `feed()`. This is what
-    lets a signal like RollingAverageSignal read its `source:` signal's
-    live value directly (`source_signal.current()`), with no shared
-    state in server.py mediating it.
+    `_pull_source()`'s default implementation pulls `self._source_signal`
+    (a live `Signal` instance passed into `__init__`)'s own `read()` --
+    this covers every chain type for free, purely through inheritance.
+    `SensorSignal` is the one type that overrides it, to pull from its
+    sensor instead of another signal (see there).
 
     `owns_read_loop` is a capability flag, same pattern as
-    `Sensor.supports_reset`: override it to True only for a signal
-    type that maintains its own background thread instead of being fed
-    via `feed()` from the sensor's own read loop (see
-    RollingAverageSignal, which samples its `source:` signal's `current()`
-    on its own schedule rather than being pushed a new one every poll
-    tick). Such a type constructs and starts its own thread the moment
-    it's initialized -- there's no separate `start()` to call, and no
-    public loop-control API at all; server.py has no involvement in how
-    it runs itself.
+    `Sensor.supports_reset`: override it to True only for a signal type
+    that maintains its own background thread instead of computing
+    lazily at `read()` time (see RollingAverageSignal, which samples its
+    `source:` signal's `read()` on its own schedule rather than
+    recomputing every time something asks). Such a type constructs and
+    starts its own thread the moment it's initialized -- there's no
+    separate `start()` to call, and no public loop-control API at all;
+    server.py has no involvement in how it runs itself. `read()` skips
+    `_pull_source()`/`add()` entirely for these -- it's a pure getter,
+    since the background thread already wrote the cache directly (via
+    the shared `_write()` helper below).
 
     `reads_from_sensor` is a second, independent capability flag, same
     pattern again: override it to True only for a signal type whose
@@ -51,10 +56,12 @@ class Signal:
     owns_read_loop = False
     reads_from_sensor = False
 
-    def __init__(self):
+    def __init__(self, source_signal=None):
         self._lock = threading.Lock()
         self._value = None
         self._at = None
+        self._last_source_at = None
+        self._source_signal = source_signal
 
     def add(self, raw_value):
         raise NotImplementedError
@@ -62,42 +69,66 @@ class Signal:
     def extra_state(self):
         return {}
 
-    def feed(self, raw_value):
-        """Computes this signal's new output via `add()` and caches it
-        (thread-safely) as its current value -- the uniform entry point
-        anything driving this signal calls, whether that's the sensor's
-        own read loop (via sensor_config.py's wiring) or, for an
-        `owns_read_loop` signal, its own background thread. Returns the
-        raw computed value, so a downstream `source:`-chained signal can
-        be fed the same call's result without an extra `current()`
-        round trip."""
-        value = self.add(raw_value)
-        with self._lock:
-            self._value = value
-            self._at = datetime.now(timezone.utc).isoformat()
-        return value
+    def _pull_source(self):
+        """Returns `{"value", "at"}` for whatever this signal reads
+        from right now, or None if nothing's available yet. Default:
+        pulls `self._source_signal.read()` -- every chain type gets this
+        for free. Not called at all for `owns_read_loop` types (see
+        `read()`); overridden by `SensorSignal` to pull from its sensor
+        instead."""
+        return self._source_signal.read() if self._source_signal else None
 
-    def current(self):
-        """Thread-safe snapshot of this signal's current output --
-        `{"value", "at", **extra_state()}` -- or None before its first
-        `feed()`."""
+    def read(self):
+        """Thread-safe snapshot of this signal's current value --
+        `{"value", "at", **extra_state()}` -- or None before any value
+        is available yet. See the class docstring for the pull/dirty-
+        check mechanics. `_pull_source()` is called outside this
+        signal's own lock -- it recurses into another signal's or a
+        sensor's own independently-locked `read()`/`last_reading()`, so
+        holding this lock across that call isn't needed and would just
+        be pointless nesting. The check-and-write itself happens inside
+        one lock acquisition so two threads calling `read()`
+        concurrently right as new data lands can't both pass the dirty-
+        check and both call `add()`."""
+        if not self.owns_read_loop:
+            source = self._pull_source()
+            if source is not None:
+                with self._lock:
+                    if source["at"] != self._last_source_at:
+                        self._value = self.add(source["value"])
+                        self._at = source["at"]
+                        self._last_source_at = source["at"]
+
         with self._lock:
             if self._value is None:
                 return None
             return {"value": self._value, "at": self._at, **self.extra_state()}
 
+    def _write(self, value, at):
+        """Thread-safe cache write, used by an `owns_read_loop` type's
+        own background thread to write its computed value directly --
+        `read()`'s own compute-if-stale branch writes `_value`/`_at`
+        itself, under the same lock as its dirty-check, rather than
+        going through this helper."""
+        with self._lock:
+            self._value = value
+            self._at = at
+
     def reset(self):
         """Clears this signal back to its just-constructed state: no
-        cached current() value, and (via `_reset_state()`) any
-        subclass-specific accumulator (a rolling window, an EMA) reset
-        to empty. An `owns_read_loop` type additionally restarts its
-        own background thread -- see RollingAverageSignal.reset()."""
+        cached `read()` value, no memory of what upstream value it's
+        already incorporated (so a fresh one isn't mistaken for one
+        already consumed), and (via `_reset_state()`) any subclass-
+        specific accumulator (a rolling window, an EMA) reset to empty.
+        An `owns_read_loop` type additionally restarts its own
+        background thread -- see RollingAverageSignal.reset()."""
         with self._lock:
             self._value = None
             self._at = None
+        self._last_source_at = None
         self._reset_state()
 
     def _reset_state(self):
         """Hook for a subclass holding its own accumulator to clear it
         on reset(). No-op by default, for types with no state beyond
-        the cached current() value the base class already owns."""
+        the cached read() value the base class already owns."""

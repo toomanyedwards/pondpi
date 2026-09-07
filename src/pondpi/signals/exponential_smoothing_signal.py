@@ -8,8 +8,8 @@ class ExponentialSmoothingSignal(Signal):
     fixed window size -- older readings are never fully dropped, just
     weighted down forever."""
 
-    def __init__(self, alpha):
-        super().__init__()
+    def __init__(self, alpha, source_signal=None):
+        super().__init__(source_signal)
         self._alpha = alpha
         self._ema_value = None
 

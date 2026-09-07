@@ -66,6 +66,46 @@ def test_last_reset_at_updates_after_reset():
     assert sensor.last_reset_at() is not None
 
 
+def test_last_reading_is_none_before_any_reading():
+    sensor = _StubSensor()
+    assert sensor.last_reading("raw") is None
+
+
+def test_last_reading_returns_the_most_recently_recorded_value_for_its_key():
+    sensor = _StubSensor()
+    sensor._record_reading({"raw": 101})
+
+    result = sensor.last_reading("raw")
+
+    assert result["value"] == 101
+    assert "at" in result
+
+
+def test_last_reading_is_independent_per_key():
+    sensor = _StubSensor()
+    sensor._record_reading({"raw": 101})
+
+    assert sensor.last_reading("processed") is None
+
+
+def test_record_reading_updates_health_tracking_too():
+    sensor = _StubSensor()
+    assert sensor.last_reading_monotonic() is None
+
+    sensor._record_reading({"raw": 101})
+
+    assert sensor.last_reading_monotonic() is not None
+
+
+def test_reset_clears_last_reading_cache():
+    sensor = _StubSensor()
+    sensor._record_reading({"raw": 101})
+
+    sensor.reset()
+
+    assert sensor.last_reading("raw") is None
+
+
 def _write_fake_flat_package(tmp_path, package_name, module_filename, module_source):
     package_dir = tmp_path / package_name
     package_dir.mkdir()

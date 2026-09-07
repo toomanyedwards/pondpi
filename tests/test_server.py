@@ -4,15 +4,15 @@ from pondpi import server
 
 
 class FakeSignal:
-    """Stand-in for any Signal -- current() returns whatever
-    result it was constructed with. reset_calls tracks reset() calls,
-    for the cascade test."""
+    """Stand-in for any Signal -- read() returns whatever result it was
+    constructed with. reset_calls tracks reset() calls, for the cascade
+    test."""
 
     def __init__(self, result=None):
         self._result = result
         self.reset_calls = 0
 
-    def current(self):
+    def read(self):
         return self._result
 
     def reset(self):
@@ -270,23 +270,23 @@ def test_sensor_reset_targets_named_sensor_independently():
 
 _ROLLING_MEDIAN5_CONFIG = {
     "type": "rolling_median",
-    "params": {"window_size": 5},
+    "source": "instantaneous_raw",
+    "settings": {"window_size": 5},
     "emit": False,
-    "input": "instantaneous_raw",
     "unit": "cm",
 }
 _ROLLING_AVG_CONFIG = {
     "type": "rolling_average",
-    "params": {"window_size": 200},
+    "source": "rolling_median5",
+    "settings": {"window_size": 200},
     "emit": True,
-    "input": "rolling_median5",
     "unit": "cm",
 }
 
 
 def _populate_pond_main_diag_state():
     """Shared setup for both the bare and named diag tests: one sensor
-    with two signals, both already holding a cached current() result."""
+    with two signals, both already holding a cached read() result."""
     server._signal_objects = {
         "rolling_median5": FakeSignal(
             {"value": 50.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5}
@@ -454,9 +454,9 @@ def test_signal_diag_returns_config_and_output():
         configs={
             "rolling_avg": {
                 "type": "rolling_average",
-                "params": {"window_size": 400},
+                "source": "instantaneous_raw",
+                "settings": {"window_size": 400},
                 "emit": True,
-                "input": "instantaneous_raw",
                 "unit": "cm",
             }
         },
@@ -471,9 +471,9 @@ def test_signal_diag_returns_config_and_output():
         "sensor": "pond_main",
         "config": {
             "type": "rolling_average",
-            "params": {"window_size": 400},
+            "source": "instantaneous_raw",
+            "settings": {"window_size": 400},
             "emit": True,
-            "input": "instantaneous_raw",
             "unit": "cm",
         },
         "output": {
