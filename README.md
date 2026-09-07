@@ -307,10 +307,12 @@ before the sensor's first settled processed-mode reading arrives).
 
 ### `POST /reset` / `POST /sensors/<name>/reset`
 
-Power-cycles a sensor to force a hardware reset — for when it appears
-wedged/stuck (e.g. a stale, unchanging reading) and the automatic
-serial buffer flush each driver does internally (see `/health` below)
-hasn't resolved it on its own. For the A02YYUW, this drives its power pin
+Resets a sensor — for when it appears wedged/stuck (e.g. a stale,
+unchanging reading) and whatever resync a driver attempts internally on
+its own (see `/health` below) hasn't resolved it. What "reset" actually
+does is entirely up to the driver (`reset_hardware()`, see [Sensor
+drivers](#sensor-drivers)) -- the API and server.py have no notion of
+the specifics. For the A02YYUW specifically, this drives its power pin
 (`power_pin` param, default `24`) low for
 `sensor_power.RESET_OFF_DURATION_S` (1s) and back high, so the request
 blocks for about that long per sensor reset.
@@ -357,7 +359,7 @@ Resetting a sensor also **cascades**: every signal rooted at it (see
 empty. A sensor reset happens because something looked wrong (a
 stale/unchanging reading, say), so signal state built from readings
 around that time is suspect too; a reset gives a clean slate end-to-end
-rather than power-cycling the hardware while leaving stale-window
+rather than resetting just the sensor while leaving stale-window
 averages behind. Concretely: right after a reset, `rolling_avg`'s
 `samples_in_window` (see `GET /signals/rolling_avg`) drops back to
 climbing from zero, same as right after startup.
@@ -410,7 +412,7 @@ didn't happen.
 right after startup, before anything has been read yet, is normal).
 
 `last_reset_at` is when `POST /reset` (or `/sensors/<name>/reset`) last
-power-cycled that sensor, or `null` if it's never been called since this
+reset that sensor, or `null` if it's never been called since this
 service started (not persisted across restarts).
 
 `signals` is just the list of that sensor's configured signal names, as
