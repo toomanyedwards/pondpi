@@ -11,14 +11,15 @@ Each configured sensor is driven by its own `LevelSensor` driver instance
 (see [Sensor drivers](#sensor-drivers) below) polled on its own background
 thread, `poll_sensor()`. A driver's readings are pushed through that
 sensor's own configured `LevelSignal` instances (see [Signal
-processing](#signal-processing)) as they arrive -- except the one signal
-marked `primary` (always `type: rolling_average`), which instead
-owns a *second* dedicated background thread that samples its own `input:`
-signal's cached output on its own independent schedule, rather than being
-pushed a value on every one of `poll_sensor()`'s much faster ticks (see
-[Signal processing](#signal-processing) for why). A Flask server exposes
-every signal's current value directly at `GET /signals/<name>`, plus
-per-sensor diagnostic and control routes (`GET /diag`, `POST /reset`).
+processing](#signal-processing)) as they arrive -- except any signal with
+`owns_read_loop = True` (currently just `type: rolling_average`), which
+instead owns a *second* dedicated background thread that samples its own
+`input:` signal's cached output on its own independent schedule, rather
+than being pushed a value on every one of `poll_sensor()`'s much faster
+ticks (see [Signal processing](#signal-processing) for why). A Flask
+server exposes every signal's current value directly at `GET
+/signals/<name>`, plus per-sensor diagnostic and control routes (`GET
+/diag`, `POST /reset`).
 
 ```
 ┌────────────────┐  read()  ┌──────────────────┐  add()  ┌────────────────────────────┐
@@ -28,7 +29,7 @@ per-sensor diagnostic and control routes (`GET /diag`, `POST /reset`).
         ▲ one instance per                │ writes that sensor's own state              │
         │ config/sensors.yaml entry       v                                            v
         │                     ┌──────────────────────┐  current()                       │
-        │                     │ primary signal's own  │ ────────────────────────────────>│
+        │                     │ owns_read_loop signal's│ ────────────────────────────────>│
         │                     │ 2nd background thread │  (samples its input: signal's     │
         │                     └──────────────────────┘   cached value on its own timer)  │
         └──────────────────────  Flask app: GET /sensors, GET /health, GET /diag,
@@ -88,15 +89,10 @@ pondpi/
 ## API
 
 Two families of routes here. Sensor-scoped routes (`/diag`, `POST
-/reset`, and `GET /sensors`) come in two forms: a bare route (`/diag`)
-that operates on the *default* sensor — the one entry in
-`config/sensors.yaml` marked `default: true` — and a sensor-named route
-(`/sensors/<name>/diag`, `POST /sensors/<name>/reset`) that operates on
-any configured sensor by name, default or not. A single-sensor
-deployment's existing integrations keep working unchanged as more
-sensors are added, as long as that original sensor stays marked default.
-Bare `POST /reset` is the one exception to "bare means default only" —
-see below.
+/reset`, and `GET /sensors`) mostly address one sensor by name
+(`/sensors/<name>/diag`, `POST /sensors/<name>/reset`); the bare forms
+(`/diag`, `POST /reset`) instead span *every* configured sensor at once,
+keyed by name in the response, rather than picking one implicitly.
 
 Signal-scoped routes (`GET /signals`, `GET /signals/<name>`, `GET
 /signals/<name>/diag`) have no such bare-vs-named split, since signals
@@ -106,31 +102,30 @@ its own globally-unique name.
 
 ### `GET /sensors`
 
-Lists every configured sensor's name and which one is the default:
+Lists every configured sensor's name:
 
 ```json
 {
-  "sensors": ["pond_main"],
-  "default": "pond_main"
+  "sensors": ["pond_main"]
 }
 ```
 
-### `GET /diag` / `GET /sensors/<name>/diag`
+### `GET /sensors/<name>/diag`
 
-The config and live output of **every** configured signal for the
-default sensor, or the named one -- the full diagnostic view of a
-sensor's whole signal pipeline in one call, as opposed to `GET
-/signals/<name>` (below) which addresses exactly one signal directly.
+The config and live output of **every** configured signal for this one
+sensor -- the full diagnostic view of its whole signal pipeline in one
+call, as opposed to `GET /signals/<name>` (below) which addresses
+exactly one signal directly.
 
 ```json
 {
   "signals": {
     "pond_main_sensor_raw": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "primary": false, "emit": true, "unit": "cm", "mode": "raw"},
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "emit": true, "unit": "cm", "mode": "raw"},
       "output": {"value": 11.3, "unit": "cm", "at": "2026-09-07T00:28:23.470621+00:00", "sensor": "pond_main", "mode": "raw"}
     },
     "pond_main_sensor_processed": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm", "mode": "processed"}, "primary": false, "emit": true, "unit": "cm", "mode": "processed"},
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm", "mode": "processed"}, "emit": true, "unit": "cm", "mode": "processed"},
       "output": {"value": 11.0, "unit": "cm", "at": "2026-09-07T00:28:22.093268+00:00", "sensor": "pond_main", "mode": "processed"}
     },
     "rolling_median5": {
@@ -138,7 +133,6 @@ sensor's whole signal pipeline in one call, as opposed to `GET
         "type": "rolling_median",
         "input": "pond_main_sensor_raw",
         "params": {"window_size": 5},
-        "primary": false,
         "emit": false,
         "unit": "cm",
         "mode": "raw"
@@ -156,7 +150,6 @@ sensor's whole signal pipeline in one call, as opposed to `GET
         "type": "rolling_average",
         "input": "rolling_median5",
         "params": {"window_size": 60, "poll_interval_ms": 1000},
-        "primary": true,
         "emit": true,
         "unit": "cm",
         "mode": "raw"
@@ -175,12 +168,28 @@ sensor's whole signal pipeline in one call, as opposed to `GET
 ```
 
 Each signal's `config` is its *effective* configuration from
-`config/sensors.yaml`'s `signals:` list (defaults filled in, so
-`primary`/`emit` are always present even if the YAML omitted them; a
-non-`sensor` signal's `input` is included too), and `output` is `value`
-plus that signal's own `extra_state()`. Returns `503 {"error": "no
-readings yet"}` before this sensor's primary signal has produced its
-first value.
+`config/sensors.yaml`'s `signals:` list (defaults filled in, so `emit`
+is always present even if the YAML omitted it; a non-`sensor` signal's
+`input` is included too), and `output` is `value` plus that signal's
+own `extra_state()`. Returns `503 {"error": "no readings yet"}` before
+this sensor has produced a first value for any of its signals.
+
+### `GET /diag`
+
+The bare form of the same route, spanning every configured sensor at
+once -- each keyed by name, with exactly the same per-sensor `signals`
+shape `GET /sensors/<name>/diag` returns for one. A sensor with no
+readings yet shows an empty object rather than failing the whole
+request, same as bare `POST /reset` below reports per-sensor status
+instead of an all-or-nothing error:
+
+```json
+{
+  "sensors": {
+    "pond_main": { "...": "same shape as GET /sensors/pond_main/diag's \"signals\"" }
+  }
+}
+```
 
 Every signal's `config`/`output` includes `unit` — the unit its own
 `value` is actually in (e.g. `"cm"`), as declared in `params.unit` for
@@ -257,7 +266,6 @@ the flattened value:
     "type": "rolling_average",
     "input": "rolling_median5",
     "params": {"window_size": 60, "poll_interval_ms": 1000},
-    "primary": true,
     "emit": true,
     "unit": "cm",
     "mode": "raw"
@@ -304,11 +312,11 @@ or `404 {"error": "unknown sensor '<name>'"}` for a name not in
 }
 ```
 
-Bare `POST /reset` is the exception to this doc's usual "bare route
-means the default sensor" rule -- it resets **every** configured
-sensor that supports it, one at a time, reporting each one's outcome
-individually (`"reset"` or `"not_supported"`) rather than failing the
-whole request just because one sensor lacks the capability:
+Bare `POST /reset`, like bare `GET /diag` above, spans every configured
+sensor at once -- it resets **every** sensor that supports it, one at a
+time, reporting each one's outcome individually (`"reset"` or
+`"not_supported"`) rather than failing the whole request just because
+one sensor lacks the capability:
 
 ```json
 {
@@ -337,7 +345,6 @@ service info:
   "uptime_seconds": 93780.4,
   "uptime_human": "1d 2h 3m 0s",
   "commit_sha": "e1d742a9c2f4b1a0d3e5f6a7b8c9d0e1f2a3b4c5",
-  "default_sensor": "pond_main",
   "sensors": {
     "pond_main": {
       "status": "ok",
@@ -473,7 +480,7 @@ These two numbers directly shape the polling and smoothing defaults:
 - **Ranging accuracy (±1 cm) sets a noise floor.** Any single reading
   can be off by up to 1 cm even with a perfectly still water surface, so
   don't expect (or chase) sub-centimeter precision out of
-  `signals.pond_main_sensor_raw`. That's exactly what `primary_signal` is
+  `signals.pond_main_sensor_raw`. That's exactly what `rolling_avg` is
   for — averaging readings down to a
   stabler value — but a rolling window so small that it's dominated by
   one or two ±1 cm outliers will still show that noise. Conversely,
@@ -601,7 +608,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 |---|---|---|
 | `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer. `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. Exactly one signal per sensor -- the `primary` one -- must be this type, since `/health`'s staleness check is built around its own background-sampling cadence (see `LevelSignal.owns_read_loop`). |
+| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,
@@ -626,10 +633,11 @@ notes](#sensor-notes)). Every other signal type derives `mode` from
 Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/diag` were computed at the
-same moment. Exactly one signal per sensor is marked `primary: true`,
-and it must be `type: rolling_average` (the one type with
-`owns_read_loop = True`) -- `/health`'s staleness check is built around
-that signal's own background-sampling cadence specifically.
+same moment. Any signal type may set `LevelSignal.owns_read_loop = True`
+(currently just `rolling_average`) to get its own dedicated background
+thread automatically, as described in the table above -- no config
+marker needed, and any number of a sensor's signals (zero, one, or
+more) may do it.
 
 Every signal's `/diag`/`/signals/<name>` output also includes `at` — an
 ISO 8601 UTC timestamp of when that signal's `value` was last computed,
@@ -657,7 +665,6 @@ the `sensors:` entry's own `name`/`type`/`params` fields):
 sensors:
   - name: pond_main
     type: a02yyuw
-    default: true
     params:
       serial_port: /dev/serial0
       mode_select_pin: 25
@@ -684,7 +691,6 @@ signals:
   - name: rolling_avg
     type: rolling_average
     input: rolling_median5
-    primary: true
     params:
       window_size: 60
       poll_interval_ms: 1000
@@ -700,12 +706,9 @@ reading instead, updating on its own cadence (see the A02YYUW's
 raw/processed hardware-mode cycling in [Sensor
 notes](#sensor-notes)).
 
-Exactly one signal rooted at each sensor must be marked `primary: true`,
-and it must be `type: rolling_average` (the one type that owns its own
-background read loop, see above) -- `/health`'s staleness check is
-built around that signal's own background-sampling cadence
-specifically. It's reachable like any other signal, directly at
-`GET /signals/<name>`. **The deployed Home Assistant integration reads
+`rolling_avg` is `type: rolling_average` (the one type that owns its own
+background read loop, see above), reachable like any other signal,
+directly at `GET /signals/<name>`. **The deployed Home Assistant integration reads
 `pond_main_sensor_raw` and `pond_main_sensor_processed` directly** --
 two `rest` sensors in Home Assistant's `configuration.yaml`, each
 polling `http://<pi-host>:8080/signals/<name>` every 60s via

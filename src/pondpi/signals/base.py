@@ -16,8 +16,8 @@ class LevelSignal:
     via `add()` by poll_sensor()'s loop (see RollingAverageSignal,
     which samples its `input:` signal's cached value on its own
     schedule rather than being pushed a new one every poll tick).
-    Exactly one such signal must be a sensor's `primary` -- see
-    signal_config.py.
+    server.py's `main()` spawns one such thread per owns_read_loop
+    signal in a sensor's group -- any number, no config marker needed.
     """
 
     owns_read_loop = False

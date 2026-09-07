@@ -10,14 +10,13 @@ def write_yaml(tmp_path, content):
     return path
 
 
-def test_loads_valid_config_with_one_default_sensor(tmp_path):
+def test_loads_valid_config(tmp_path):
     path = write_yaml(
         tmp_path,
         """
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params: {}
         signals:
           - name: raw
@@ -28,19 +27,16 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
           - name: instantaneous_raw
             type: rolling_average
             input: raw
-            primary: true
             params:
               window_size: 5
               poll_interval_ms: 1000
         """,
     )
 
-    sensors, default_name = load_sensors(path, simulate=True)
+    sensors = load_sensors(path, simulate=True)
 
-    assert default_name == "pond_main"
     assert set(sensors) == {"pond_main"}
     assert isinstance(sensors["pond_main"]["driver"], A02YYUWSensor)
-    assert sensors["pond_main"]["primary_name"] == "instantaneous_raw"
     assert set(sensors["pond_main"]["signals"]) == {"raw", "instantaneous_raw"}
 
 
@@ -51,7 +47,6 @@ def test_loads_multiple_sensors(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params: {}
           - name: rain_barrel
             type: a02yyuw
@@ -65,7 +60,6 @@ def test_loads_multiple_sensors(tmp_path):
           - name: pond_raw
             type: rolling_average
             input: pond_raw_sensor
-            primary: true
             params:
               window_size: 5
               poll_interval_ms: 1000
@@ -77,16 +71,14 @@ def test_loads_multiple_sensors(tmp_path):
           - name: barrel_raw
             type: rolling_average
             input: barrel_raw_sensor
-            primary: true
             params:
               window_size: 5
               poll_interval_ms: 1000
         """,
     )
 
-    sensors, default_name = load_sensors(path, simulate=True)
+    sensors = load_sensors(path, simulate=True)
 
-    assert default_name == "pond_main"
     assert set(sensors) == {"pond_main", "rain_barrel"}
     # Distinct instances -- not the same driver object reused.
     assert sensors["pond_main"]["driver"] is not sensors["rain_barrel"]["driver"]
@@ -104,7 +96,6 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params:
               serial_port: /dev/does_not_exist
               mode_select_pin: 99
@@ -118,51 +109,15 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
           - name: instantaneous_raw
             type: rolling_average
             input: raw
-            primary: true
             params:
               window_size: 5
               poll_interval_ms: 1000
         """,
     )
 
-    sensors, _ = load_sensors(path, simulate=True)
+    sensors = load_sensors(path, simulate=True)
 
     assert isinstance(sensors["pond_main"]["driver"], A02YYUWSensor)
-
-
-def test_missing_default_raises(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        sensors:
-          - name: pond_main
-            type: a02yyuw
-            params: {}
-        """,
-    )
-
-    with pytest.raises(ValueError, match="exactly one sensor must be marked 'default: true'"):
-        load_sensors(path, simulate=True)
-
-
-def test_multiple_defaults_raises(tmp_path):
-    path = write_yaml(
-        tmp_path,
-        """
-        sensors:
-          - name: pond_main
-            type: a02yyuw
-            default: true
-            params: {}
-          - name: rain_barrel
-            type: a02yyuw
-            default: true
-            params: {}
-        """,
-    )
-
-    with pytest.raises(ValueError, match="multiple sensors marked default"):
-        load_sensors(path, simulate=True)
 
 
 def test_unknown_sensor_type_raises(tmp_path):
@@ -172,7 +127,6 @@ def test_unknown_sensor_type_raises(tmp_path):
         sensors:
           - name: pond_main
             type: not_a_real_sensor
-            default: true
             params: {}
         """,
     )
@@ -188,7 +142,6 @@ def test_duplicate_sensor_name_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params: {}
           - name: pond_main
             type: a02yyuw
@@ -206,7 +159,6 @@ def test_missing_name_raises(tmp_path):
         """
         sensors:
           - type: a02yyuw
-            default: true
             params: {}
         """,
     )
@@ -222,7 +174,6 @@ def test_empty_signals_list_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params: {}
         signals: []
         """,
@@ -239,7 +190,6 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            default: true
             params: {}
           - name: rain_barrel
             type: a02yyuw
@@ -253,7 +203,6 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
           - name: pond_raw
             type: rolling_average
             input: pond_raw_sensor
-            primary: true
             params:
               window_size: 5
               poll_interval_ms: 1000

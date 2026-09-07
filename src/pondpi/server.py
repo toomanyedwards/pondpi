@@ -26,9 +26,8 @@ _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
 _signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since signal names are unique file-wide
 _poll_threads = {}  # dict[sensor_name -> Thread running poll_sensor()]
-_polling_signal_threads = {}  # dict[sensor_name -> Thread running its primary signal's run_loop()]
+_polling_signal_threads = {}  # dict[signal_name -> Thread running that signal's own run_loop()]
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
-_default_sensor_name = None
 _commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
@@ -39,7 +38,6 @@ def _new_sensor_state():
         "signals": {},
         "signal_names": [],
         "configs": {},
-        "primary_name": None,
         "last_reading_monotonic": None,
         "last_reset_at": None,
     }
@@ -64,11 +62,12 @@ def poll_sensor(name, sensor, signals, configs, stop_event, poll_interval_s):
     given one actually is).
 
     A signal with `owns_read_loop = True` (currently just
-    RollingAverageSignal, always the sensor's `primary`) is
-    skipped here entirely -- it's fed by its own dedicated thread
-    instead (see server.py's `main()`), sampling its `input:` signal's
-    cached output on its own pace rather than being pushed a value on
-    every one of this loop's much faster ticks.
+    RollingAverageSignal) is skipped here entirely -- it's fed by its
+    own dedicated thread instead (see server.py's `main()`, which spawns
+    one such thread per owns_read_loop signal in the sensor's group),
+    sampling its `input:` signal's cached output on its own pace rather
+    than being pushed a value on every one of this loop's much faster
+    ticks.
 
     One of these runs per configured sensor, each in its own thread."""
     while not stop_event.is_set():
@@ -160,7 +159,6 @@ def health():
         uptime_seconds=uptime_seconds,
         uptime_human=format_duration(uptime_seconds),
         commit_sha=_commit_sha,
-        default_sensor=_default_sensor_name,
         sensors=sensors_health,
     )
     return payload if status == "ok" else (payload, 503)
@@ -215,19 +213,12 @@ def sensor_reset(name):
     return _reset_response(name)
 
 
-def _diag_response(name):
-    """Full config + live output for every one of this sensor's
-    configured signals."""
-    primary_name = _state[name]["primary_name"]
-    if primary_name is None:
-        return jsonify(error="no readings yet"), 503
-    primary_result = _signal_result(name, primary_name)
-    if primary_result is None:
-        return jsonify(error="no readings yet"), 503
-
+def _sensor_diag_signals(name):
+    """Config + live output for every one of this sensor's configured
+    signals that has a reading yet (empty dict if none do)."""
     signals = {}
     for sname in _state[name]["signal_names"]:
-        result = primary_result if sname == primary_name else _signal_result(name, sname)
+        result = _signal_result(name, sname)
         if result is None:
             continue
         unit = _state[name]["configs"][sname]["unit"]
@@ -235,27 +226,29 @@ def _diag_response(name):
             "config": _state[name]["configs"][sname],
             "output": _signal_output(result, unit),
         }
-
-    return jsonify(signals=signals)
+    return signals
 
 
 @app.route("/diag")
 def diag():
-    """Diagnostic view for the default sensor. See GET
-    /sensors/<name>/diag to target a specific non-default sensor."""
-    return _diag_response(_default_sensor_name)
+    """Diagnostic view for every configured sensor at once. See GET
+    /sensors/<name>/diag to target one sensor individually."""
+    return jsonify(sensors={name: _sensor_diag_signals(name) for name in _sensors})
 
 
 @app.route("/sensors/<name>/diag")
 def sensor_diag(name):
     if name not in _state:
         return jsonify(error=f"unknown sensor '{name}'"), 404
-    return _diag_response(name)
+    signals = _sensor_diag_signals(name)
+    if not signals:
+        return jsonify(error="no readings yet"), 503
+    return jsonify(signals=signals)
 
 
 @app.route("/sensors")
 def sensors_list():
-    return jsonify(sensors=list(_sensors), default=_default_sensor_name)
+    return jsonify(sensors=list(_sensors))
 
 
 @app.route("/signals")
@@ -305,8 +298,6 @@ def signal_diag(name):
 
 
 def main():
-    global _default_sensor_name
-
     parser = argparse.ArgumentParser(description="Multi-sensor water level HTTP server")
     parser.add_argument(
         "--sensors-config",
@@ -329,7 +320,7 @@ def main():
     )
     args = parser.parse_args()
 
-    sensor_configs, _default_sensor_name = load_sensors(args.sensors_config, simulate=args.simulate)
+    sensor_configs = load_sensors(args.sensors_config, simulate=args.simulate)
 
     stop_event = threading.Event()
     for name, cfg in sensor_configs.items():
@@ -338,7 +329,6 @@ def main():
         _state[name] = _new_sensor_state()
         _state[name]["signal_names"] = list(cfg["signals"])
         _state[name]["configs"] = cfg["configs"]
-        _state[name]["primary_name"] = cfg["primary_name"]
 
         for signal_name, signal_obj in cfg["signals"].items():
             _signal_owner[signal_name] = name
@@ -359,21 +349,23 @@ def main():
         poll_thread.start()
         _poll_threads[name] = poll_thread
 
-        primary_signal = cfg["signals"][cfg["primary_name"]]
-        primary_input_name = cfg["configs"][cfg["primary_name"]]["input"]
+        for signal_name, signal_obj in cfg["signals"].items():
+            if not signal_obj.owns_read_loop:
+                continue
+            input_name = cfg["configs"][signal_name]["input"]
 
-        def get_raw_value(sensor_name=name, input_name=primary_input_name):
-            with _state_lock:
-                result = _state[sensor_name]["signals"].get(input_name)
-                return result["value"] if result else None
+            def get_raw_value(sensor_name=name, input_name=input_name):
+                with _state_lock:
+                    result = _state[sensor_name]["signals"].get(input_name)
+                    return result["value"] if result else None
 
-        polling_signal_thread = threading.Thread(
-            target=primary_signal.run_loop,
-            args=(stop_event, get_raw_value),
-            daemon=True,
-        )
-        polling_signal_thread.start()
-        _polling_signal_threads[name] = polling_signal_thread
+            polling_signal_thread = threading.Thread(
+                target=signal_obj.run_loop,
+                args=(stop_event, get_raw_value),
+                daemon=True,
+            )
+            polling_signal_thread.start()
+            _polling_signal_threads[signal_name] = polling_signal_thread
 
     try:
         app.run(host=args.host, port=args.port)

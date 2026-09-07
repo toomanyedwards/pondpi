@@ -109,7 +109,6 @@ def test_health_ok_when_poller_alive():
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["signal_names"] = ["rolling_avg", "instantaneous_raw"]
     server._commit_sha = "abc123"
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -117,7 +116,6 @@ def test_health_ok_when_poller_alive():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["status"] == "ok"
-    assert data["default_sensor"] == "pond_main"
     assert data["started_at"] == server._started_at.isoformat()
     assert isinstance(data["uptime_seconds"], (int, float))
     assert data["uptime_seconds"] >= 0
@@ -132,7 +130,6 @@ def test_health_degraded_when_poller_dead():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
     server._poll_threads = {"pond_main": DummyThread(alive=False)}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -147,7 +144,6 @@ def test_health_degraded_when_poller_never_started():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
     server._poll_threads = {}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -160,7 +156,6 @@ def test_health_ok_when_reading_recent():
     server._sensors = {"pond_main": object()}
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["last_reading_monotonic"] = time.monotonic()
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -176,7 +171,6 @@ def test_health_degraded_when_reading_stale():
     server._sensors = {"pond_main": object()}
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["last_reading_monotonic"] = time.monotonic() - (server.STALE_READING_THRESHOLD_S + 1)
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -194,7 +188,6 @@ def test_health_last_reset_at_null_before_any_reset():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -208,7 +201,6 @@ def test_health_reflects_last_reset_at():
     server._poll_threads = {"pond_main": DummyThread(alive=True)}
     reset_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     server._state["pond_main"]["last_reset_at"] = reset_at
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -223,7 +215,6 @@ def test_health_reports_multiple_sensors_independently():
         "pond_main": DummyThread(alive=True),
         "rain_barrel": DummyThread(alive=False),
     }
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -240,7 +231,6 @@ def test_reset_powercycles_a_single_configured_sensor_and_records_last_reset_at(
     _reset_globals(["pond_main"])
     fake_sensor = FakeResetSensor()
     server._sensors = {"pond_main": fake_sensor}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.post("/reset")
@@ -258,7 +248,6 @@ def test_reset_powercycles_every_supporting_sensor():
     fake_main = FakeResetSensor()
     fake_barrel = FakeResetSensor()
     server._sensors = {"pond_main": fake_main, "rain_barrel": fake_barrel}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.post("/reset")
@@ -278,7 +267,6 @@ def test_reset_reports_not_supported_without_failing_other_sensors():
     fake_main = FakeResetSensor()
     unsupported_barrel = FakeResetSensor(supports_reset=False)
     server._sensors = {"pond_main": fake_main, "rain_barrel": unsupported_barrel}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.post("/reset")
@@ -317,7 +305,6 @@ def test_sensor_reset_targets_named_sensor_independently():
     fake_main = FakeResetSensor()
     fake_barrel = FakeResetSensor()
     server._sensors = {"pond_main": fake_main, "rain_barrel": fake_barrel}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.post("/sensors/rain_barrel/reset")
@@ -493,18 +480,26 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
     assert server._state["rain_barrel"]["signals"]["raw"]["value"] == 200
 
 
-def test_diag_returns_503_before_first_reading():
-    _reset_globals(["pond_main"])
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
+_ROLLING_MEDIAN5_CONFIG = {
+    "type": "rolling_median",
+    "params": {"window_size": 5},
+    "emit": False,
+    "input": "instantaneous_raw",
+    "unit": "cm",
+}
+_ROLLING_AVG_CONFIG = {
+    "type": "rolling_average",
+    "params": {"window_size": 200},
+    "emit": True,
+    "input": "rolling_median5",
+    "unit": "cm",
+}
 
-    resp = client.get("/diag")
 
-    assert resp.status_code == 503
-
-
-def test_diag_returns_config_and_output_for_every_signal():
-    _reset_globals(["pond_main"])
+def _populate_pond_main_diag_state():
+    """Shared setup for both the bare and named diag tests: one sensor
+    with two signals, one push-fed (already cached) and one that owns
+    its own read loop (backed by FakePollingSignal)."""
     server._signal_objects = {
         "rolling_median5": FakeSignal(),
         "rolling_avg": FakePollingSignal(
@@ -512,31 +507,42 @@ def test_diag_returns_config_and_output_for_every_signal():
         ),
     }
     server._state["pond_main"].update(
-        primary_name="rolling_avg",
         signal_names=["rolling_median5", "rolling_avg"],
-        configs={
-            "rolling_median5": {
-                "type": "rolling_median",
-                "params": {"window_size": 5},
-                "primary": False,
-                "emit": False,
-                "input": "instantaneous_raw",
-                "unit": "cm",
-            },
-            "rolling_avg": {
-                "type": "rolling_average",
-                "params": {"window_size": 200},
-                "primary": True,
-                "emit": True,
-                "input": "rolling_median5",
-                "unit": "cm",
-            },
-        },
+        configs={"rolling_median5": _ROLLING_MEDIAN5_CONFIG, "rolling_avg": _ROLLING_AVG_CONFIG},
         signals={
             "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
         },
     )
-    server._default_sensor_name = "pond_main"
+
+
+_EXPECTED_POND_MAIN_DIAG_SIGNALS = {
+    "rolling_median5": {
+        "config": _ROLLING_MEDIAN5_CONFIG,
+        "output": {
+            "value": 50.0,
+            "unit": "cm",
+            "at": "2026-01-01T00:00:00+00:00",
+            "window_size": 5,
+            "samples_in_window": 5,
+        },
+    },
+    "rolling_avg": {
+        "config": _ROLLING_AVG_CONFIG,
+        "output": {
+            "value": 85.0,
+            "unit": "cm",
+            "at": "2026-01-01T00:00:00+00:00",
+            "window_size": 200,
+            "samples_in_window": 200,
+        },
+    },
+}
+
+
+def test_diag_aggregates_every_sensor_at_once():
+    _reset_globals(["pond_main", "rain_barrel"])
+    server._sensors = {"pond_main": object(), "rain_barrel": object()}
+    _populate_pond_main_diag_state()
     client = server.app.test_client()
 
     resp = client.get("/diag")
@@ -544,41 +550,12 @@ def test_diag_returns_config_and_output_for_every_signal():
     assert resp.status_code == 200
     data = resp.get_json()
     assert data == {
-        "signals": {
-            "rolling_median5": {
-                "config": {
-                    "type": "rolling_median",
-                    "params": {"window_size": 5},
-                    "primary": False,
-                    "emit": False,
-                    "input": "instantaneous_raw",
-                    "unit": "cm",
-                },
-                "output": {
-                    "value": 50.0,
-                    "unit": "cm",
-                    "at": "2026-01-01T00:00:00+00:00",
-                    "window_size": 5,
-                    "samples_in_window": 5,
-                },
-            },
-            "rolling_avg": {
-                "config": {
-                    "type": "rolling_average",
-                    "params": {"window_size": 200},
-                    "primary": True,
-                    "emit": True,
-                    "input": "rolling_median5",
-                    "unit": "cm",
-                },
-                "output": {
-                    "value": 85.0,
-                    "unit": "cm",
-                    "at": "2026-01-01T00:00:00+00:00",
-                    "window_size": 200,
-                    "samples_in_window": 200,
-                },
-            },
+        "sensors": {
+            "pond_main": _EXPECTED_POND_MAIN_DIAG_SIGNALS,
+            # No readings yet for rain_barrel -- shown as empty rather
+            # than failing the whole request, same as bare POST /reset
+            # reports per-sensor status instead of an all-or-nothing error.
+            "rain_barrel": {},
         },
     }
 
@@ -592,18 +569,35 @@ def test_sensor_diag_returns_404_for_unknown_sensor():
     assert resp.status_code == 404
 
 
-def test_sensors_list_returns_names_and_default():
+def test_sensor_diag_returns_503_before_first_reading():
+    _reset_globals(["pond_main"])
+    client = server.app.test_client()
+
+    resp = client.get("/sensors/pond_main/diag")
+
+    assert resp.status_code == 503
+
+
+def test_sensor_diag_returns_config_and_output_for_every_signal():
+    _reset_globals(["pond_main"])
+    _populate_pond_main_diag_state()
+    client = server.app.test_client()
+
+    resp = client.get("/sensors/pond_main/diag")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"signals": _EXPECTED_POND_MAIN_DIAG_SIGNALS}
+
+
+def test_sensors_list_returns_names():
     _reset_globals(["pond_main", "rain_barrel"])
     server._sensors = {"pond_main": object(), "rain_barrel": object()}
-    server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.get("/sensors")
 
     assert resp.status_code == 200
-    data = resp.get_json()
-    assert set(data["sensors"]) == {"pond_main", "rain_barrel"}
-    assert data["default"] == "pond_main"
+    assert set(resp.get_json()["sensors"]) == {"pond_main", "rain_barrel"}
 
 
 def test_signals_list_returns_every_configured_signal_name():
@@ -675,7 +669,6 @@ def test_signal_diag_returns_config_and_output():
             "rolling_avg": {
                 "type": "rolling_average",
                 "params": {"window_size": 400},
-                "primary": True,
                 "emit": True,
                 "input": "instantaneous_raw",
                 "unit": "cm",
@@ -693,7 +686,6 @@ def test_signal_diag_returns_config_and_output():
         "config": {
             "type": "rolling_average",
             "params": {"window_size": 400},
-            "primary": True,
             "emit": True,
             "input": "instantaneous_raw",
             "unit": "cm",
