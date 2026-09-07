@@ -40,7 +40,7 @@ def load_signals(path, sensor_names):
     which raises for that case rather than silently omitting it).
     Within each group: exactly one signal must be marked `primary:
     true`, and it must be a type that owns its own read loop (see
-    LevelSignal.owns_read_loop and PollingRollingAverageSignal) --
+    LevelSignal.owns_read_loop and RollingAverageSignal) --
     /health's staleness check and /level's default view are both built
     around that signal's own background-sampling cadence. Any signal
     may set `emit: false` (default true) to keep it out of /level's
@@ -159,7 +159,7 @@ def build_signals(entries, sensor_names, path):
         if not primary_signal.owns_read_loop:
             raise ValueError(
                 f"{path}: sensor '{sensor}': primary signal '{group['primary_name']}' must be a type that owns "
-                "its own read loop (e.g. 'polling_rolling_average'), since /health and /level's default view "
+                "its own read loop (e.g. 'rolling_average'), since /health and /level's default view "
                 "are built around its background-sampling cadence"
             )
 

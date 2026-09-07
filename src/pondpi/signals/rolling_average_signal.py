@@ -6,18 +6,17 @@ from pondpi.signals.base import LevelSignal
 from pondpi.signals.utils.rolling_average import RollingAverage
 
 
-class PollingRollingAverageSignal(LevelSignal):
-    """Averages its `input:` signal's output over a rolling window, like
-    RollingAverageSignal -- but instead of being pushed a new value on
-    every poll_sensor() tick, this signal owns its own background
-    thread that pulls its input's current cached value on its own pace.
+class RollingAverageSignal(LevelSignal):
+    """Averages its `input:` signal's output over a rolling window --
+    but instead of being pushed a new value on every poll_sensor()
+    tick, this signal owns its own background thread that pulls its
+    input's current cached value on its own pace.
 
-    `poll_interval_s` paces the loop itself: each iteration sleeps this
-    long between samples, so `window_size * poll_interval_s` is a
+    `poll_interval_ms` paces the loop itself: each iteration sleeps
+    this long between samples, so `window_size * poll_interval_ms` is a
     genuine real-world time span, decoupled from the sensor's own much
     faster poll rate (`--polling-interval-ms`) -- no need to retain a
-    sample for every single one of those ticks to cover a real minute,
-    the way a plain input:-fed RollingAverageSignal would.
+    sample for every single one of those ticks to cover a real minute.
 
     Call `run_loop()` in a dedicated thread (see server.py's `main()`);
     `current()` is the thread-safe read side, polled by HTTP handlers.
@@ -25,8 +24,8 @@ class PollingRollingAverageSignal(LevelSignal):
 
     owns_read_loop = True
 
-    def __init__(self, window_size, poll_interval_s):
-        self._poll_interval_s = poll_interval_s
+    def __init__(self, window_size, poll_interval_ms):
+        self._poll_interval_ms = poll_interval_ms
         self._rolling_avg = RollingAverage(window_size)
         self._lock = threading.Lock()
         self._value = None
@@ -47,7 +46,7 @@ class PollingRollingAverageSignal(LevelSignal):
                     self._at = datetime.now(timezone.utc).isoformat()
                     self._last_reading_monotonic = time.monotonic()
 
-            time.sleep(self._poll_interval_s)
+            time.sleep(self._poll_interval_ms / 1000)
 
     def current(self):
         """Thread-safe snapshot of this signal's current output, or
@@ -60,7 +59,7 @@ class PollingRollingAverageSignal(LevelSignal):
                 "at": self._at,
                 "window_size": self._rolling_avg.window_size,
                 "samples_in_window": self._rolling_avg.count,
-                "poll_interval_s": self._poll_interval_s,
+                "poll_interval_ms": self._poll_interval_ms,
             }
 
     def last_reading_monotonic(self):

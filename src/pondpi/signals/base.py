@@ -13,7 +13,7 @@ class LevelSignal:
     `owns_read_loop` is a capability flag, same pattern as
     `LevelSensor.supports_reset`: override it to True only for a signal
     type that maintains its own background thread instead of being fed
-    via `add()` by poll_sensor()'s loop (see PollingRollingAverageSignal,
+    via `add()` by poll_sensor()'s loop (see RollingAverageSignal,
     which samples its `input:` signal's cached value on its own
     schedule rather than being pushed a new one every poll tick).
     Exactly one such signal must be a sensor's `primary` -- see

@@ -5,7 +5,7 @@ import pytest
 
 from pondpi.signals import discover_signal_types
 from pondpi.signals.exponential_smoothing_signal import ExponentialSmoothingSignal
-from pondpi.signals.polling_rolling_average_signal import PollingRollingAverageSignal
+from pondpi.signals.rolling_average_signal import RollingAverageSignal
 from pondpi.signals.rolling_median_signal import RollingMedianSignal
 from pondpi.signals.sensor_signal import SensorSignal
 
@@ -71,24 +71,24 @@ def _queue_getter(values):
     return get
 
 
-def test_polling_rolling_average_signal_current_is_none_before_first_reading():
-    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+def test_rolling_average_signal_current_is_none_before_first_reading():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
     assert signal.current() is None
 
 
-def test_polling_rolling_average_signal_run_loop_populates_current():
-    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+def test_rolling_average_signal_run_loop_populates_current():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
     _run_briefly(signal, _fixed_getter(100))
 
     result = signal.current()
     assert result["value"] == 100
     assert result["window_size"] == 5
-    assert result["poll_interval_s"] == 0.01
+    assert result["poll_interval_ms"] == 10
     assert "at" in result
 
 
-def test_polling_rolling_average_signal_run_loop_averages_over_its_window():
-    signal = PollingRollingAverageSignal(window_size=3, poll_interval_s=0.01)
+def test_rolling_average_signal_run_loop_averages_over_its_window():
+    signal = RollingAverageSignal(window_size=3, poll_interval_ms=10)
     _run_briefly(
         signal,
         _queue_getter([10, 20, 30] + [30] * 100),
@@ -100,20 +100,20 @@ def test_polling_rolling_average_signal_run_loop_averages_over_its_window():
     assert result["samples_in_window"] == 3
 
 
-def test_polling_rolling_average_signal_ignores_a_none_reading():
-    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+def test_rolling_average_signal_ignores_a_none_reading():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
     _run_briefly(signal, _queue_getter([None, None, 100] + [100] * 100))
 
     assert signal.current()["value"] == 100
 
 
-def test_polling_rolling_average_signal_last_reading_monotonic_is_none_before_first_reading():
-    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+def test_rolling_average_signal_last_reading_monotonic_is_none_before_first_reading():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
     assert signal.last_reading_monotonic() is None
 
 
-def test_polling_rolling_average_signal_last_reading_monotonic_updates_after_a_reading():
-    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+def test_rolling_average_signal_last_reading_monotonic_updates_after_a_reading():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
     _run_briefly(signal, _fixed_getter(100))
 
     assert signal.last_reading_monotonic() is not None
@@ -143,7 +143,7 @@ def test_discover_signal_types_finds_all_built_ins():
     assert signal_types == {
         "sensor": SensorSignal,
         "rolling_median": RollingMedianSignal,
-        "polling_rolling_average": PollingRollingAverageSignal,
+        "rolling_average": RollingAverageSignal,
         "exponential_smoothing": ExponentialSmoothingSignal,
     }
 

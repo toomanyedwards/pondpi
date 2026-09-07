@@ -69,7 +69,7 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
     given one actually is).
 
     A signal with `owns_read_loop = True` (currently just
-    PollingRollingAverageSignal, always the sensor's `primary`) is
+    RollingAverageSignal, always the sensor's `primary`) is
     skipped here entirely -- it's fed by its own dedicated thread
     instead (see server.py's `main()`), sampling its `input:` signal's
     cached output on its own pace rather than being pushed a value on
@@ -106,7 +106,7 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
 def _signal_result(sensor_name, signal_name):
     """A signal's current {"value", "at", ...} result -- from its own
     background-maintained cache if it owns a read loop (just
-    PollingRollingAverageSignal today), or from poll_sensor()'s shared
+    RollingAverageSignal today), or from poll_sensor()'s shared
     per-sensor cache otherwise. Returns None if there's no reading yet
     either way."""
     signal = _signal_objects[signal_name]
