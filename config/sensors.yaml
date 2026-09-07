@@ -55,13 +55,16 @@ signals:
     emit: false
     params:
       window_size: 5
-  - name: rolling_avg
-    type: rolling_average
+  - name: polling_rolling_avg
+    type: polling_rolling_average
     input: rolling_median5
     primary: true
     params:
-      # 400 samples * 150ms poll interval = ~60s window, matched
-      # to Home Assistant's scan_interval so primary_signal
-      # represents a full averaged interval per HA poll rather
-      # than a ~6s slice of it.
-      window_size: 400
+      # Admits one sample per poll_interval_s regardless of how often
+      # the sensor itself is actually polled, so window_size * poll_interval_s
+      # (60 * 1s = 60s) is the real time span this averages over --
+      # matched to Home Assistant's scan_interval so primary_signal
+      # represents a full averaged interval per HA poll rather than a
+      # ~6s slice of it -- without retaining 400 samples to do it.
+      window_size: 60
+      poll_interval_s: 1
