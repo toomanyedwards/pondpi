@@ -1,4 +1,4 @@
-from pondpi.duration import format_duration
+from pondpi.utils.duration import format_duration
 
 
 def test_zero_seconds():

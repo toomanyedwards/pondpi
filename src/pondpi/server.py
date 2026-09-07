@@ -6,8 +6,8 @@ from pathlib import Path
 from flask import Flask, jsonify
 
 from pondpi.commit_sha import read_commit_sha
-from pondpi.duration import format_duration
 from pondpi.sensor_config import load_sensors
+from pondpi.utils.duration import format_duration
 
 app = Flask(__name__)
 

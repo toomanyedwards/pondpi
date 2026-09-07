@@ -100,7 +100,8 @@ pondpi/
 │   │                           # not signals themselves, see below
 │   ├── signal_config.py
 │   ├── commit_sha.py
-│   └── duration.py
+│   └── utils/                # generic helpers with no other natural home
+│       └── duration.py
 ├── tests/                   # mirrors src/pondpi/, not shipped/deployed as code
 ├── deploy/                  # systemd unit + one-time Pi setup docs
 └── .github/workflows/       # CI (per-PR) + Deploy (on merge to main)
@@ -119,7 +120,7 @@ pondpi/
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `Signal` classes. Not signals themselves (they don't implement the `Signal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `Signal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `source:` chains back to a `sensor` signal's own `source`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
-| `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
+| `utils/duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. Lives in `utils/` (not `signals/utils/`) since it's a plain top-level helper, not signal-specific. |
 | `server.py` | Service entrypoint (`pondpi-server`). Builds every sensor and signal (already running their own background threads by the time `load_sensors()` returns) and runs the Flask app -- no thread/loop code of its own. Owns all CLI configuration. |
 
 ## API
