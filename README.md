@@ -153,11 +153,11 @@ exactly one signal directly.
   "signals": {
     "pond_main_sensor_raw": {
       "config": {"type": "sensor", "source": "pond_main", "settings": {"unit": "cm"}, "emit": true, "unit": "cm", "mode": "raw"},
-      "output": {"value": 11.3, "unit": "cm", "at": "2026-09-07T00:28:23.470621+00:00", "sensor": "pond_main", "mode": "raw"}
+      "output": {"value": 11.3, "unit": "cm", "at": "2026-09-07T00:28:23.470621+00:00", "sensor": "pond_main", "read_mode": "raw"}
     },
     "pond_main_sensor_processed": {
-      "config": {"type": "sensor", "source": "pond_main", "settings": {"unit": "cm", "mode": "processed"}, "emit": true, "unit": "cm", "mode": "processed"},
-      "output": {"value": 11.0, "unit": "cm", "at": "2026-09-07T00:28:22.093268+00:00", "sensor": "pond_main", "mode": "processed"}
+      "config": {"type": "sensor", "source": "pond_main", "settings": {"unit": "cm", "sensor_options": {"read_mode": "processed"}}, "emit": true, "unit": "cm", "mode": "processed"},
+      "output": {"value": 11.0, "unit": "cm", "at": "2026-09-07T00:28:22.093268+00:00", "sensor": "pond_main", "read_mode": "processed"}
     },
     "rolling_median5": {
       "config": {
@@ -210,11 +210,14 @@ of its signals.
 -- `source` names whatever this signal reads from (a sensor, for a
 `sensor`-type signal; another signal otherwise), and `settings` is
 whatever implementation-specific fields that type's own constructor
-takes (e.g. `unit`/`mode` for `sensor`, `window_size` for
-`rolling_median`) -- empty (`{}`) for a type that needs none. `unit`/
-`mode` are additionally reported as their own top-level fields in this
-same `config`, alongside `settings`, regardless of whether this signal
-declared them itself or inherited them from `source`.
+takes (e.g. `unit` and a nested `sensor_options.read_mode` for `sensor`,
+`window_size` for `rolling_median`) -- empty (`{}`) for a type that
+needs none. `unit`/`mode` are additionally reported as their own
+top-level fields in this same `config`, alongside `settings`, regardless
+of whether this signal declared them itself or inherited them from
+`source` -- note this top-level `mode` is that generic, chain-wide
+concept, not literally the field name inside a `sensor`-type signal's
+own `settings` (see [Signal processing](#signal-processing)).
 
 ### `GET /diag`
 
@@ -483,9 +486,10 @@ via `self._record_reading()`. `read()` itself is then just a lookup
 against that same cache, keyed by whatever mode `settings` asks for --
 always instant, never touching the UART or the hardware lock. Nothing
 is ever pushed onward from there -- a `reads_from_sensor` signal pulls
-its own configured mode's last cached value on its own schedule
-instead, passing its own `settings` (specifically, just the `mode` it
-cares about) into `read()` (see [Signal
+its own configured `read_mode`'s last cached value on its own schedule
+instead, passing its own `settings` (`{"mode": ...}` -- the dict key
+`Sensor.read()` itself expects, independent of what the signal's own
+config calls the setting) into `read()` (see [Signal
 processing](#signal-processing)). A future driver that's push-driven
 instead (reacting to an async callback, never looping at all) is just
 as valid -- it simply wouldn't implement a poll loop, since the base
@@ -620,22 +624,32 @@ time means a reading right after a switch can still reflect the
 /signals/pond_main_sensor_processed` above for how to read each stream.
 
 An optional `read_mode` param (`"raw"` or `"processed"`; omitted keeps
-the alternating cycle above) pins the driver permanently in one mode
-instead — no cycling, no settling windows after the first frame, and
-`_read_hardware()` only ever reports that one key (so `last_reading()`
-for the other one never populates, and `read()` -- and any signal
-rooted at that other mode -- never has anything to return). This is a
-driver-level
-override, distinct from (but easy to confuse with) a `sensor` signal's
-own `mode` (see [Signal processing](#signal-processing)) —
-`read_mode` controls which reading the driver ever *produces*;
-`mode` controls which reading a given *signal* pulls. Pinning
-`read_mode` to `"processed"` means only signals rooted at `mode:
-processed` (e.g. `pond_main_sensor_processed`) ever have anything to
-read — the default `raw`-rooted pipeline (`pond_main_sensor_raw`,
+the alternating cycle above), set in the *sensor's own* `settings:` in
+`config/sensors.yaml` (not a signal's), pins the driver permanently in
+one mode instead — no cycling, no settling windows after the first
+frame, and `_read_hardware()` only ever reports that one key (so
+`last_reading()` for the other one never populates, and `read()` -- and
+any signal rooted at that other mode -- never has anything to return).
+
+**This is a driver-level override that unfortunately shares its exact
+name with a `sensor` signal's own `settings.sensor_options.read_mode`
+(see [Signal processing](#signal-processing)) despite being a
+genuinely different, unrelated setting one level up the stack** --
+the driver's `read_mode` controls which reading the driver ever
+*produces* at all (pinning it means the other reading key stops
+existing entirely); a signal's own `sensor_options.read_mode` controls
+which of whatever the driver *is* producing a given signal *pulls*
+(both readings can still exist; a signal just picks one). Don't
+confuse a sensor entry's `settings.read_mode` with a signal entry's
+`settings.sensor_options.read_mode` -- they read as the same word at a
+glance but live in different top-level list entries (`sensors:` vs
+`signals:`) and mean different things. Pinning the driver's `read_mode`
+to `"processed"` means only signals whose own `sensor_options.read_mode`
+is `"processed"` (e.g. `pond_main_sensor_processed`) ever have anything
+to read — the default `raw`-reading pipeline (`pond_main_sensor_raw`,
 `rolling_avg`) never gets data, since `last_reading("raw")` never
 populates: the driver never reports a `raw` reading at all. Pinning to
-`"raw"` is the inverse: only `raw`-rooted signals get data, and
+`"raw"` is the inverse: only signals reading `raw` get data, and
 `pond_main_sensor_processed` never does.
 
 One consequence worth knowing: because the `raw` pipeline (the one
@@ -748,7 +762,7 @@ kwargs. Built-in `Signal` types (`type:` in the YAML) and their
 
 | Type | Settings | Behavior |
 |---|---|---|
-| `sensor` | `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type whose `source:` names a sensor directly -- everything else names another signal. |
+| `sensor` | `unit`, `sensor_options.read_mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type whose `source:` names a sensor directly -- everything else names another signal. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of computing lazily the moment something calls `read()`, it owns its own dedicated background thread that samples its `source:` signal's `read()` once every `poll_interval_ms`, on its own timer, and writes the result directly, overriding `read()` itself to just return that (see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
@@ -760,8 +774,8 @@ names a configured sensor; for every other type it names the signal
 `sensor` is the one signal type with `Signal.reads_from_sensor = True`
 (same capability-flag pattern as `Sensor.supports_reset`) -- the only
 generic thing `signal_config.py` knows about it is that flag itself; it
-has no notion of `unit`/`mode` (its two `settings:` fields) or what
-values are valid for them, nor that `source:` names a sensor rather
+has no notion of `unit`/`sensor_options` (its two `settings:` fields) or
+what values are valid for them, nor that `source:` names a sensor rather
 than another signal for this type in particular. All of that --
 including validating `source` against the configured sensor names, and
 `unit` against `SensorSignal.UNIT_DIVISORS` (currently just
@@ -779,15 +793,24 @@ still in centimeters -- and must not set `unit` in its own `settings:`
 generically as an unexpected constructor argument). This is reported on
 `/diag` and `/signals/<name>`; see those endpoints above.
 
-A `sensor` signal may also set `mode` in its `settings:` -- `"raw"`
-(the default) or `"processed"`, picking which of the sensor's own named
-readings feeds it (see `Sensor.read()` in [Sensor
-drivers](#sensor-drivers) and the A02YYUW's two hardware modes in
-[Sensor notes](#sensor-notes)), validated against
-`SensorSignal.VALID_MODES` -- same story as `unit` above,
-`signal_config.py` doesn't know this rule exists. Every other signal
-type derives `mode` from `source`, same as `unit`, and must not set it
-directly either.
+A `sensor` signal may also set `read_mode` nested under
+`settings.sensor_options` -- `"raw"` (the default) or `"processed"`,
+picking which of the sensor's own named readings feeds it (see
+`Sensor.read()` in [Sensor drivers](#sensor-drivers) and the A02YYUW's
+two hardware modes in [Sensor notes](#sensor-notes)), validated against
+`SensorSignal.VALID_READ_MODES` -- same story as `unit` above,
+`signal_config.py` doesn't know this rule exists (it only knows that a
+non-`reads_from_sensor` type must not set `sensor_options` at all --
+see [How it works](#how-it-works) for why `sensor_options` isn't
+forwarded past this one signal even for the type that does use it).
+`sensor_options` is a nested sub-section, distinct from `unit`, because
+it holds settings that specifically govern *how this signal reads its
+sensor* -- currently just `read_mode` -- as opposed to `unit`, which
+governs how this signal represents the value it gets back and never
+reaches the sensor at all. Every other signal type derives `mode` (the
+generic, chain-wide concept every signal reports, not literally this
+field name) from `source`, same as `unit`, and must not set
+`sensor_options` directly either.
 Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/diag` were computed at the
@@ -852,7 +875,8 @@ signals:
     source: pond_main
     settings:
       unit: cm
-      mode: processed
+      sensor_options:
+        read_mode: processed
   - name: rolling_median5
     type: rolling_median
     source: pond_main_sensor_raw

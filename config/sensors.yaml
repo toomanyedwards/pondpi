@@ -34,14 +34,14 @@ sensors:
 # this file) whose live output feeds it. This is how sequential
 # composition (e.g. median-then-average) is expressed, without a
 # dedicated "chain" type. A `type: sensor` signal must also set `unit`
-# in its `settings:` (the unit its readings are in, e.g. "cm"), since
-# nothing upstream can tell us that, and may set `mode` there too
-# ("raw", the default, or "processed") to pick which of the sensor's two
-# hardware readings feeds it -- see README.md's "RX pin" section for
-# what those mean for the A02YYUW. Every other signal derives its own
-# unit/mode from `source:` automatically. `settings:` otherwise holds
-# whatever else a signal type's own constructor needs (e.g.
-# rolling_average's window_size below).
+# in its `settings:` (the unit its readings are in, e.g. "cm"), and may
+# set `settings.sensor_options.read_mode` too ("raw", the default, or
+# "processed") to pick which of the sensor's two hardware readings feeds
+# it -- see README.md's "RX pin" section for what those mean for the
+# A02YYUW. Every other signal derives its own unit/mode from `source:`
+# automatically. `settings:` otherwise holds whatever else a signal
+# type's own constructor needs (e.g. rolling_average's window_size
+# below).
 #
 # rolling_average is a normal source:-composed type like any other,
 # with one difference: it owns its own dedicated background thread
@@ -64,7 +64,8 @@ signals:
     source: pond_main
     settings:
       unit: cm
-      mode: processed
+      sensor_options:
+        read_mode: processed
   - name: rolling_median5
     type: rolling_median
     source: pond_main_sensor_raw

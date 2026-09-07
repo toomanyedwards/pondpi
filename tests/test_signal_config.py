@@ -362,7 +362,8 @@ def test_sensor_mode_processed_is_respected(tmp_path):
             source: pond_main
             settings:
               unit: cm
-              mode: processed
+              sensor_options:
+                read_mode: processed
           - name: c
             type: rolling_average
             source: a
@@ -393,7 +394,7 @@ def test_unsupported_sensor_unit_raises(tmp_path):
         load_signals(path, _fake_sensors("pond_main"))
 
 
-def test_invalid_mode_setting_raises(tmp_path):
+def test_invalid_read_mode_setting_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -403,15 +404,16 @@ def test_invalid_mode_setting_raises(tmp_path):
             source: pond_main
             settings:
               unit: cm
-              mode: smoothed
+              sensor_options:
+                read_mode: smoothed
         """,
     )
 
-    with pytest.raises(ValueError, match="invalid 'mode' 'smoothed'"):
+    with pytest.raises(ValueError, match="invalid 'read_mode' 'smoothed'"):
         load_signals(path, _fake_sensors("pond_main"))
 
 
-def test_non_sensor_setting_mode_directly_raises(tmp_path):
+def test_non_sensor_setting_sensor_options_directly_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -426,11 +428,12 @@ def test_non_sensor_setting_mode_directly_raises(tmp_path):
             source: a
             settings:
               window_size: 5
-              mode: processed
+              sensor_options:
+                read_mode: processed
         """,
     )
 
-    with pytest.raises(ValueError, match="must not set 'mode' directly"):
+    with pytest.raises(ValueError, match="must not set 'sensor_options' directly"):
         load_signals(path, _fake_sensors("pond_main"))
 
 
@@ -449,7 +452,8 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
             source: pond_main
             settings:
               unit: cm
-              mode: processed
+              sensor_options:
+                read_mode: processed
           - name: c
             type: rolling_median
             source: b
