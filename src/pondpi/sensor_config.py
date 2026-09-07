@@ -8,7 +8,7 @@ def load_sensors(path, simulate=False):
     """Loads named sensors from a YAML config file (config/sensors.yaml),
     each bundled with its own driver instance, plus that sensor's own
     slice of the file's top-level `signals:` list -- every signal
-    ultimately rooted (via `input:` chains, see signal_config.py) at a
+    ultimately rooted (via `source:` chains, see signal_config.py) at a
     `sensor` signal naming this sensor.
 
     Returns dict[name -> {"driver", "signals", "emit_flags", "configs"}]
@@ -23,7 +23,7 @@ def load_sensors(path, simulate=False):
     needs the fully-built signal graph.
 
     If `simulate` is True, every sensor is constructed in simulated mode
-    regardless of its configured `type`/`params` -- see each driver
+    regardless of its configured `type`/`settings` -- see each driver
     type's own `create()` for what that means for it.
     """
     sensor_types = discover_sensor_types()
@@ -52,7 +52,7 @@ def load_sensors(path, simulate=False):
                 f"{path}: sensor '{name}' has unknown type '{sensor_type}' (expected one of {sorted(sensor_types)})"
             )
 
-        parsed.append((name, sensor_type, entry.get("params") or {}))
+        parsed.append((name, sensor_type, entry.get("settings") or {}))
 
     signal_groups = load_signals(path, names)
 
@@ -76,15 +76,14 @@ def _build_on_reading(signals, configs):
     Each reading key (e.g. "raw", "processed" -- see LevelSensor.read())
     only feeds the signals rooted at that same `mode`
     (`configs[sname]["mode"]`) -- a signal either reads that reading
-    directly (a `sensor`-type signal, config's `configs[name]` has no
-    `"input"`) or reads whatever its `input:`-named signal just computed
-    this same call (`configs[name]["input"]`, already resolved into
-    `results` since `signals`' iteration order is a valid dependency
-    order). A signal with `owns_read_loop = True` is skipped here
-    entirely -- it's fed by its own dedicated thread instead (see
-    LevelSignal), sampling its `input:` signal's `current()` on its own
-    pace rather than being pushed a value on every one of the sensor's
-    own readings."""
+    directly (`signal.reads_from_sensor` -- a `sensor`-type signal) or
+    reads whatever its `source:`-named signal just computed this same
+    call (`configs[sname]["source"]`, already resolved into `results`
+    since `signals`' iteration order is a valid dependency order). A
+    signal with `owns_read_loop = True` is skipped here entirely -- it's
+    fed by its own dedicated thread instead (see LevelSignal), sampling
+    its `source:` signal's `current()` on its own pace rather than being
+    pushed a value on every one of the sensor's own readings."""
 
     def on_reading(reading_key, distance_mm):
         results = {}
@@ -93,8 +92,7 @@ def _build_on_reading(signals, configs):
                 continue
             if configs[sname]["mode"] != reading_key:
                 continue
-            input_name = configs[sname].get("input")
-            value = distance_mm if input_name is None else results[input_name]
+            value = distance_mm if signal.reads_from_sensor else results[configs[sname]["source"]]
             results[sname] = signal.feed(value)
 
     return on_reading

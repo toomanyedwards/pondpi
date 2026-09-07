@@ -1,71 +1,80 @@
-# Named sensor instances, each built by the driver `type`'s create()
-# function in src/pondpi/sensors/. A type name is just its file's
-# filename with the "_sensor" suffix stripped (e.g.
-# sensors/a02yyuw_sensor.py -> type: a02yyuw), discovered dynamically at
-# startup -- adding a new sensor type means writing
-# sensors/<name>_sensor.py, not editing anything here or in code.
+# ==============================================================================
+# PHYSICAL SENSOR INSTANCES
+# Generic fields: name, type
+# Implementation fields: nested under 'settings'
+#
+# Each sensor instance is built by the driver `type`'s create() function
+# in src/pondpi/sensors/. A type name is just its file's filename with
+# the "_sensor" suffix stripped (e.g. sensors/a02yyuw_sensor.py -> type:
+# a02yyuw), discovered dynamically at startup -- adding a new sensor
+# type means writing sensors/<name>_sensor.py, not editing anything here
+# or in code.
 #
 # GET /diag and POST /reset (bare, not under /sensors/<name>/) span every
 # sensor configured here at once. Every sensor is also reachable
 # individually at /sensors/<name>/diag and /sensors/<name>/reset.
+# ==============================================================================
 sensors:
   - name: pond_main
     type: a02yyuw
-    params:
+    settings:
       serial_port: /dev/serial0
       mode_select_pin: 25
       power_pin: 24
 
-# Named, parameterized instances of the LevelSignal classes in
-# src/pondpi/signals/. See README.md's "Signal processing" section for
-# this schema in full (sensor:, unit:, mode:, input:, emit: false,
-# params:).
+# ==============================================================================
+# SIGNAL PROCESSING CHAINS
+# Generic fields: name, type, source, emit
+# Implementation fields: nested under 'settings'
 #
-# Only a `type: sensor` signal reads directly from a sensor, via
-# top-level `sensor:` naming it -- it must also declare a top-level
-# `unit:` (the unit its readings are in, e.g. "cm"), since nothing
-# upstream can tell us that. It may also set a top-level `mode:`
-# ("raw", the default, or "processed") to pick which of the sensor's
-# two hardware readings feeds it -- see README.md's "RX pin" section
-# for what those mean for the A02YYUW. Every other signal reads
-# another signal's live output instead, named by `input:` -- this is
-# how sequential composition (e.g. median-then-average) is expressed,
-# without a dedicated "chain" type -- and derives its own unit/mode
-# from that input automatically. `params:` is reserved for whatever
-# else a signal type's own constructor needs (e.g. rolling_average's
-# window_size below) -- sensor:/unit:/mode: live at the top level
-# instead, alongside input:, since signal_config.py tracks and
-# propagates them generically for every signal, not just this one type.
+# See README.md's "Signal processing" section for this schema in full.
+# Every signal names where its data comes from via a top-level `source:`
+# -- for a `type: sensor` signal that's the sensor it reads from
+# directly; for every other type it's another signal (defined earlier in
+# this file) whose live output feeds it. This is how sequential
+# composition (e.g. median-then-average) is expressed, without a
+# dedicated "chain" type. A `type: sensor` signal must also set `unit`
+# in its `settings:` (the unit its readings are in, e.g. "cm"), since
+# nothing upstream can tell us that, and may set `mode` there too
+# ("raw", the default, or "processed") to pick which of the sensor's two
+# hardware readings feeds it -- see README.md's "RX pin" section for
+# what those mean for the A02YYUW. Every other signal derives its own
+# unit/mode from `source:` automatically. `settings:` otherwise holds
+# whatever else a signal type's own constructor needs (e.g.
+# rolling_average's window_size below).
 #
-# rolling_average is a normal input:-composed type like any other,
+# rolling_average is a normal source:-composed type like any other,
 # with one difference: it owns its own dedicated background thread
-# (see server.py's main()) that samples its input's current value on
-# its own poll_interval_ms cadence, rather than being pushed a new one
-# on every one of the sensor's own (much faster) poll ticks -- that's
-# what lets window_size * poll_interval_ms be a genuine real-world time
-# span. Any signal type may set LevelSignal.owns_read_loop = True (as
-# this one does) to get its own dedicated background thread
-# automatically -- no marker needed in this file.
+# that samples its source's current value on its own poll_interval_ms
+# cadence, rather than being pushed a new one on every one of the
+# sensor's own (much faster) poll ticks -- that's what lets
+# window_size * poll_interval_ms be a genuine real-world time span. Any
+# signal type may set LevelSignal.owns_read_loop = True (as this one
+# does) to get its own dedicated background thread automatically -- no
+# marker needed in this file.
+# ==============================================================================
 signals:
   - name: pond_main_sensor_raw
     type: sensor
-    sensor: pond_main
-    unit: cm
+    source: pond_main
+    settings:
+      unit: cm
   - name: pond_main_sensor_processed
     type: sensor
-    sensor: pond_main
-    unit: cm
-    mode: processed
+    source: pond_main
+    settings:
+      unit: cm
+      mode: processed
   - name: rolling_median5
     type: rolling_median
-    input: pond_main_sensor_raw
+    source: pond_main_sensor_raw
     emit: false
-    params:
+    settings:
       window_size: 5
   - name: rolling_avg
     type: rolling_average
-    input: rolling_median5
-    params:
+    source: rolling_median5
+    settings:
       # Its own dedicated thread admits one sample per poll_interval_ms
       # regardless of how often the sensor itself is actually polled,
       # so window_size * poll_interval_ms (60 * 1000ms = 60s) is the
