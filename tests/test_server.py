@@ -260,7 +260,7 @@ def test_sensor_reset_targets_named_sensor_independently():
 def test_poll_sensor_routes_raw_readings_through_signals():
     _reset_globals(["pond_main"])
     signals = {"instantaneous_raw": _PassthroughSignal()}
-    configs = {"instantaneous_raw": {}}
+    configs = {"instantaneous_raw": {"mode": "raw"}}
     sensor = FakeSensorDriver([{"raw": 100}])
     stop_event = threading.Event()
 
@@ -288,7 +288,7 @@ def test_poll_sensor_downstream_signal_receives_upstream_signals_output():
     # doubled) output, it'd land on 200 instead of 400.
     _reset_globals(["pond_main"])
     signals = {"root": _DoublingSignal(), "downstream": _DoublingSignal()}
-    configs = {"root": {}, "downstream": {"input": "root"}}
+    configs = {"root": {"mode": "raw"}, "downstream": {"mode": "raw", "input": "root"}}
     sensor = FakeSensorDriver([{"raw": 100}])
     stop_event = threading.Event()
 
@@ -332,6 +332,39 @@ def test_poll_sensor_caches_processed_readings_as_is():
     assert server._state["pond_main"]["processed_mm"] == 123
 
 
+def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
+    # A raw-rooted and a processed-rooted signal on the same sensor:
+    # each should only be fed (and only get a fresh "at" timestamp)
+    # when its own reading key shows up, independent of the other.
+    _reset_globals(["pond_main"])
+    signals = {"raw_sig": _PassthroughSignal(), "proc_sig": _PassthroughSignal()}
+    configs = {"raw_sig": {"mode": "raw"}, "proc_sig": {"mode": "processed"}}
+    sensor = FakeSensorDriver([{"raw": 100}, {"processed": 50}])
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=server.poll_sensor,
+        args=("pond_main", sensor, signals, configs, "raw_sig", stop_event, 0.001),
+    )
+    thread.start()
+    for _ in range(200):
+        with server._state_lock:
+            sigs = server._state["pond_main"]["signals"]
+            if "raw_sig" in sigs and "proc_sig" in sigs:
+                break
+        time.sleep(0.005)
+    stop_event.set()
+    thread.join(timeout=1)
+
+    sigs = server._state["pond_main"]["signals"]
+    assert sigs["raw_sig"]["value"] == 100
+    assert sigs["proc_sig"]["value"] == 50
+    assert sigs["raw_sig"]["at"]
+    assert sigs["proc_sig"]["at"]
+    assert server._state["pond_main"]["instantaneous_mm"] == 100
+    assert server._state["pond_main"]["processed_mm"] == 50
+
+
 def test_poll_sensor_keeps_multiple_sensors_state_independent():
     _reset_globals(["pond_main", "rain_barrel"])
     sensor_main = FakeSensorDriver([{"raw": 100}])
@@ -340,11 +373,11 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
 
     thread_main = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {}}, "raw", stop_event, 0.001),
+        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", stop_event, 0.001),
     )
     thread_barrel = threading.Thread(
         target=server.poll_sensor,
-        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {}}, "raw", stop_event, 0.001),
+        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", stop_event, 0.001),
     )
     thread_main.start()
     thread_barrel.start()
@@ -387,9 +420,9 @@ def test_level_returns_current_reading():
             "instantaneous_raw": {"unit": "cm"},
         },
         signals={
-            "rolling_median5": {"value": 500.0, "window_size": 5, "samples_in_window": 5},
-            "rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400},
-            "instantaneous_raw": {"value": 101.0, "sensor": "pond_main"},
+            "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
+            "rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400},
+            "instantaneous_raw": {"value": 101.0, "at": "2026-01-01T00:00:00+00:00", "sensor": "pond_main"},
         },
     )
     server._polling_interval_ms = 10
@@ -450,7 +483,7 @@ def test_level_unrecognized_mode_falls_back_to_raw():
         primary_name="rolling_avg",
         emit_flags={"rolling_avg": True},
         configs={"rolling_avg": {"unit": "cm"}},
-        signals={"rolling_avg": {"value": 850.0}},
+        signals={"rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00"}},
     )
     server._polling_interval_ms = 10
     server._default_sensor_name = "pond_main"
@@ -479,7 +512,7 @@ def test_sensor_level_targets_named_sensor_independently_of_default():
         primary_name="raw",
         emit_flags={"raw": True},
         configs={"raw": {"unit": "cm"}},
-        signals={"raw": {"value": 200.0}},
+        signals={"raw": {"value": 200.0, "at": "2026-01-01T00:00:00+00:00"}},
     )
     server._polling_interval_ms = 150
     server._default_sensor_name = "pond_main"
@@ -524,8 +557,8 @@ def test_diag_returns_config_and_output_for_every_signal():
             },
         },
         signals={
-            "rolling_median5": {"value": 500.0, "window_size": 5, "samples_in_window": 5},
-            "rolling_avg": {"value": 850.0, "window_size": 200, "samples_in_window": 200},
+            "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
+            "rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 200, "samples_in_window": 200},
         },
     )
     server._default_sensor_name = "pond_main"
@@ -546,7 +579,13 @@ def test_diag_returns_config_and_output_for_every_signal():
                     "input": "instantaneous_raw",
                     "unit": "cm",
                 },
-                "output": {"value": 50.0, "unit": "cm", "window_size": 5, "samples_in_window": 5},
+                "output": {
+                    "value": 50.0,
+                    "unit": "cm",
+                    "at": "2026-01-01T00:00:00+00:00",
+                    "window_size": 5,
+                    "samples_in_window": 5,
+                },
             },
             "rolling_avg": {
                 "config": {
@@ -557,7 +596,13 @@ def test_diag_returns_config_and_output_for_every_signal():
                     "input": "rolling_median5",
                     "unit": "cm",
                 },
-                "output": {"value": 85.0, "unit": "cm", "window_size": 200, "samples_in_window": 200},
+                "output": {
+                    "value": 85.0,
+                    "unit": "cm",
+                    "at": "2026-01-01T00:00:00+00:00",
+                    "window_size": 200,
+                    "samples_in_window": 200,
+                },
             },
         },
     }
@@ -603,7 +648,14 @@ def test_signal_detail_returns_value_and_extra_state():
     server._state["pond_main"].update(
         instantaneous_mm=101.0,
         configs={"rolling_avg": {"unit": "cm"}},
-        signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
+        signals={
+            "rolling_avg": {
+                "value": 850.0,
+                "at": "2026-01-01T00:00:00+00:00",
+                "window_size": 400,
+                "samples_in_window": 400,
+            }
+        },
     )
     client = server.app.test_client()
 
@@ -615,6 +667,7 @@ def test_signal_detail_returns_value_and_extra_state():
         "sensor": "pond_main",
         "unit": "cm",
         "value": 85.0,
+        "at": "2026-01-01T00:00:00+00:00",
         "window_size": 400,
         "samples_in_window": 400,
     }
@@ -654,7 +707,14 @@ def test_signal_diag_returns_config_and_output():
                 "unit": "cm",
             }
         },
-        signals={"rolling_avg": {"value": 850.0, "window_size": 400, "samples_in_window": 400}},
+        signals={
+            "rolling_avg": {
+                "value": 850.0,
+                "at": "2026-01-01T00:00:00+00:00",
+                "window_size": 400,
+                "samples_in_window": 400,
+            }
+        },
     )
     client = server.app.test_client()
 
@@ -672,7 +732,13 @@ def test_signal_diag_returns_config_and_output():
             "input": "instantaneous_raw",
             "unit": "cm",
         },
-        "output": {"value": 85.0, "unit": "cm", "window_size": 400, "samples_in_window": 400},
+        "output": {
+            "value": 85.0,
+            "unit": "cm",
+            "at": "2026-01-01T00:00:00+00:00",
+            "window_size": 400,
+            "samples_in_window": 400,
+        },
     }
 
 

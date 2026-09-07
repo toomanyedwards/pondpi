@@ -121,7 +121,8 @@ default sensor, or the named one.
   },
   "signals": {
     "rolling_avg": 11.2,
-    "pond_main_sensor_raw": 11.3
+    "pond_main_sensor_raw": 11.3,
+    "pond_main_sensor_processed": 11.0
   }
 }
 ```
@@ -138,7 +139,12 @@ default sensor, or the named one.
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
 `rolling_avg` via `input:`, not as a meaningful output on its own. Its
-full state is still visible on `/diag`.
+full state is still visible on `/diag`. `pond_main_sensor_processed`
+(rooted at `mode: processed`, unlike the other two) does appear here
+alongside them — `signals` isn't scoped to one mode, just to this
+sensor — but it updates on its own independent cadence; check its `at`
+timestamp on `/diag`/`/signals/pond_main_sensor_processed` if you need
+to know how fresh it actually is, since this view doesn't show that.
 
 Returns `503 {"error": "no readings yet"}` if no valid reading has come in
 since the server started.
@@ -187,8 +193,12 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
 {
   "signals": {
     "pond_main_sensor_raw": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "primary": false, "emit": true, "unit": "cm"},
-      "output": {"value": 11.3, "unit": "cm", "sensor": "pond_main"}
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "primary": false, "emit": true, "unit": "cm", "mode": "raw"},
+      "output": {"value": 11.3, "unit": "cm", "at": "2026-09-07T00:28:23.470621+00:00", "sensor": "pond_main", "mode": "raw"}
+    },
+    "pond_main_sensor_processed": {
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm", "mode": "processed"}, "primary": false, "emit": true, "unit": "cm", "mode": "processed"},
+      "output": {"value": 11.0, "unit": "cm", "at": "2026-09-07T00:28:22.093268+00:00", "sensor": "pond_main", "mode": "processed"}
     },
     "rolling_median5": {
       "config": {
@@ -197,11 +207,13 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "params": {"window_size": 5},
         "primary": false,
         "emit": false,
-        "unit": "cm"
+        "unit": "cm",
+        "mode": "raw"
       },
       "output": {
         "value": 11.2,
         "unit": "cm",
+        "at": "2026-09-07T00:28:23.470621+00:00",
         "window_size": 5,
         "samples_in_window": 5
       }
@@ -213,11 +225,13 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "params": {"window_size": 200},
         "primary": true,
         "emit": true,
-        "unit": "cm"
+        "unit": "cm",
+        "mode": "raw"
       },
       "output": {
         "value": 11.2,
         "unit": "cm",
+        "at": "2026-09-07T00:28:23.470621+00:00",
         "window_size": 200,
         "samples_in_window": 200
       }
@@ -246,6 +260,14 @@ in millimeters would need `value`'s conversion itself to become
 unit-aware; today `unit` accurately describes every signal's `value`,
 but isn't yet wired into computing it.
 
+`output` also includes `at` — an ISO 8601 UTC timestamp of when that
+signal's `value` was last computed. `pond_main_sensor_raw` and
+`pond_main_sensor_processed` above have visibly different `at` values
+because they're rooted at different `mode`s (see [Signal
+processing](#signal-processing)) and update on independent cadences —
+`at` is how to tell a signal's value apart from stale, without needing
+to separately poll `/health`.
+
 ### `GET /signals`
 
 Lists every configured signal's name, across every sensor — signals
@@ -255,7 +277,7 @@ bare-vs-sensor-named distinction here; this is the one flat list:
 
 ```json
 {
-  "signals": ["pond_main_sensor_raw", "rolling_median5", "rolling_avg"]
+  "signals": ["pond_main_sensor_raw", "pond_main_sensor_processed", "rolling_median5", "rolling_avg"]
 }
 ```
 
@@ -272,6 +294,7 @@ entries):
   "sensor": "pond_main",
   "value": 11.2,
   "unit": "cm",
+  "at": "2026-09-07T00:28:23.470621+00:00",
   "window_size": 200,
   "samples_in_window": 200
 }
@@ -279,9 +302,10 @@ entries):
 
 `sensor` is which configured sensor this signal is ultimately rooted at
 (traced through any `input:` chain back to a `sensor`-type signal's
-`params.sensor`). `unit` is this signal's own configured/derived unit
-(see [Signal processing](#signal-processing)) — every field past that
-is this signal's own `extra_state()` alongside its value, varying by
+`params.sensor`). `unit` is this signal's own configured/derived unit,
+and `at` is when this `value` was last computed (see [Signal
+processing](#signal-processing) for both) — every field past that is
+this signal's own `extra_state()` alongside its value, varying by
 signal type, same as `/diag`'s `output`.
 
 `/signals/<name>/diag` returns this signal's effective `config` (as
@@ -298,11 +322,13 @@ the flattened value:
     "params": {"window_size": 200},
     "primary": true,
     "emit": true,
-    "unit": "cm"
+    "unit": "cm",
+    "mode": "raw"
   },
   "output": {
     "value": 11.2,
     "unit": "cm",
+    "at": "2026-09-07T00:28:23.470621+00:00",
     "window_size": 200,
     "samples_in_window": 200
   }
@@ -361,7 +387,7 @@ service info:
       "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
-      "signals": ["rolling_avg", "pond_main_sensor_raw"]
+      "signals": ["rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
     }
   }
 }
@@ -506,11 +532,18 @@ See `GET /level`'s `?mode=` param above for how to read each stream.
 An optional `read_mode` param (`"raw"` or `"processed"`; omitted keeps
 the alternating cycle above) pins the driver permanently in one mode
 instead — no cycling, no settling windows after the first frame, and
-`read()` only ever reports that one key. Pinning to `"processed"` means
-the sensor's default (`?mode=raw`) `/level`/`/diag` never populate
-(nothing ever feeds this sensor's `signals:` graph, since none of them
-are rooted at a `raw` reading) — only `?mode=processed` does. Pinning
-to `"raw"` is the inverse: `?mode=processed` never populates.
+`read()` only ever reports that one key. This is a driver-level
+override, distinct from (but easy to confuse with) a `sensor` signal's
+own `params.mode` (see [Signal processing](#signal-processing)) —
+`read_mode` controls which reading the driver ever *produces*;
+`params.mode` controls which reading a given *signal* consumes. Pinning
+`read_mode` to `"processed"` means only signals rooted at `mode:
+processed` (e.g. `pond_main_sensor_processed`) ever get fed — the
+default `raw`-rooted pipeline (`pond_main_sensor_raw`, `rolling_avg`,
+`/level`'s default view) never receives data, since the driver never
+reports a `raw` reading at all. Pinning to `"raw"` is the inverse: only
+`raw`-rooted signals get fed, and `pond_main_sensor_processed`/
+`?mode=processed` never do.
 
 One consequence worth knowing: because the `raw` pipeline (the one
 feeding this sensor's `rolling_avg` etc.) only actually gets sensor data
@@ -563,16 +596,20 @@ maintain. Adding a new signal type means writing
 `signals:` list — nothing else to edit or register.
 
 Signals are unit-agnostic: `add()` takes a value in and returns a
-processed value out, with no notion of mm/cm baked in anywhere.
-Millimeter readings from the sensor go in, and whatever comes out is
-only interpreted as millimeters (and converted to cm) at the HTTP layer
-in `server.py`'s `/level` route — not inside any signal.
+processed value out, with no notion of mm/cm baked in anywhere. The
+A02YYUW's own raw readings are physically in millimeters, and the fixed
+conversion in `server.py`'s `_signal_output()` (dividing by 10) always
+assumes that -- not inside any signal. A signal's own `unit` (above) is
+what that division's *result* should be labeled, not what the sensor
+natively reports; `params.unit: cm` on `pond_main_sensor_raw` is
+correct precisely because dividing millimeters by 10 produces
+centimeters.
 
 Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
-| `sensor` | `sensor`, `unit` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
@@ -589,6 +626,25 @@ unit conversion -- a rolling average of centimeters is still in
 centimeters -- and must not set `params.unit` itself (that raises a
 config error, since it would silently be ignored otherwise). This is
 reported on `/diag` and `/signals/<name>`; see those endpoints above.
+
+A `sensor` signal may also set `params.mode` -- `"raw"` (the default)
+or `"processed"`, picking which of the sensor's own named readings
+feeds it (see `LevelSensor.read()` in [Sensor drivers](#sensor-drivers)
+and the A02YYUW's two hardware modes in [Sensor
+notes](#sensor-notes)). Every other signal type derives `mode` from
+`input`, same as `unit`, and must not set it directly either.
+Signals rooted at different modes update on genuinely independent
+cadences -- see each one's own `at` timestamp (below) rather than
+assuming two signals shown together on `/level` or `/diag` were
+computed at the same moment. Exactly one signal per sensor is marked
+`primary: true`, and it must be rooted at `mode: "raw"` -- /level's
+default view and /health's staleness check are both built around that
+pipeline's cadence specifically.
+
+Every signal's `/diag`/`/signals/<name>` output also includes `at` — an
+ISO 8601 UTC timestamp of when that signal's `value` was last computed,
+letting a caller tell a signal's freshness apart from another's without
+a separate `/health` request.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `--polling-interval-ms`, default 150ms) — not once per reading of
@@ -622,6 +678,12 @@ signals:
     params:
       sensor: pond_main
       unit: cm
+  - name: pond_main_sensor_processed
+    type: sensor
+    params:
+      sensor: pond_main
+      unit: cm
+      mode: processed
   - name: rolling_median5
     type: rolling_median
     input: pond_main_sensor_raw
@@ -640,6 +702,11 @@ Here `rolling_avg` reads `rolling_median5`'s output, which in turn reads
 `pond_main_sensor_raw`'s output (the sensor's raw reading) — a
 median-then-average pipeline built entirely from `input:` references,
 with each stage its own independently named signal.
+`pond_main_sensor_processed` is unrelated to that pipeline: a second,
+independent `sensor` signal rooted at the same sensor's `processed`
+reading instead, updating on its own cadence (see the A02YYUW's
+raw/processed hardware-mode cycling in [Sensor
+notes](#sensor-notes)).
 
 Exactly one signal rooted at each sensor must be marked `primary: true`.
 Its output becomes `primary_signal` in that sensor's `/level` — **the

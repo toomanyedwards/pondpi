@@ -23,16 +23,19 @@ sensors:
 
 # Named, parameterized instances of the LevelSignal classes in
 # src/pondpi/signals/. See README.md's "Signal processing" section for
-# this schema in full (params.sensor, params.unit, input:, emit: false,
-# primary: true).
+# this schema in full (params.sensor, params.unit, params.mode, input:,
+# emit: false, primary: true).
 #
 # Only a `type: sensor` signal reads directly from a sensor, via
 # params.sensor naming it -- it must also declare params.unit (the
 # unit its readings are in, e.g. "cm"), since nothing upstream can tell
-# us that. Every other signal reads another signal's live output
+# us that. It may also set params.mode ("raw", the default, or
+# "processed") to pick which of the sensor's two hardware readings
+# feeds it -- see README.md's "RX pin" section for what those mean for
+# the A02YYUW. Every other signal reads another signal's live output
 # instead, named by `input:` -- this is how sequential composition
 # (e.g. median-then-average below) is expressed, without a dedicated
-# "chain" type -- and derives its own unit from that input
+# "chain" type -- and derives its own unit/mode from that input
 # automatically.
 signals:
   - name: pond_main_sensor_raw
@@ -40,6 +43,12 @@ signals:
     params:
       sensor: pond_main
       unit: cm
+  - name: pond_main_sensor_processed
+    type: sensor
+    params:
+      sensor: pond_main
+      unit: cm
+      mode: processed
   - name: rolling_median5
     type: rolling_median
     input: pond_main_sensor_raw
