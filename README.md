@@ -43,11 +43,11 @@ pondpi/
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
 │   ├── sensors/              # one LevelSensor subclass per <type>_sensor.py file
 │   │   ├── base.py            # LevelSensor interface
-│   │   └── a02yyuw_sensor.py  # A02YYUW driver -- wraps read_sensor.py + sensor_mode.py + sensor_power.py
+│   │   ├── a02yyuw_sensor.py  # A02YYUW driver -- wraps read_sensor.py + sensor_mode.py + sensor_power.py
+│   │   ├── sensor_mode.py     # A02YYUW-specific: drives its mode-select pin
+│   │   └── sensor_power.py    # A02YYUW-specific: drives its power supply pin
 │   ├── sensor_config.py
 │   ├── read_sensor.py
-│   ├── sensor_mode.py
-│   ├── sensor_power.py
 │   ├── signals/               # one LevelSignal subclass per <type>_signal.py file
 │   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
 │   │                           # not signals themselves, see below
@@ -63,10 +63,10 @@ pondpi/
 |---|---|
 | `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). `supports_reset`/`reset()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor.py` | `A02YYUWSensor` — the A02YYUW driver. Consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. Discovered dynamically like signals — see [Sensor drivers](#sensor-drivers). |
+| `sensors/sensor_mode.py` | A02YYUW-specific: drives its RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). Lives under `sensors/` (not scanned by driver discovery — its name doesn't end in `_sensor`) since it's specific to the A02YYUW driver. |
+| `sensors/sensor_power.py` | A02YYUW-specific: drives its power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. |
 | `read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
-| `sensor_mode.py` | Drives the A02YYUW's RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
-| `sensor_power.py` | Drives the A02YYUW's power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `params.sensor`). |
