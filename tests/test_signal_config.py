@@ -19,7 +19,7 @@ def test_loads_valid_config(tmp_path):
             type: sensor
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: rolling_median5
             type: rolling_median
             input: instantaneous_raw
@@ -48,14 +48,14 @@ def test_loads_valid_config(tmp_path):
         "primary": False,
         "emit": True,
         "input": "instantaneous_raw",
-        "units": "mm",
+        "unit": "cm",
     }
     assert group["configs"]["instantaneous_raw"] == {
         "type": "sensor",
-        "params": {"sensor": "pond_main", "units": "mm"},
+        "params": {"sensor": "pond_main", "unit": "cm"},
         "primary": False,
         "emit": True,
-        "units": "mm",
+        "unit": "cm",
     }
 
 
@@ -69,7 +69,7 @@ def test_emit_false_is_respected(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: rolling_median5
             type: rolling_median
             input: instantaneous_raw
@@ -95,13 +95,13 @@ def test_signals_grouped_independently_per_sensor(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: barrel_raw
             type: sensor
             primary: true
             params:
               sensor: rain_barrel
-              units: mm
+              unit: cm
           - name: pond_smoothed
             type: rolling_average
             input: pond_raw
@@ -127,7 +127,7 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
             type: sensor
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: rolling_median5
             type: rolling_median
             input: instantaneous_raw
@@ -272,7 +272,7 @@ def test_unknown_sensor_param_raises(tmp_path):
         load_signals(path, {"pond_main"})
 
 
-def test_missing_units_param_raises(tmp_path):
+def test_missing_unit_param_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -285,11 +285,11 @@ def test_missing_units_param_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="is missing required params.units"):
+    with pytest.raises(ValueError, match="is missing required params.unit"):
         load_signals(path, {"pond_main"})
 
 
-def test_non_sensor_setting_units_directly_raises(tmp_path):
+def test_non_sensor_setting_unit_directly_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -299,21 +299,21 @@ def test_non_sensor_setting_units_directly_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: b
             type: rolling_median
             input: a
             params:
               window_size: 5
-              units: cm
+              unit: cm
         """,
     )
 
-    with pytest.raises(ValueError, match="must not set params.units directly"):
+    with pytest.raises(ValueError, match="must not set params.unit directly"):
         load_signals(path, {"pond_main"})
 
 
-def test_downstream_signal_derives_units_from_input(tmp_path):
+def test_downstream_signal_derives_unit_from_input(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -322,7 +322,7 @@ def test_downstream_signal_derives_units_from_input(tmp_path):
             type: sensor
             params:
               sensor: pond_main
-              units: cm
+              unit: cm
           - name: rolling_median5
             type: rolling_median
             input: instantaneous_raw
@@ -339,11 +339,11 @@ def test_downstream_signal_derives_units_from_input(tmp_path):
 
     group = load_signals(path, {"pond_main"})["pond_main"]
 
-    # Neither downstream signal declares its own units -- both inherit
+    # Neither downstream signal declares its own unit -- both inherit
     # "cm" transitively from instantaneous_raw, several hops away for
     # rolling_avg.
-    assert group["configs"]["rolling_median5"]["units"] == "cm"
-    assert group["configs"]["rolling_avg"]["units"] == "cm"
+    assert group["configs"]["rolling_median5"]["unit"] == "cm"
+    assert group["configs"]["rolling_avg"]["unit"] == "cm"
 
 
 def test_sensor_with_no_signals_raises(tmp_path):
@@ -356,7 +356,7 @@ def test_sensor_with_no_signals_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 
@@ -373,7 +373,7 @@ def test_missing_primary_raises(tmp_path):
             type: sensor
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 
@@ -391,7 +391,7 @@ def test_multiple_primaries_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: b
             type: rolling_median
             input: a
@@ -432,12 +432,12 @@ def test_duplicate_name_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: a
             type: sensor
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 
@@ -455,7 +455,7 @@ def test_invalid_params_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: b
             type: rolling_median
             input: a
