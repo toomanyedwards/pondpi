@@ -87,16 +87,16 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
         time.sleep(poll_interval_s)
 
 
-def _signal_output(result, units):
+def _signal_output(result, unit):
     """Converts one signal's cached poll_sensor() result ({"value": mm,
     **extra_state}) into its /level and /diag output shape
-    ({"distance_cm": cm, "units": ..., **extra_state}). `units` is that
+    ({"value": cm, "unit": ..., **extra_state}). `unit` is that
     signal's own configured/derived unit (see signal_config.py's
     `_config_summary()`) -- static per-signal metadata, not something
     poll_sensor() recomputes every cycle, so it's passed in rather than
     read off `result`."""
     extra_state = {k: v for k, v in result.items() if k != "value"}
-    return {"distance_cm": round(result["value"] / 10.0, 1), "units": units, **extra_state}
+    return {"value": round(result["value"] / 10.0, 1), "unit": unit, **extra_state}
 
 
 @app.route("/health")
@@ -196,8 +196,8 @@ def _level_response(name, mode):
         signals = {}
         for sname, result in _state[name]["signals"].items():
             if _state[name]["emit_flags"].get(sname, True):
-                units = _state[name]["configs"][sname]["units"]
-                signals[sname] = _signal_output(result, units)["distance_cm"]
+                unit = _state[name]["configs"][sname]["unit"]
+                signals[sname] = _signal_output(result, unit)["value"]
 
         rolling_avg_distance_cm = round(_state[name]["rolling_avg_mm"] / 10.0, 1)
 
@@ -237,7 +237,7 @@ def _diag_response(name):
         signals = {
             sname: {
                 "config": _state[name]["configs"][sname],
-                "output": _signal_output(result, _state[name]["configs"][sname]["units"]),
+                "output": _signal_output(result, _state[name]["configs"][sname]["unit"]),
             }
             for sname, result in _state[name]["signals"].items()
         }
@@ -286,9 +286,9 @@ def signal_detail(name):
             return jsonify(error="no readings yet"), 503
 
         result = _state[sensor_name]["signals"][name]
-        units = _state[sensor_name]["configs"][name]["units"]
+        unit = _state[sensor_name]["configs"][name]["unit"]
         payload = {"name": name, "sensor": sensor_name}
-        payload.update(_signal_output(result, units))
+        payload.update(_signal_output(result, unit))
         return jsonify(payload)
 
 
@@ -308,7 +308,7 @@ def signal_diag(name):
             name=name,
             sensor=sensor_name,
             config=config,
-            output=_signal_output(result, config["units"]),
+            output=_signal_output(result, config["unit"]),
         )
 
 

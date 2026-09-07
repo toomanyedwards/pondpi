@@ -25,7 +25,7 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 
@@ -56,13 +56,13 @@ def test_loads_multiple_sensors(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
           - name: barrel_raw
             type: sensor
             primary: true
             params:
               sensor: rain_barrel
-              units: mm
+              unit: cm
         """,
     )
 
@@ -97,7 +97,7 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 
@@ -226,7 +226,7 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
             primary: true
             params:
               sensor: pond_main
-              units: mm
+              unit: cm
         """,
     )
 

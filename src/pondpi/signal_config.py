@@ -17,13 +17,13 @@ def load_signals(path, sensor_names):
     reading -- this is how sequential composition (e.g.
     median-then-average) is expressed, without a dedicated "chain" type.
 
-    Every `type: sensor` signal must also set `params.units` (e.g.
-    "mm") -- required, since it's the boundary where a physical
+    Every `type: sensor` signal must also set `params.unit` (e.g.
+    "cm") -- required, since it's the boundary where a physical
     reading enters the signal graph and nothing upstream can tell us
-    what unit it's in. Every other signal type derives its `units`
+    what unit it's in. Every other signal type derives its `unit`
     automatically from whichever signal its `input:` names (they're
-    pure numeric transforms -- a rolling average of millimeters is
-    still in millimeters), and must not set `params.units` itself.
+    pure numeric transforms -- a rolling average of centimeters is
+    still in centimeters), and must not set `params.unit` itself.
 
     Returns dict[sensor_name -> {"signals", "primary_name",
     "emit_flags", "configs"}], one entry per name in `sensor_names`
@@ -54,7 +54,7 @@ def build_signals(entries, sensor_names, path):
     instances = {}
     entries_by_name = {}
     root_sensor = {}
-    units_by_name = {}
+    unit_by_name = {}
 
     for entry in entries:
         name = entry.get("name")
@@ -83,11 +83,11 @@ def build_signals(entries, sensor_names, path):
                     f"{path}: signal '{name}' (type 'sensor') has invalid or missing params.sensor "
                     f"'{sensor}' (expected one of {sorted(sensor_names)})"
                 )
-            units = params.pop("units", None)
-            if not units:
-                raise ValueError(f"{path}: signal '{name}' (type 'sensor') is missing required params.units")
+            unit = params.pop("unit", None)
+            if not unit:
+                raise ValueError(f"{path}: signal '{name}' (type 'sensor') is missing required params.unit")
             root_sensor[name] = sensor
-            units_by_name[name] = units
+            unit_by_name[name] = unit
         else:
             if not input_name:
                 raise ValueError(
@@ -96,13 +96,13 @@ def build_signals(entries, sensor_names, path):
                 )
             if input_name not in entries_by_name:
                 raise ValueError(f"{path}: signal '{name}' references undefined input '{input_name}' (must be defined earlier in the file)")
-            if "units" in params:
+            if "unit" in params:
                 raise ValueError(
-                    f"{path}: signal '{name}' must not set params.units directly "
-                    "(units are derived automatically from 'input')"
+                    f"{path}: signal '{name}' must not set params.unit directly "
+                    "(unit is derived automatically from 'input')"
                 )
             root_sensor[name] = root_sensor[input_name]
-            units_by_name[name] = units_by_name[input_name]
+            unit_by_name[name] = unit_by_name[input_name]
 
         try:
             instances[name] = signal_types[signal_type](**params)
@@ -117,7 +117,7 @@ def build_signals(entries, sensor_names, path):
         group = grouped[root_sensor[name]]
         group["signals"][name] = instances[name]
         group["emit_flags"][name] = entry.get("emit", True)
-        group["configs"][name] = _config_summary(entry, units_by_name[name])
+        group["configs"][name] = _config_summary(entry, unit_by_name[name])
 
         if entry.get("primary", False):
             if group["primary_name"] is not None:
@@ -136,13 +136,13 @@ def build_signals(entries, sensor_names, path):
     return grouped
 
 
-def _config_summary(entry, units):
+def _config_summary(entry, unit):
     summary = {
         "type": entry.get("type"),
         "params": entry.get("params") or {},
         "primary": bool(entry.get("primary", False)),
         "emit": entry.get("emit", True),
-        "units": units,
+        "unit": unit,
     }
     if entry.get("input") is not None:
         summary["input"] = entry["input"]

@@ -121,7 +121,7 @@ default sensor, or the named one.
   },
   "signals": {
     "rolling_avg": 11.2,
-    "instantaneous_raw": 11.3
+    "pond_main_sensor_raw": 11.3
   }
 }
 ```
@@ -133,7 +133,7 @@ default sensor, or the named one.
 | `mode` | Which of the sensor's two hardware output modes this response reflects — see `?mode=` below. |
 | `polling_interval_ms` | How often the poller checks the serial buffer for a new frame (see `--polling-interval-ms`). This is the poll rate, not necessarily the sensor's own update rate. |
 | `primary_signal` | `{value, name}` for whichever signal is marked `primary: true` — `name` is that signal's actual configured name, so this stays correct even if you rename it. |
-| `signals` | A curated `{name: distance_cm}` view of just the signals meant to be read as final output — every signal rooted at this sensor *except* whichever ones are marked `emit: false` in `config/sensors.yaml`'s `signals:` list (e.g. an intermediate stage that only exists to feed another signal). See [Signal processing](#signal-processing). |
+| `signals` | A curated `{name: value}` view (in cm) of just the signals meant to be read as final output — every signal rooted at this sensor *except* whichever ones are marked `emit: false` in `config/sensors.yaml`'s `signals:` list (e.g. an intermediate stage that only exists to feed another signal). See [Signal processing](#signal-processing). |
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
@@ -186,22 +186,22 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
 ```json
 {
   "signals": {
-    "instantaneous_raw": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "units": "mm"}, "primary": false, "emit": true, "units": "mm"},
-      "output": {"distance_cm": 11.3, "units": "mm", "sensor": "pond_main"}
+    "pond_main_sensor_raw": {
+      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "primary": false, "emit": true, "unit": "cm"},
+      "output": {"value": 11.3, "unit": "cm", "sensor": "pond_main"}
     },
     "rolling_median5": {
       "config": {
         "type": "rolling_median",
-        "input": "instantaneous_raw",
+        "input": "pond_main_sensor_raw",
         "params": {"window_size": 5},
         "primary": false,
         "emit": false,
-        "units": "mm"
+        "unit": "cm"
       },
       "output": {
-        "distance_cm": 11.2,
-        "units": "mm",
+        "value": 11.2,
+        "unit": "cm",
         "window_size": 5,
         "samples_in_window": 5
       }
@@ -213,11 +213,11 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "params": {"window_size": 200},
         "primary": true,
         "emit": true,
-        "units": "mm"
+        "unit": "cm"
       },
       "output": {
-        "distance_cm": 11.2,
-        "units": "mm",
+        "value": 11.2,
+        "unit": "cm",
         "window_size": 200,
         "samples_in_window": 200
       }
@@ -230,21 +230,21 @@ Each signal's `config` is its *effective* configuration from
 `config/sensors.yaml`'s `signals:` list (defaults filled in, so
 `primary`/`emit` are always present even if the YAML omitted them; a
 non-`sensor` signal's `input` is included too), and `output` is the same
-shape `/level`'s `signals` used to expose — `distance_cm` plus that
+shape `/level`'s `signals` used to expose — `value` plus that
 signal's own `extra_state()`. Returns `503 {"error": "no readings
 yet"}` under the same condition as `/level`.
 
-Every signal's `config`/`output` includes `units` — the physical unit
-its own value is actually in (e.g. `"mm"`), as declared in
-`params.units` for a `sensor`-type signal or derived automatically from
-`input` for every other type. See [Signal
-processing](#signal-processing). `distance_cm` itself is unaffected by
-`units` — it's always computed by dividing the signal's internal value
-by 10, correct only when `units` is `"mm"` (true of every signal today,
-since the only sensor type is the A02YYUW). A signal declaring
-different units wouldn't get a differently-converted `distance_cm` --
-`units` is reported as informational metadata only, not yet wired into
-the conversion itself.
+Every signal's `config`/`output` includes `unit` — the unit its own
+`value` is actually in (e.g. `"cm"`), as declared in `params.unit` for
+a `sensor`-type signal or derived automatically from `input` for every
+other type. See [Signal processing](#signal-processing). `value` itself
+is computed the same way regardless of `unit` (the signal's internal
+number divided by 10) -- for `pond_main_sensor_raw`, `params.unit: cm`
+is correct precisely because the A02YYUW's millimeter reading divided
+by 10 *is* centimeters. A future sensor type whose native reading isn't
+in millimeters would need `value`'s conversion itself to become
+unit-aware; today `unit` accurately describes every signal's `value`,
+but isn't yet wired into computing it.
 
 ### `GET /signals`
 
@@ -255,7 +255,7 @@ bare-vs-sensor-named distinction here; this is the one flat list:
 
 ```json
 {
-  "signals": ["instantaneous_raw", "rolling_median5", "rolling_avg"]
+  "signals": ["pond_main_sensor_raw", "rolling_median5", "rolling_avg"]
 }
 ```
 
@@ -270,8 +270,8 @@ entries):
 {
   "name": "rolling_avg",
   "sensor": "pond_main",
-  "distance_cm": 11.2,
-  "units": "mm",
+  "value": 11.2,
+  "unit": "cm",
   "window_size": 200,
   "samples_in_window": 200
 }
@@ -279,7 +279,7 @@ entries):
 
 `sensor` is which configured sensor this signal is ultimately rooted at
 (traced through any `input:` chain back to a `sensor`-type signal's
-`params.sensor`). `units` is this signal's own configured/derived unit
+`params.sensor`). `unit` is this signal's own configured/derived unit
 (see [Signal processing](#signal-processing)) — every field past that
 is this signal's own `extra_state()` alongside its value, varying by
 signal type, same as `/diag`'s `output`.
@@ -298,11 +298,11 @@ the flattened value:
     "params": {"window_size": 200},
     "primary": true,
     "emit": true,
-    "units": "mm"
+    "unit": "cm"
   },
   "output": {
-    "distance_cm": 11.2,
-    "units": "mm",
+    "value": 11.2,
+    "unit": "cm",
     "window_size": 200,
     "samples_in_window": 200
   }
@@ -361,7 +361,7 @@ service info:
       "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
-      "signals": ["rolling_avg", "instantaneous_raw"]
+      "signals": ["rolling_avg", "pond_main_sensor_raw"]
     }
   }
 }
@@ -473,7 +473,7 @@ These two numbers directly shape the polling and smoothing defaults:
 - **Ranging accuracy (±1 cm) sets a noise floor.** Any single reading
   can be off by up to 1 cm even with a perfectly still water surface, so
   don't expect (or chase) sub-centimeter precision out of
-  `signals.instantaneous_raw`. That's exactly what `primary_signal` is
+  `signals.pond_main_sensor_raw`. That's exactly what `primary_signal` is
   for — averaging readings down to a
   stabler value — but a rolling window so small that it's dominated by
   one or two ±1 cm outliers will still show that noise. Conversely,
@@ -572,7 +572,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
-| `sensor` | `sensor`, `units` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `sensor` | `sensor`, `unit` | Passes the named sensor's raw reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
@@ -580,16 +580,15 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 Every type except `sensor` also requires a top-level `input: <name>`,
 naming the signal (defined earlier in the file) whose output feeds it.
 
-A `sensor` signal must also set `params.units` (e.g. `"mm"`) -- the
-physical unit its readings are actually in, required since it's the
-boundary where a value enters the signal graph and nothing upstream
-can tell us that. Every other signal type derives its `units`
-automatically from whichever signal its `input:` names, since none of
-them perform any unit conversion -- a rolling average of millimeters is
-still in millimeters -- and must not set `params.units` itself (that
-raises a config error, since it would silently be ignored otherwise).
-This is reported on `/diag` and `/signals/<name>`; see those endpoints
-above.
+A `sensor` signal must also set `params.unit` (e.g. `"cm"`) -- the
+unit its readings are actually in, required since it's the boundary
+where a value enters the signal graph and nothing upstream can tell us
+that. Every other signal type derives its `unit` automatically from
+whichever signal its `input:` names, since none of them perform any
+unit conversion -- a rolling average of centimeters is still in
+centimeters -- and must not set `params.unit` itself (that raises a
+config error, since it would silently be ignored otherwise). This is
+reported on `/diag` and `/signals/<name>`; see those endpoints above.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `--polling-interval-ms`, default 150ms) — not once per reading of
@@ -618,14 +617,14 @@ sensors:
       power_pin: 24
 
 signals:
-  - name: instantaneous_raw
+  - name: pond_main_sensor_raw
     type: sensor
     params:
       sensor: pond_main
-      units: mm
+      unit: cm
   - name: rolling_median5
     type: rolling_median
-    input: instantaneous_raw
+    input: pond_main_sensor_raw
     emit: false
     params:
       window_size: 5
@@ -638,7 +637,7 @@ signals:
 ```
 
 Here `rolling_avg` reads `rolling_median5`'s output, which in turn reads
-`instantaneous_raw`'s output (the sensor's raw reading) — a
+`pond_main_sensor_raw`'s output (the sensor's raw reading) — a
 median-then-average pipeline built entirely from `input:` references,
 with each stage its own independently named signal.
 
@@ -649,10 +648,10 @@ deployed Home Assistant "Pond Level" sensor reads that field**
 `configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s via
 `value_json.primary_signal.value`), so don't remove or repurpose the
 default sensor's `primary` signal without updating that HA sensor's
-`value_template` too. `signals.instantaneous_raw` is unaffected by other
-signals — it's always the raw last-valid reading — and is what
+`value_template` too. `signals.pond_main_sensor_raw` is unaffected by
+other signals — it's always the raw last-valid reading — and is what
 `sensor.pond_level_sensor_raw` reads (via
-`value_json.signals.instantaneous_raw`).
+`value_json.signals.pond_main_sensor_raw`).
 
 Any signal can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
