@@ -5,10 +5,8 @@ from pondpi import server
 
 class FakeSignal:
     """Stand-in for any LevelSignal -- current() returns whatever
-    result it was constructed with (server.py's _signal_result() just
-    calls current() directly now, no owns_read_loop branching left at
-    that layer). reset_calls tracks reset() calls, for the cascade
-    test."""
+    result it was constructed with. reset_calls tracks reset() calls,
+    for the cascade test."""
 
     def __init__(self, result=None):
         self._result = result

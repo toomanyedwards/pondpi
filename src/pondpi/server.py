@@ -28,16 +28,14 @@ def _new_sensor_state():
     }
 
 
-def _signal_result(sensor_name, signal_name):
-    """A signal's current {"value", "at", ...} result, straight from
-    its own cache -- every signal (owns_read_loop or not) maintains
-    this itself now (see LevelSignal.feed()/current()). Returns None
-    if there's no reading yet."""
+def _signal_result(signal_name):
+    """A signal's current {"value", "at", ...} result (see
+    LevelSignal.current()), or None if there's no reading yet."""
     return _signal_objects[signal_name].current()
 
 
 def _signal_output(result, unit):
-    """Converts one signal's cached result ({"value": ..., "at": ...,
+    """Converts one signal's result ({"value": ..., "at": ...,
     **extra_state}) into its /diag and /signals/<name> output shape
     ({"value": ..., "unit": ..., "at": ..., **extra_state}). `result["value"]`
     is already in the signal's own unit -- SensorSignal converts a
@@ -94,12 +92,12 @@ def health():
 
 
 def _reset_sensor(name, sensor):
-    """Power-cycles one sensor (restarting its own read thread and
-    recording its own `last_reset_at` as part of what `reset()` does --
-    see sensors/base.py), then cascades: resets every signal rooted at
-    this sensor too, since accumulated signal state (a rolling window,
-    an average) built from readings around the time something looked
-    wrong enough to warrant a reset is suspect too."""
+    """Resets one sensor -- whatever that means for its own driver (see
+    sensors/base.py's `reset()`/`reset_hardware()`; server.py has no
+    notion of the specifics) -- then cascades: resets every signal
+    rooted at this sensor too, since accumulated signal state (a rolling
+    window, an average) built from readings around the time something
+    looked wrong enough to warrant a reset is suspect too."""
     sensor.reset()
     for signal_name in _state[name]["signal_names"]:
         _signal_objects[signal_name].reset()
@@ -119,13 +117,12 @@ def _reset_response(name):
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    """Power-cycles every configured sensor that supports it, to force a
-    hardware reset -- e.g. if one or more appear wedged/stuck and a
-    serial buffer flush alone hasn't helped. Sensors that don't support
-    it (checked via `supports_reset`) are reported as `"not_supported"`
-    rather than failing the whole request -- one sensor lacking the
-    capability shouldn't block resetting the others. See POST
-    /sensors/<name>/reset to target exactly one sensor instead."""
+    """Resets every configured sensor that supports it -- e.g. if one or
+    more appear wedged/stuck. Sensors that don't support it (checked via
+    `supports_reset`) are reported as `"not_supported"` rather than
+    failing the whole request -- one sensor lacking the capability
+    shouldn't block resetting the others. See POST /sensors/<name>/reset
+    to target exactly one sensor instead."""
     results = {}
     for name, sensor in _sensors.items():
         if not sensor.supports_reset:
@@ -147,7 +144,7 @@ def _sensor_diag_signals(name):
     signals that has a reading yet (empty dict if none do)."""
     signals = {}
     for sname in _state[name]["signal_names"]:
-        result = _signal_result(name, sname)
+        result = _signal_result(sname)
         if result is None:
             continue
         unit = _state[name]["configs"][sname]["unit"]
@@ -197,7 +194,7 @@ def signal_detail(name):
     if sensor_name is None:
         return jsonify(error=f"unknown signal '{name}'"), 404
 
-    result = _signal_result(sensor_name, name)
+    result = _signal_result(name)
     if result is None:
         return jsonify(error="no readings yet"), 503
 
@@ -213,7 +210,7 @@ def signal_diag(name):
     if sensor_name is None:
         return jsonify(error=f"unknown signal '{name}'"), 404
 
-    result = _signal_result(sensor_name, name)
+    result = _signal_result(name)
     if result is None:
         return jsonify(error="no readings yet"), 503
 
