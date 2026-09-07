@@ -4,15 +4,15 @@ import pytest
 
 from pondpi.sensors import discover_sensor_types
 from pondpi.sensors.a02yyuw_sensor import create
-from pondpi.sensors.base import LevelSensor
+from pondpi.sensors.base import Sensor
 
 
 def test_discover_sensor_types_finds_all_built_ins():
     assert discover_sensor_types() == {"a02yyuw": create}
 
 
-class _StubSensor(LevelSensor):
-    """Minimal concrete LevelSensor -- no polling loop of its own (the
+class _StubSensor(Sensor):
+    """Minimal concrete Sensor -- no polling loop of its own (the
     base class has no notion of one), so tests drive
     is_healthy()/last_reading_monotonic() directly with no thread to
     race at all."""
@@ -52,7 +52,7 @@ def test_is_healthy_false_when_reading_older_than_its_own_threshold():
 
 
 def test_stale_reading_threshold_s_defaults_to_three_seconds():
-    assert LevelSensor.STALE_READING_THRESHOLD_S == 3.0
+    assert Sensor.STALE_READING_THRESHOLD_S == 3.0
 
 
 def test_last_reset_at_is_none_before_any_reset():
@@ -86,9 +86,9 @@ def test_discover_sensor_types_raises_when_module_has_no_sensor_class(tmp_path, 
 def test_discover_sensor_types_raises_when_module_has_multiple_sensor_classes(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     source = (
-        "from pondpi.sensors.base import LevelSensor\n\n"
-        "class A(LevelSensor):\n    def read(self):\n        return {}\n\n"
-        "class B(LevelSensor):\n    def read(self):\n        return {}\n\n"
+        "from pondpi.sensors.base import Sensor\n\n"
+        "class A(Sensor):\n    def read(self):\n        return {}\n\n"
+        "class B(Sensor):\n    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return A()\n"
     )
     _write_fake_flat_package(tmp_path, "fakesensors_multi", "broken_sensor", source)
@@ -102,8 +102,8 @@ def test_discover_sensor_types_raises_when_module_has_multiple_sensor_classes(tm
 def test_discover_sensor_types_strips_the_sensor_suffix_for_the_type_name(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     source = (
-        "from pondpi.sensors.base import LevelSensor\n\n"
-        "class Thing(LevelSensor):\n    def read(self):\n        return {}\n\n"
+        "from pondpi.sensors.base import Sensor\n\n"
+        "class Thing(Sensor):\n    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Thing()\n"
     )
     _write_fake_flat_package(tmp_path, "fakesensors_suffix", "widget_sensor", source)
@@ -136,8 +136,8 @@ def test_discover_sensor_types_finds_a_directory_package_with_class_defined_in_i
     driver_dir = package_dir / "widget_sensor"
     driver_dir.mkdir()
     (driver_dir / "__init__.py").write_text(
-        "from pondpi.sensors.base import LevelSensor\n\n"
-        "class Widget(LevelSensor):\n"
+        "from pondpi.sensors.base import Sensor\n\n"
+        "class Widget(Sensor):\n"
         "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )
@@ -157,8 +157,8 @@ def test_discover_sensor_types_finds_a_directory_package_re_exporting_from_a_sub
     driver_dir = package_dir / "widget_sensor"
     driver_dir.mkdir()
     (driver_dir / "driver.py").write_text(
-        "from pondpi.sensors.base import LevelSensor\n\n"
-        "class Widget(LevelSensor):\n"
+        "from pondpi.sensors.base import Sensor\n\n"
+        "class Widget(Sensor):\n"
         "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )

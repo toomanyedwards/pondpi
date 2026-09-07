@@ -4,7 +4,7 @@ from pondpi import server
 
 
 class FakeSignal:
-    """Stand-in for any LevelSignal -- current() returns whatever
+    """Stand-in for any Signal -- current() returns whatever
     result it was constructed with. reset_calls tracks reset() calls,
     for the cascade test."""
 
@@ -20,7 +20,7 @@ class FakeSignal:
 
 
 class FakeSensor:
-    """Stand-in LevelSensor for /health tests -- every value is exactly
+    """Stand-in Sensor for /health tests -- every value is exactly
     whatever it was constructed with, no real polling thread or
     staleness math (server.py no longer does that math itself either --
     it just calls is_healthy()/last_reset_at() and trusts the answer,

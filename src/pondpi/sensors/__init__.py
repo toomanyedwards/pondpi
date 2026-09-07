@@ -3,9 +3,9 @@ import inspect
 import pkgutil
 import sys
 
-from pondpi.sensors.base import LevelSensor
+from pondpi.sensors.base import Sensor
 
-__all__ = ["LevelSensor", "discover_sensor_types"]
+__all__ = ["Sensor", "discover_sensor_types"]
 
 _TYPE_SUFFIX = "_sensor"
 
@@ -27,7 +27,7 @@ def discover_sensor_types(package=None):
     with that suffix stripped (e.g. sensors/a02yyuw_sensor/ -> type
     "a02yyuw").
 
-    Each such module must define exactly one LevelSensor subclass --
+    Each such module must define exactly one Sensor subclass --
     directly, for a flat module, or in one of its own submodules and
     re-exported from its __init__.py, for a directory package -- and a
     module-level `create(params, simulate, on_reading)` function that
@@ -38,7 +38,7 @@ def discover_sensor_types(package=None):
     different (simulated) objects under `--simulate`; `create()` is
     where a driver does that assembly, so callers never need to know a
     given type's own construction details. `on_reading` is forwarded
-    straight into the driver's `LevelSensor.__init__()` -- see there for
+    straight into the driver's `Sensor.__init__()` -- see there for
     what it does and why construction alone is enough to start the
     driver's own background read thread.
     """
@@ -55,13 +55,13 @@ def discover_sensor_types(package=None):
         found = [
             obj
             for _, obj in inspect.getmembers(module, inspect.isclass)
-            if issubclass(obj, LevelSensor)
-            and obj is not LevelSensor
+            if issubclass(obj, Sensor)
+            and obj is not Sensor
             and (obj.__module__ == module.__name__ or obj.__module__.startswith(f"{module.__name__}."))
         ]
 
         if len(found) != 1:
-            raise ValueError(f"{module.__name__}: expected exactly one LevelSensor subclass, found {len(found)}")
+            raise ValueError(f"{module.__name__}: expected exactly one Sensor subclass, found {len(found)}")
 
         create = getattr(module, "create", None)
         if create is None or not callable(create):

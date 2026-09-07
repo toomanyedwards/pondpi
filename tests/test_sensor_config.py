@@ -27,7 +27,7 @@ class _FakeSignal:
 class _FakePollingSignal:
     """Stand-in for an owns_read_loop signal -- _build_on_reading()
     must never call feed() on this kind; it's fed by its own thread
-    instead (see LevelSignal)."""
+    instead (see Signal)."""
 
     owns_read_loop = True
     reads_from_sensor = False

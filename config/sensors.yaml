@@ -49,7 +49,7 @@ sensors:
 # cadence, rather than being pushed a new one on every one of the
 # sensor's own (much faster) poll ticks -- that's what lets
 # window_size * poll_interval_ms be a genuine real-world time span. Any
-# signal type may set LevelSignal.owns_read_loop = True (as this one
+# signal type may set Signal.owns_read_loop = True (as this one
 # does) to get its own dedicated background thread automatically -- no
 # marker needed in this file.
 # ==============================================================================

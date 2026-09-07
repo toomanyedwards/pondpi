@@ -7,13 +7,13 @@ sensor's current reading over a small HTTP API.
 
 ## How it works
 
-Every `LevelSensor` driver instance and `LevelSignal` instance (see
+Every `Sensor` driver instance and `Signal` instance (see
 [Sensor drivers](#sensor-drivers) and [Signal
 processing](#signal-processing) below) owns whatever background thread it
 needs entirely by itself, starting the moment it's constructed -- there's
 no external "start polling" call anywhere, and the Flask server (`server.py`)
-has no notion of threads or read loops at all. Neither do the `LevelSensor`/
-`LevelSignal` *base classes* -- `A02YYUWSensor` and `RollingAverageSignal`
+has no notion of threads or read loops at all. Neither do the `Sensor`/
+`Signal` *base classes* -- `A02YYUWSensor` and `RollingAverageSignal`
 each implement their own loop because they specifically need one, not
 because the base class hands them one; a future driver or signal type
 with no need to poll wouldn't have to fight any inherited thread machinery
@@ -22,7 +22,7 @@ wiring layer that makes this possible: it builds the full signal graph for
 a sensor *first*, then constructs that sensor's driver with a small
 `on_reading` callback already bound to it (`_build_on_reading()`) -- so by
 the time a driver is constructed and its own read thread starts, the
-callback it calls on every reading is already fully wired up. A `LevelSignal`
+callback it calls on every reading is already fully wired up. A `Signal`
 that owns its own background thread (`owns_read_loop = True`, currently
 just `type: rolling_average`) works the same way one level up: it's
 constructed with a `get_raw_value` callable already bound to its `source:`
@@ -42,7 +42,7 @@ sensor_config.py's load_sensors():
      construction alone starts its own background read thread
 
   ┌────────────────────┐  on_reading(reading_key, distance_mm)  ┌──────────────────────┐
-  │ LevelSensor driver   │ ───────────────────────────────────>  │ signal.feed(value)     │
+  │ Sensor driver   │ ───────────────────────────────────>  │ signal.feed(value)     │
   │ -- read thread starts│                                        │ for every signal        │
   │ the moment it's       │                                        │ rooted at that mode      │
   │ constructed            │                                        └───────────┬────────────┘
@@ -74,15 +74,15 @@ pondpi/
 │   └── sensors.yaml         # sensor + signal-processing config, see below
 ├── src/pondpi/              # the installable package — production code only
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
-│   ├── sensors/              # one LevelSensor subclass per <type>_sensor.py file or <type>_sensor/ dir
-│   │   ├── base.py            # LevelSensor interface
+│   ├── sensors/              # one Sensor subclass per <type>_sensor.py file or <type>_sensor/ dir
+│   │   ├── base.py            # Sensor interface
 │   │   └── a02yyuw_sensor/    # A02YYUW driver -- multi-file, so it's a package, not a single file
 │   │       ├── __init__.py      # A02YYUWSensor + create() -- the discovered entry point
 │   │       ├── read_sensor.py   # protocol/hardware layer: checksum, frame parsing, SimulatedSerial
 │   │       ├── sensor_mode.py   # drives the mode-select pin
 │   │       └── sensor_power.py  # drives the power supply pin
 │   ├── sensor_config.py
-│   ├── signals/               # one LevelSignal subclass per <type>_signal.py file
+│   ├── signals/               # one Signal subclass per <type>_signal.py file
 │   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
 │   │                           # not signals themselves, see below
 │   ├── signal_config.py
@@ -95,16 +95,16 @@ pondpi/
 
 | File | Responsibility |
 |---|---|
-| `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
+| `sensors/base.py` | `Sensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
-| `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `LevelSensor` subclass + `create()`. |
+| `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `Sensor` subclass + `create()`. |
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Builds each sensor's signal graph *before* its driver (`_build_on_reading()` wires a sensor's readings into its signals, and has to exist before the driver's construction starts its own read thread). |
-| `signals/` | `LevelSignal` base class (`base.py`) — owns the thread-safe `feed()`/`current()` cache every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
-| `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
-| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `source:` chains back to a `sensor` signal's own `source`). |
+| `signals/` | `Signal` base class (`base.py`) — owns the thread-safe `feed()`/`current()` cache every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
+| `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `Signal` classes. Not signals themselves (they don't implement the `Signal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
+| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `Signal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `source:` chains back to a `sensor` signal's own `source`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Builds every sensor and signal (already running their own background threads by the time `load_sensors()` returns) and runs the Flask app -- no thread/loop code of its own. Owns all CLI configuration. |
@@ -405,7 +405,7 @@ service info:
 
 The top-level `status` is `"degraded"` (HTTP 503) if **any** configured
 sensor's own `status` is degraded. Each sensor's `status` comes entirely
-from that sensor's own `is_healthy()` (`LevelSensor.STALE_READING_THRESHOLD_S`,
+from that sensor's own `is_healthy()` (`Sensor.STALE_READING_THRESHOLD_S`,
 3s by default -- see [Sensor drivers](#sensor-drivers)) -- server.py holds
 no threshold of its own and makes no staleness judgment itself, it just
 asks. `is_healthy()` returning `False` means no reading has landed in
@@ -448,7 +448,7 @@ dev checkouts, or `null` if neither is available.
 
 ## Sensor drivers
 
-Every sensor implements the small `LevelSensor` interface (`sensors/base.py`):
+Every sensor implements the small `Sensor` interface (`sensors/base.py`):
 `read()` returns a dict of canonical readings — distance from the
 sensor's mount point down to the water surface, in millimeters, keyed by
 a driver-defined signal name (e.g. the A02YYUW reports `"raw"` and
@@ -457,7 +457,7 @@ sometimes `"processed"`, see below) — and `close()`. `supports_reset`/
 hardware can actually be power-cycled or otherwise reset in software;
 `POST /reset` checks this flag rather than assuming every sensor has it.
 
-`LevelSensor` has no notion of *how* a driver actually obtains a reading
+`Sensor` has no notion of *how* a driver actually obtains a reading
 -- no polling loop, no thread, nothing background-shaped on the base
 class at all. `A02YYUWSensor` happens to need one (it has to keep polling
 a UART), so it implements its own `_poll_loop()`/`_begin_polling()` and
@@ -475,7 +475,7 @@ that needs it immediately (like `A02YYUWSensor`) requires it up front
 (see [How it works](#how-it-works)).
 
 Whatever mechanism a driver uses to obtain readings, it calls
-`self._record_reading()` (concrete on `LevelSensor`) each time it gets
+`self._record_reading()` (concrete on `Sensor`) each time it gets
 one, to participate in health tracking (below) -- that's the one thing
 the base class asks of every driver. `reset()` is also concrete on the
 base class, but only handles the generic part: calling the driver's own
@@ -490,7 +490,7 @@ fresh state, not just the hardware.
 concrete, and are how `GET /health` (below) gets its per-sensor status --
 `STALE_READING_THRESHOLD_S` (a class attribute, default `3.0` seconds,
 any driver type free to override) plus `is_healthy()`'s comparison
-against it live entirely on `LevelSensor`, so server.py holds no
+against it live entirely on `Sensor`, so server.py holds no
 threshold and makes no staleness judgment of its own; it just calls
 `sensor.is_healthy()` and trusts the answer. `reset()` also records its
 own `last_reset_at()` timestamp as part of the same call.
@@ -505,7 +505,7 @@ produced a given value.
 
 Sensor types are discovered dynamically at startup, the same way
 [signal types](#signal-processing) are: each entry in `sensors/` whose
-name ends in `_sensor` must define exactly one `LevelSensor` subclass
+name ends in `_sensor` must define exactly one `Sensor` subclass
 *and* a module-level `create(params, simulate, on_reading)` function, and
 that entry's name with the suffix stripped becomes the `type:` string
 used in `config/sensors.yaml`. Unlike signals (whose constructors take
@@ -515,7 +515,7 @@ those params, and build entirely different (simulated) objects under
 `--simulate`; `create()` is where a driver type does that assembly (and
 forwards `on_reading` into the driver's own constructor -- what it does
 with it from there, e.g. `A02YYUWSensor` starting its own poll loop, is
-entirely that driver's business, not `LevelSensor`'s), so
+entirely that driver's business, not `Sensor`'s), so
 `sensor_config.py` never needs to know a given type's own construction
 details.
 
@@ -648,7 +648,7 @@ synchronization, a reset landing mid-read can wedge the driver (seen in
 practice: an hourly `POST /reset` automation left the sensor stuck for
 ~53 minutes until the next unrelated service restart happened to clear
 it). `A02YYUWSensor` serializes the two internally via a lock around
-both `read()` and `reset()` (see `sensors/base.py`'s `LevelSensor`
+both `read()` and `reset()` (see `sensors/base.py`'s `Sensor`
 docstring for why this is each driver's own responsibility, not
 something server.py coordinates) -- a concurrent `read()` simply blocks
 for the ~1s power-cycle rather than running against the sensor while
@@ -673,7 +673,7 @@ redeploy — just edit the YAML.
 
 Signal types are discovered dynamically at server startup, not from a
 hand-maintained registry: each file in `signals/` whose name ends in
-`_signal` must define exactly one `LevelSignal` subclass, and the name
+`_signal` must define exactly one `Signal` subclass, and the name
 with that suffix stripped becomes the `type:` string used in the YAML.
 Files that don't end in `_signal` (`base.py`, or any future non-signal
 helper module) are ignored automatically — no hardcoded skip-list to
@@ -687,7 +687,7 @@ mm/cm baked in anywhere -- a rolling average of centimeters is still in
 centimeters, computed the same way regardless of what unit those
 centimeters happen to represent. `sensor` is the deliberate one
 exception: it's the boundary where a sensor's canonical reading (always
-millimeters -- `LevelSensor.read()`'s fixed contract, see [Sensor
+millimeters -- `Sensor.read()`'s fixed contract, see [Sensor
 drivers](#sensor-drivers)) first enters the signal graph, so its own
 `add()` converts once, there, into its declared `unit`
 (`SensorSignal.UNIT_DIVISORS`, currently just `"cm"`) -- `unit: cm`
@@ -698,7 +698,7 @@ server.py itself, ever needs to think about millimeters again.
 
 `add()` is the pure-computation hook every signal type implements
 (median, average, EMA, unit conversion); nothing calls it directly except
-`LevelSignal.feed()` (concrete, shared by every type), which wraps it
+`Signal.feed()` (concrete, shared by every type), which wraps it
 with thread-safe caching -- computes the new value via `add()`, stores
 it alongside a fresh `at` timestamp, and that's what `current()` reads
 back. This is what lets `rolling_average` sample its `source:` signal
@@ -710,21 +710,21 @@ Every signal entry has four generic top-level fields -- `name`, `type`,
 understands and acts on; everything else a given type's own constructor
 needs is opaque to `signal_config.py` and lives nested under that
 entry's `settings:`, passed straight through as that constructor's
-kwargs. Built-in `LevelSignal` types (`type:` in the YAML) and their
+kwargs. Built-in `Signal` types (`type:` in the YAML) and their
 `settings`:
 
 | Type | Settings | Behavior |
 |---|---|---|
 | `sensor` | `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type whose `source:` names a sensor directly -- everything else names another signal. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `source:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
+| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `source:` signal's current cached value once every `poll_interval_ms`, on its own timer (`Signal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every entry requires a top-level `source: <name>` -- for `sensor` it
 names a configured sensor; for every other type it names the signal
 (defined earlier in the file) whose output feeds it.
 
-`sensor` is the one signal type with `LevelSignal.reads_from_sensor = True`
+`sensor` is the one signal type with `Signal.reads_from_sensor = True`
 (same capability-flag pattern as `owns_read_loop`, below) -- the only
 generic thing `signal_config.py` knows about it is that flag itself; it
 has no notion of `unit`/`mode` (its two `settings:` fields) or what
@@ -748,7 +748,7 @@ generically as an unexpected constructor argument). This is reported on
 
 A `sensor` signal may also set `mode` in its `settings:` -- `"raw"`
 (the default) or `"processed"`, picking which of the sensor's own named
-readings feeds it (see `LevelSensor.read()` in [Sensor
+readings feeds it (see `Sensor.read()` in [Sensor
 drivers](#sensor-drivers) and the A02YYUW's two hardware modes in
 [Sensor notes](#sensor-notes)), validated against
 `SensorSignal.VALID_MODES` -- same story as `unit` above,
@@ -758,7 +758,7 @@ directly either.
 Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/diag` were computed at the
-same moment. Any signal type may set `LevelSignal.owns_read_loop = True`
+same moment. Any signal type may set `Signal.owns_read_loop = True`
 (currently just `rolling_average`) to get its own dedicated background
 thread automatically, as described in the table above -- no config
 marker needed, and any number of a sensor's signals (zero, one, or

@@ -198,9 +198,9 @@ def test_discover_signal_types_raises_when_module_has_no_signal_class(tmp_path, 
 def test_discover_signal_types_raises_when_module_has_multiple_signal_classes(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     source = (
-        "from pondpi.signals.base import LevelSignal\n\n"
-        "class A(LevelSignal):\n    pass\n\n"
-        "class B(LevelSignal):\n    pass\n"
+        "from pondpi.signals.base import Signal\n\n"
+        "class A(Signal):\n    pass\n\n"
+        "class B(Signal):\n    pass\n"
     )
     _write_fake_package(tmp_path, "fakepkg_multi", "broken_signal", source)
 
@@ -212,7 +212,7 @@ def test_discover_signal_types_raises_when_module_has_multiple_signal_classes(tm
 
 def test_discover_signal_types_strips_the_signal_suffix_for_the_type_name(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
-    source = "from pondpi.signals.base import LevelSignal\n\nclass Thing(LevelSignal):\n    pass\n"
+    source = "from pondpi.signals.base import Signal\n\nclass Thing(Signal):\n    pass\n"
     _write_fake_package(tmp_path, "fakepkg_suffix", "widget_signal", source)
 
     import fakepkg_suffix
