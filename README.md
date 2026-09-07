@@ -700,20 +700,24 @@ never contends for this lock at all.
 Signals live in their own top-level `signals:` list in
 `config/sensors.yaml`, independent of the `sensors:` list — not nested
 under a sensor. Every signal entry names where its data comes from via
-a top-level `source:` mapping — the same field, whatever kind of thing
-it names: `source.name` is required, and `source.options` is an
-optional nested mapping of settings governing *how* it reads from that
-name. Only a `type: sensor` signal has `source.name` name a sensor
-directly (and `source.options` mean anything, see `read_mode` below);
-every other signal has `source.name` name another signal's *live
-output* instead, and must leave `source.options` unset. This is how
-sequential composition (e.g. median-then-average) is expressed — no
-dedicated "chain" type needed, just two flat entries linked by
-`source.name`. `GET /diag` shows the output of every signal ultimately
-rooted at a given sensor (traced by following `source.name` chains back
-to whichever `sensor` signal names that sensor) side by side. This
-makes it possible to compare smoothing approaches against the live
-sensor stream without a code change or redeploy — just edit the YAML.
+a top-level `source:` field — the same field, whatever kind of thing it
+names: `source.name` is required, and `source.options` is an optional
+nested mapping of settings governing *how* it reads from that name.
+`source:` can also just be a bare name (`source: pond_main`) as
+shorthand for `{name: pond_main}` when there's no `options` to set --
+normalized to the mapping form immediately, so `/diag`'s `config.source`
+always reports the same shape regardless of which form the YAML used.
+Only a `type: sensor` signal has `source.name` name a sensor directly
+(and `source.options` mean anything, see `read_mode` below); every
+other signal has `source.name` name another signal's *live output*
+instead, and must leave `source.options` unset. This is how sequential
+composition (e.g. median-then-average) is expressed — no dedicated
+"chain" type needed, just two flat entries linked by `source.name`.
+`GET /diag` shows the output of every signal ultimately rooted at a
+given sensor (traced by following `source.name` chains back to
+whichever `sensor` signal names that sensor) side by side. This makes
+it possible to compare smoothing approaches against the live sensor
+stream without a code change or redeploy — just edit the YAML.
 
 Signal types are discovered dynamically at server startup, not from a
 hand-maintained registry: each file in `signals/` whose name ends in
@@ -774,9 +778,10 @@ Built-in `Signal` types (`type:` in the YAML) and their `settings`:
 | `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of computing lazily the moment something calls `read()`, it owns its own dedicated background thread that samples its `source:` signal's `read()` once every `poll_interval_ms`, on its own timer, and writes the result directly, overriding `read()` itself to just return that (see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
-Every entry requires a top-level `source:` mapping with a `name` -- for
-`sensor` it names a configured sensor; for every other type it names
-the signal (defined earlier in the file) whose output feeds it.
+Every entry requires a top-level `source:` naming what feeds it (a bare
+name, or a mapping with a `name`) -- for `sensor` it names a configured
+sensor; for every other type it names the signal (defined earlier in
+the file) whose output feeds it.
 
 `sensor` is the one signal type with `Signal.reads_from_sensor = True`
 (same capability-flag pattern as `Sensor.supports_reset`) -- the only
@@ -875,8 +880,7 @@ sensors:
 signals:
   - name: pond_main_sensor_raw
     type: sensor
-    source:
-      name: pond_main
+    source: pond_main
     settings:
       unit: cm
   - name: pond_main_sensor_processed
@@ -889,15 +893,13 @@ signals:
       unit: cm
   - name: rolling_median5
     type: rolling_median
-    source:
-      name: pond_main_sensor_raw
+    source: pond_main_sensor_raw
     emit: false
     settings:
       window_size: 5
   - name: rolling_avg
     type: rolling_average
-    source:
-      name: rolling_median5
+    source: rolling_median5
     settings:
       window_size: 60
       poll_interval_ms: 1000

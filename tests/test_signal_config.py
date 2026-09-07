@@ -197,7 +197,7 @@ def test_missing_source_raises(tmp_path):
         load_signals(path, _fake_sensors("pond_main"))
 
 
-def test_source_not_a_mapping_raises(tmp_path):
+def test_bare_string_source_is_shorthand_for_name(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -205,10 +205,30 @@ def test_source_not_a_mapping_raises(tmp_path):
           - name: a
             type: sensor
             source: pond_main
+            settings:
+              unit: cm
         """,
     )
 
-    with pytest.raises(ValueError, match="invalid 'source' \\(expected a mapping with a 'name'\\)"):
+    group = load_signals(path, _fake_sensors("pond_main"))["pond_main"]
+
+    # Normalized to the mapping form regardless of which shape the YAML
+    # used, so /diag's config.source is consistent either way.
+    assert group["configs"]["a"]["source"] == {"name": "pond_main"}
+
+
+def test_source_invalid_type_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            source: [pond_main]
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid 'source' \\(expected a name, or a mapping with a 'name'\\)"):
         load_signals(path, _fake_sensors("pond_main"))
 
 
@@ -225,7 +245,7 @@ def test_source_missing_name_raises(tmp_path):
         """,
     )
 
-    with pytest.raises(ValueError, match="invalid 'source' \\(expected a mapping with a 'name'\\)"):
+    with pytest.raises(ValueError, match="invalid 'source' \\(expected a name, or a mapping with a 'name'\\)"):
         load_signals(path, _fake_sensors("pond_main"))
 
 
