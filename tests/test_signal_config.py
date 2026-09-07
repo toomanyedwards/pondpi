@@ -14,10 +14,10 @@ class _FakeSensor:
     """Stand-in Sensor -- these tests only ever check construction/
     validation/grouping, but a `rolling_average` signal's background
     thread starts polling its source immediately at construction
-    regardless, so `last_reading()` needs to exist (returning nothing
-    is fine -- these tests never assert on an actual pulled value)."""
+    regardless, so `read()` needs to exist (returning nothing is fine --
+    these tests never assert on an actual pulled value)."""
 
-    def last_reading(self, key):
+    def read(self, settings=None):
         return None
 
 

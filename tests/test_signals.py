@@ -11,13 +11,18 @@ from pondpi.signals.sensor_signal import SensorSignal
 
 class _FakeSensor:
     """Stand-in for a Sensor instance -- exposes just the pull surface
-    (`last_reading()`) a `reads_from_sensor` signal actually uses."""
+    (`read()`) a `reads_from_sensor` signal actually uses. `read_calls`
+    records each `settings` a caller passed in, for tests that check
+    what a Signal forwards."""
 
     def __init__(self, readings=None):
         self._readings = readings or {}
+        self.read_calls = []
 
-    def last_reading(self, key):
-        return self._readings.get(key)
+    def read(self, settings=None):
+        self.read_calls.append(settings)
+        mode = (settings or {}).get("mode", "raw")
+        return self._readings.get(mode)
 
 
 class _FakeSourceSignal:
@@ -86,6 +91,18 @@ def test_sensor_signal_read_is_none_before_the_sensor_has_a_reading():
     sensor = _FakeSensor()
     signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm")
     assert signal.read() is None
+
+
+def test_sensor_signal_passes_its_own_mode_as_the_sensors_read_settings():
+    # The sensor doesn't know or care about "mode" as a concept of its
+    # own -- it's purely the caller's (this signal's) settings, passed
+    # straight through to Sensor.read().
+    sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
+    signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="processed")
+
+    signal.read()
+
+    assert sensor.read_calls == [{"mode": "processed"}]
 
 
 def test_rolling_median_signal_delegates_to_rolling_median_filter():

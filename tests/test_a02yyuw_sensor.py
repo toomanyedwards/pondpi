@@ -86,12 +86,12 @@ def test_reports_raw_reading_for_valid_frame():
     assert sensor.last_reading("raw")["value"] == 0x012C
 
 
-def test_read_returns_empty_before_any_reading():
+def test_read_returns_none_before_any_reading():
     sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController(), poll_interval_s=1000)
-    assert sensor.read() == {}
+    assert sensor.read() is None
 
 
-def test_read_returns_the_cached_value_for_the_current_mode():
+def test_read_defaults_to_raw_mode_when_no_settings_given():
     sensor = A02YYUWSensor(
         FakeSerial(_frame(0x01, 0x2C)),
         FakeModeController(),
@@ -100,7 +100,27 @@ def test_read_returns_the_cached_value_for_the_current_mode():
     )
 
     _wait_until(lambda: sensor.last_reading("raw") is not None)
-    assert sensor.read() == {"raw": 0x012C}
+    assert sensor.read()["value"] == 0x012C
+
+
+def test_read_returns_the_reading_for_the_mode_settings_selects():
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+    )
+
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
+
+    raw_reading = sensor.read({"mode": "raw"})
+    processed_reading = sensor.read({"mode": "processed"})
+    assert raw_reading == sensor.last_reading("raw")
+    assert processed_reading == sensor.last_reading("processed")
+    assert raw_reading != processed_reading
 
 
 def test_read_does_not_block_while_read_hardware_holds_the_lock():

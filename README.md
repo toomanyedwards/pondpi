@@ -12,9 +12,11 @@ drivers](#sensor-drivers) and [Signal processing](#signal-processing)
 below) keeps a cache of its own last known value, and anything
 downstream reads it *on demand* -- a `Signal`'s `read()` pulls
 recursively from whatever it names as its `source:` (another signal's
-own `read()`, or, for a `sensor`-type signal, its sensor's
-`last_reading()`), computing lazily the moment something actually asks
-and caching the result so a repeat `read()` with no new upstream data
+own `read()`, or, for a `sensor`-type signal, its sensor's own
+`read()`, passing that signal's own settings -- just its `mode` -- in
+as the caller-settings `Sensor.read()` takes), computing lazily the
+moment something actually asks and caching the result so a repeat
+`read()` with no new upstream data
 is cheap and doesn't recompute. The one exception, `rolling_average`,
 owns a background thread that proactively samples its `source:` on its
 own schedule and writes the cache directly instead of waiting to be
@@ -47,7 +49,7 @@ sensor_config.py's load_sensors():
 
   ┌───────────────────────┐          ┌──────────────────────────┐          ┌───────────────────────────┐
   │ Sensor driver           │          │ sensor-type Signal          │          │ chain Signal (median,        │
-  │ own read thread writes    │ <────── │ last_reading(mode), lazily     │ <────── │ average, EMA...) pulls          │
+  │ own read thread writes    │ <────── │ read({"mode": ...}), lazily    │ <────── │ average, EMA...) pulls          │
   │ last_reading() as frames     │ read() │ on demand -- or, for rolling_ │ read() │ source.read() lazily, on demand,   │
   │ arrive                          │          │ average, on its own timer      │          │ unless its own read() override        │
   └───────────────────────┘          └──────────────────────────┘          │ says otherwise (rolling_average)          │
@@ -97,7 +99,7 @@ pondpi/
 
 | File | Responsibility |
 |---|---|
-| `sensors/base.py` | `Sensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
+| `sensors/base.py` | `Sensor` — the interface every driver implements. `read(settings)` returns `{"value": distance_mm, "at": ...}` (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before recording it) for whatever the caller's own `settings` selects. Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
 | `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `Sensor` subclass + `create()`. |
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
@@ -452,13 +454,16 @@ dev checkouts, or `null` if neither is available.
 ## Sensor drivers
 
 Every sensor implements the small `Sensor` interface (`sensors/base.py`):
-`read()` returns a dict of canonical readings — distance from the
-sensor's mount point down to the water surface, in millimeters, keyed by
-a driver-defined signal name (e.g. the A02YYUW reports `"raw"` and
-sometimes `"processed"`, see below) — and `close()`. `supports_reset`/
-`reset_hardware()` is an optional capability a driver can add if its
-hardware can actually be power-cycled or otherwise reset in software;
-`POST /reset` checks this flag rather than assuming every sensor has it.
+`read(settings)` returns `{"value": distance_mm, "at": ...}` — distance
+from the sensor's mount point down to the water surface, in millimeters
+— for whatever the *caller's own* `settings` selects (a driver that
+reports more than one named reading, like the A02YYUW's `"raw"`/
+`"processed"`, looks for a `mode` key in it; `settings` is optional,
+defaulting to whatever the driver considers its primary reading) — and
+`close()`. `supports_reset`/`reset_hardware()` is an optional capability
+a driver can add if its hardware can actually be power-cycled or
+otherwise reset in software; `POST /reset` checks this flag rather than
+assuming every sensor has it.
 
 `Sensor` has no notion of *how* a driver actually obtains a reading
 -- no polling loop, no thread, nothing background-shaped on the base
@@ -471,11 +476,12 @@ needs -- is fully set up); that loop calls a driver-private method
 (`_read_hardware()`, not `read()`) repeatedly (every `poll_interval_s`)
 and, for each `(reading_key, distance_mm)` pair it gets back, caches it
 via `self._record_reading()`. `read()` itself is then just a lookup
-against that same cache for whichever mode the driver currently happens
-to be in -- always instant, never touching the UART or the hardware
-lock. Nothing is ever pushed onward from there -- a `reads_from_sensor`
-signal pulls a given reading key's last cached value on its own
-schedule instead, via `last_reading()` (see [Signal
+against that same cache, keyed by whatever mode `settings` asks for --
+always instant, never touching the UART or the hardware lock. Nothing
+is ever pushed onward from there -- a `reads_from_sensor` signal pulls
+its own configured mode's last cached value on its own schedule
+instead, passing its own `settings` (specifically, just the `mode` it
+cares about) into `read()` (see [Signal
 processing](#signal-processing)). A future driver that's push-driven
 instead (reacting to an async callback, never looping at all) is just
 as valid -- it simply wouldn't implement a poll loop, since the base
@@ -793,8 +799,8 @@ ISO 8601 UTC timestamp letting a caller tell a signal's freshness apart
 from another's without a separate `/health` request. For most signal
 types `at` is **propagated from `source:`**, not stamped fresh at
 `read()` time -- ultimately tracing back to whichever `sensor`-type
-signal's `SensorSignal.read()` pulled it from `Sensor.last_reading()`,
-i.e. when the underlying physical reading actually arrived. Stamping
+signal's `SensorSignal.read()` pulled it from `Sensor.read()`, i.e.
+when the underlying physical reading actually arrived. Stamping
 "now" at `read()` time instead would be actively misleading under a
 pull model: a signal nobody has queried in 30s would otherwise claim
 its value is fresh the instant someone finally asks, masking real

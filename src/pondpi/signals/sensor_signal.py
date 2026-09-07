@@ -37,10 +37,13 @@ class SensorSignal(Signal):
 
     `mode` selects which of that sensor's named readings this signal
     pulls -- "raw" (default) or "processed", matching the reading keys a
-    Sensor driver's `read()` can report (see sensors/base.py). Most
-    drivers report both on their own schedule; `_pull_source()` (below)
-    only ever sees this signal's own `mode`'s reading, independent of
-    signals rooted at the other mode.
+    Sensor driver can report. `_pull_source()` (below) passes this
+    signal's own settings (just `{"mode": self._mode}` -- `unit` isn't
+    the sensor's concern) into `Sensor.read()`, the caller-settings-
+    driven entry point every sensor exposes (see sensors/base.py) --
+    each mode updates independently, on whatever schedule the sensor
+    itself keeps that reading fresh, so this signal only ever sees its
+    own `mode`'s reading, independent of signals rooted at the other.
     """
 
     reads_from_sensor = True
@@ -75,7 +78,7 @@ class SensorSignal(Signal):
         return self._mode
 
     def _pull_source(self):
-        return self._sensor_obj.last_reading(self._mode)
+        return self._sensor_obj.read({"mode": self._mode})
 
     def add(self, raw_value):
         return raw_value / self.UNIT_DIVISORS[self._unit]
