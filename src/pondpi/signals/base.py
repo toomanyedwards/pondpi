@@ -29,6 +29,18 @@ class Signal:
     `SensorSignal` is the one type that overrides it, to pull from its
     sensor instead of another signal (see there).
 
+    `read()` takes an optional `settings` -- the *caller's* own
+    settings, same pattern as `Sensor.read()` (see sensors/base.py).
+    It's passed through to `_pull_source()` so a subclass can look at it
+    if it has a reason to, but the default `_pull_source()` above never
+    relays it on to `self._source_signal.read()` -- blindly forwarding
+    the same dict down a multi-hop chain risks a signal further up
+    misreading a key that happened to mean something else to it.
+    `SensorSignal` already shows the right shape for a type that
+    *does* care: it ignores whatever `settings` it's handed and builds
+    its own (`{"mode": self._mode}`) for whatever it itself reads from,
+    rather than passing anything through.
+
     A signal type that maintains its own background thread instead of
     computing lazily at `read()` time (see RollingAverageSignal, which
     samples its `source:` signal's `read()` on its own schedule rather
@@ -66,22 +78,28 @@ class Signal:
     def extra_state(self):
         return {}
 
-    def _pull_source(self):
+    def _pull_source(self, settings=None):
         """Returns `{"value", "at"}` for whatever this signal reads
-        from right now, or None if nothing's available yet. Default:
-        pulls `self._source_signal.read()` -- every chain type gets this
-        for free. Overridden by `SensorSignal` to pull from its sensor
-        instead; not called at all by a type that overrides `read()`
-        itself (see RollingAverageSignal)."""
+        from right now, or None if nothing's available yet. `settings`
+        is whatever the caller of `read()` passed in -- available here
+        for a subclass to use however it defines meaningful (see
+        SensorSignal). Default: pulls `self._source_signal.read()`, with
+        no `settings` of its own to give it -- every chain type gets
+        this for free. Overridden by `SensorSignal` to pull from its
+        sensor instead; not called at all by a type that overrides
+        `read()` itself (see RollingAverageSignal)."""
         return self._source_signal.read() if self._source_signal else None
 
-    def read(self):
-        """Pulls `_pull_source()` and, if that's newer than the last
-        value this signal already incorporated, computes a fresh one via
-        `add()` and caches it -- then returns the cached snapshot either
-        way (see `_snapshot()`). `_pull_source()` is called outside this
-        signal's own lock -- it recurses into another signal's or a
-        sensor's own independently-locked `read()`/`last_reading()`, so
+    def read(self, settings=None):
+        """Pulls `_pull_source(settings)` and, if that's newer than the
+        last value this signal already incorporated, computes a fresh
+        one via `add()` and caches it -- then returns the cached
+        snapshot either way (see `_snapshot()`). `settings` is the
+        *caller's* own settings (optional; see the class docstring and
+        `Sensor.read()`) -- this signal itself may or may not do
+        anything with it; most types don't. `_pull_source()` is called
+        outside this signal's own lock -- it recurses into another
+        signal's or a sensor's own independently-locked `read()`, so
         holding this lock across that call isn't needed and would just
         be pointless nesting. The check-and-write itself happens inside
         one lock acquisition so two threads calling `read()`
@@ -92,7 +110,7 @@ class Signal:
         RollingAverageSignal) overrides this entirely to skip the pull
         and just return `_snapshot()` -- its thread writes the cache
         directly, on its own schedule, via `_write()`."""
-        source = self._pull_source()
+        source = self._pull_source(settings)
         if source is not None:
             with self._lock:
                 if source["at"] != self._last_source_at:

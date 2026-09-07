@@ -34,12 +34,14 @@ class RollingAverageSignal(Signal):
         self._rolling_avg = RollingAverage(window_size)
         self._begin_polling()
 
-    def read(self):
+    def read(self, settings=None):
         """A pure getter -- this signal's own background thread
         (`_poll_loop()`, below) writes the cache directly on its own
         schedule, so `read()` here doesn't pull or compute anything
         itself (contrast `Signal.read()`, the default every other type
-        uses)."""
+        uses). `settings` is accepted only for interface compatibility
+        with `Signal.read()` -- unused, since there's nothing to pull
+        here."""
         return self._snapshot()
 
     def add(self, raw_value):

@@ -28,15 +28,19 @@ class _FakeSensor:
 class _FakeSourceSignal:
     """Stand-in for a live source Signal -- `.set()` controls what the
     next `.read()` returns, mirroring how a real signal's cache changes
-    over time."""
+    over time. `read_calls` records each `settings` a caller passed in,
+    for tests that check whether a Signal forwards its own caller's
+    settings on to its source."""
 
     def __init__(self, result=None):
         self._result = result
+        self.read_calls = []
 
     def set(self, value, at):
         self._result = {"value": value, "at": at}
 
-    def read(self):
+    def read(self, settings=None):
+        self.read_calls.append(settings)
         return self._result
 
 
@@ -105,6 +109,19 @@ def test_sensor_signal_passes_its_own_mode_as_the_sensors_read_settings():
     assert sensor.read_calls == [{"mode": "processed"}]
 
 
+def test_sensor_signal_ignores_its_own_callers_settings_when_pulling_its_sensor():
+    # Whatever settings this signal's own caller passes into its read()
+    # are irrelevant to what it hands its sensor -- it always builds its
+    # own {"mode": ...} from its own configured mode, never forwarding
+    # what it was given.
+    sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
+    signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="processed")
+
+    signal.read({"mode": "raw", "unrelated": "value"})
+
+    assert sensor.read_calls == [{"mode": "processed"}]
+
+
 def test_rolling_median_signal_delegates_to_rolling_median_filter():
     signal = RollingMedianSignal(window_size=3)
     signal.add(10)
@@ -133,6 +150,18 @@ def test_signal_read_returns_none_before_source_has_any_value():
     source = _FakeSourceSignal()
     signal = RollingMedianSignal(window_size=3, source_signal=source)
     assert signal.read() is None
+
+
+def test_signal_read_does_not_forward_caller_settings_to_its_own_source():
+    # A caller's settings are scoped to this one signal -- blindly
+    # relaying them further up the chain risks a signal there
+    # misreading a key that happened to mean something else to it.
+    source = _FakeSourceSignal()
+    signal = RollingMedianSignal(window_size=3, source_signal=source)
+
+    signal.read({"window_size": 999})
+
+    assert source.read_calls == [None]
 
 
 def test_signal_read_pulls_and_computes_from_its_source():
