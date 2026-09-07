@@ -30,29 +30,33 @@ class SensorSignal(Signal):
     constructs this type with a `sensor_objects` kwarg (every configured
     sensor, by name) purely so `__init__` can validate `sensor` against
     it and hold onto the one it names; `sensor_objects` itself isn't
-    stored. Every other param (`sensor`, `unit`, `sensor_options`) is
-    validated here too -- `UNIT_DIVISORS`/`VALID_READ_MODES` are this
-    class's own declared single source of truth for what it supports,
-    not something signal_config.py knows or checks itself.
+    stored. `sensor` and `sensor_options` come from the entry's
+    top-level `source:` mapping (`source.name` and `source.options`,
+    respectively -- signal_config.py's own contract for every signal
+    type, see signal_config.py); `unit` comes from `settings:` like any
+    other constructor param. Every one of them is validated here too --
+    `UNIT_DIVISORS`/`VALID_READ_MODES` are this class's own declared
+    single source of truth for what it supports, not something
+    signal_config.py knows or checks itself.
 
-    `sensor_options` is a nested settings sub-section (`settings:
-    sensor_options: read_mode: ...` in the YAML) reserved for options
-    that specifically govern how this signal reads *its sensor* --
-    distinct from `unit`, which is purely this signal's own concern and
-    never reaches the sensor at all. The one option it currently
-    recognizes is `read_mode`, which selects which of that sensor's
-    named readings this signal pulls -- "raw" (default) or "processed",
-    matching the reading keys a Sensor driver can report. `_pull_source()`
-    (below) ignores whatever `settings` *it* was given (this signal's
-    own caller's settings -- see `Signal._pull_source()`) and instead
-    passes this signal's own `{"mode": self._read_mode}` into
-    `Sensor.read()`, the caller-settings-driven entry point every sensor
-    exposes (see sensors/base.py) -- note the dict key stays `"mode"`
-    there, since that's `Sensor.read()`'s own contract, independent of
-    what this signal's YAML config happens to call the setting. Each
-    mode updates independently, on whatever schedule the sensor itself
-    keeps that reading fresh, so this signal only ever sees its own
-    `read_mode`'s reading, independent of signals rooted at the other.
+    `sensor_options` (`source: {name: ..., options: {read_mode: ...}}`
+    in the YAML) is reserved for options that specifically govern how
+    this signal reads *its sensor* -- distinct from `unit`, which is
+    purely this signal's own concern and never reaches the sensor at
+    all. The one option it currently recognizes is `read_mode`, which
+    selects which of that sensor's named readings this signal pulls --
+    "raw" (default) or "processed", matching the reading keys a Sensor
+    driver can report. `_pull_source()` (below) ignores whatever
+    `settings` *it* was given (this signal's own caller's settings --
+    see `Signal._pull_source()`) and instead passes this signal's own
+    `{"mode": self._read_mode}` into `Sensor.read()`, the caller-
+    settings-driven entry point every sensor exposes (see
+    sensors/base.py) -- note the dict key stays `"mode"` there, since
+    that's `Sensor.read()`'s own contract, independent of what this
+    signal's YAML config happens to call the setting. Each mode updates
+    independently, on whatever schedule the sensor itself keeps that
+    reading fresh, so this signal only ever sees its own `read_mode`'s
+    reading, independent of signals rooted at the other.
     """
 
     reads_from_sensor = True
