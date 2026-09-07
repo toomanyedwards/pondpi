@@ -1,13 +1,26 @@
 class LevelSignal:
     """Base class for a level signal.
 
-    Subclasses take raw sensor readings one at a time via `add()` and
-    return this signal's current output. `extra_state()` surfaces any
-    signal-specific metadata (window sizes, sample counts, ...) for the
-    /level response. Signals are unit-agnostic — they don't know or care
-    whether the values they're passed are mm, cm, or anything else; unit
-    conversion happens at the HTTP layer in server.py.
+    Most subclasses take raw sensor readings one at a time via `add()`
+    and return this signal's current output -- composable via `input:`
+    in config/sensors.yaml, fed by poll_sensor()'s loop (see server.py).
+    `extra_state()` surfaces any signal-specific metadata (window sizes,
+    sample counts, ...) for the /level response. Signals are
+    unit-agnostic — they don't know or care whether the values they're
+    passed are mm, cm, or anything else; unit conversion happens at the
+    HTTP layer in server.py.
+
+    `owns_read_loop` is a capability flag, same pattern as
+    `LevelSensor.supports_reset`: override it to True only for a signal
+    type that maintains its own background thread instead of being fed
+    via `add()` by poll_sensor()'s loop (see PollingRollingAverageSignal,
+    which samples its `input:` signal's cached value on its own
+    schedule rather than being pushed a new one every poll tick).
+    Exactly one such signal must be a sensor's `primary` -- see
+    signal_config.py.
     """
+
+    owns_read_loop = False
 
     def add(self, raw_value):
         raise NotImplementedError

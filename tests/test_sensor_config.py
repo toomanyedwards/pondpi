@@ -20,12 +20,18 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
             default: true
             params: {}
         signals:
-          - name: instantaneous_raw
+          - name: raw
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: instantaneous_raw
+            type: polling_rolling_average
+            input: raw
+            primary: true
+            params:
+              window_size: 5
+              poll_interval_s: 1
         """,
     )
 
@@ -35,7 +41,7 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
     assert set(sensors) == {"pond_main"}
     assert isinstance(sensors["pond_main"]["driver"], A02YYUWSensor)
     assert sensors["pond_main"]["primary_name"] == "instantaneous_raw"
-    assert set(sensors["pond_main"]["signals"]) == {"instantaneous_raw"}
+    assert set(sensors["pond_main"]["signals"]) == {"raw", "instantaneous_raw"}
 
 
 def test_loads_multiple_sensors(tmp_path):
@@ -51,18 +57,30 @@ def test_loads_multiple_sensors(tmp_path):
             type: a02yyuw
             params: {}
         signals:
-          - name: pond_raw
+          - name: pond_raw_sensor
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
-          - name: barrel_raw
-            type: sensor
+          - name: pond_raw
+            type: polling_rolling_average
+            input: pond_raw_sensor
             primary: true
+            params:
+              window_size: 5
+              poll_interval_s: 1
+          - name: barrel_raw_sensor
+            type: sensor
             params:
               sensor: rain_barrel
               unit: cm
+          - name: barrel_raw
+            type: polling_rolling_average
+            input: barrel_raw_sensor
+            primary: true
+            params:
+              window_size: 5
+              poll_interval_s: 1
         """,
     )
 
@@ -72,8 +90,8 @@ def test_loads_multiple_sensors(tmp_path):
     assert set(sensors) == {"pond_main", "rain_barrel"}
     # Distinct instances -- not the same driver object reused.
     assert sensors["pond_main"]["driver"] is not sensors["rain_barrel"]["driver"]
-    assert set(sensors["pond_main"]["signals"]) == {"pond_raw"}
-    assert set(sensors["rain_barrel"]["signals"]) == {"barrel_raw"}
+    assert set(sensors["pond_main"]["signals"]) == {"pond_raw_sensor", "pond_raw"}
+    assert set(sensors["rain_barrel"]["signals"]) == {"barrel_raw_sensor", "barrel_raw"}
 
 
 def test_simulate_true_ignores_hardware_params(tmp_path):
@@ -92,12 +110,18 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
               mode_select_pin: 99
               power_pin: 98
         signals:
-          - name: instantaneous_raw
+          - name: raw
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: instantaneous_raw
+            type: polling_rolling_average
+            input: raw
+            primary: true
+            params:
+              window_size: 5
+              poll_interval_s: 1
         """,
     )
 
@@ -221,12 +245,18 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
             type: a02yyuw
             params: {}
         signals:
-          - name: pond_raw
+          - name: pond_raw_sensor
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: pond_raw
+            type: polling_rolling_average
+            input: pond_raw_sensor
+            primary: true
+            params:
+              window_size: 5
+              poll_interval_s: 1
         """,
     )
 

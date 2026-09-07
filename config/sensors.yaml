@@ -34,9 +34,17 @@ sensors:
 # feeds it -- see README.md's "RX pin" section for what those mean for
 # the A02YYUW. Every other signal reads another signal's live output
 # instead, named by `input:` -- this is how sequential composition
-# (e.g. median-then-average below) is expressed, without a dedicated
-# "chain" type -- and derives its own unit/mode from that input
-# automatically.
+# (e.g. median-then-average) is expressed, without a dedicated "chain"
+# type -- and derives its own unit/mode from that input automatically.
+#
+# polling_rolling_average is a normal input:-composed type like any
+# other, with one difference: it owns its own dedicated background
+# thread (see server.py's main()) that samples its input's current
+# value on its own poll_interval_s cadence, rather than being pushed a
+# new one on every one of the sensor's own (much faster) poll ticks --
+# that's what lets window_size * poll_interval_s be a genuine
+# real-world time span. Exactly one signal per sensor -- this one --
+# must be marked primary; see LevelSignal.owns_read_loop.
 signals:
   - name: pond_main_sensor_raw
     type: sensor
@@ -60,11 +68,11 @@ signals:
     input: rolling_median5
     primary: true
     params:
-      # Admits one sample per poll_interval_s regardless of how often
-      # the sensor itself is actually polled, so window_size * poll_interval_s
-      # (60 * 1s = 60s) is the real time span this averages over --
-      # matched to Home Assistant's scan_interval so primary_signal
-      # represents a full averaged interval per HA poll rather than a
-      # ~6s slice of it -- without retaining 400 samples to do it.
+      # Its own dedicated thread admits one sample per poll_interval_s
+      # regardless of how often the sensor itself is actually polled,
+      # so window_size * poll_interval_s (60 * 1s = 60s) is the real
+      # time span this averages over -- matched to Home Assistant's
+      # scan_interval so primary_signal represents a full averaged
+      # interval per HA poll rather than a ~6s slice of it.
       window_size: 60
       poll_interval_s: 1

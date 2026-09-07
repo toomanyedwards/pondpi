@@ -13,7 +13,39 @@ class DummyThread:
         return self._alive
 
 
+class FakeSignal:
+    """Minimal stand-in for a push-fed (not owns_read_loop) signal --
+    _signal_result() only ever checks its owns_read_loop attribute for
+    this kind, reading the actual cached value out of server._state
+    instead."""
+
+    owns_read_loop = False
+
+
+class FakePollingSignal:
+    """Stand-in for a signal that owns its own read loop (like
+    PollingRollingAverageSignal) -- current() returns whatever result
+    it was constructed with, or was fed via run_loop()."""
+
+    owns_read_loop = True
+
+    def __init__(self, result=None):
+        self._result = result
+
+    def current(self):
+        return self._result
+
+    def run_loop(self, stop_event, get_raw_value):
+        while not stop_event.is_set():
+            value = get_raw_value()
+            if value is not None:
+                self._result = {"value": value, "at": "t"}
+            time.sleep(0.001)
+
+
 class _PassthroughSignal:
+    owns_read_loop = False
+
     def add(self, value):
         return value
 
@@ -22,6 +54,8 @@ class _PassthroughSignal:
 
 
 class _DoublingSignal:
+    owns_read_loop = False
+
     def add(self, value):
         return value * 2
 
@@ -61,9 +95,11 @@ def _reset_globals(names):
     baseline regardless of what an earlier test left behind."""
     server._sensors = {}
     server._poll_threads = {}
+    server._polling_signal_threads = {}
     server._reset_locks = {}
     server._state = {}
     server._signal_owner = {}
+    server._signal_objects = {}
     for name in names:
         server._state[name] = server._new_sensor_state()
         server._reset_locks[name] = threading.Lock()
@@ -278,7 +314,7 @@ def test_poll_sensor_routes_raw_readings_through_signals():
     thread.join(timeout=1)
 
     assert server._state["pond_main"]["instantaneous_mm"] == 100
-    assert server._state["pond_main"]["rolling_avg_mm"] == 100
+    assert server._state["pond_main"]["signals"]["instantaneous_raw"]["value"] == 100
     assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
 
@@ -299,13 +335,38 @@ def test_poll_sensor_downstream_signal_receives_upstream_signals_output():
     thread.start()
     for _ in range(200):
         with server._state_lock:
-            if server._state["pond_main"]["rolling_avg_mm"] is not None:
+            if "downstream" in server._state["pond_main"]["signals"]:
                 break
         time.sleep(0.005)
     stop_event.set()
     thread.join(timeout=1)
 
-    assert server._state["pond_main"]["rolling_avg_mm"] == 400
+    assert server._state["pond_main"]["signals"]["downstream"]["value"] == 400
+
+
+def test_poll_sensor_skips_signals_that_own_their_own_read_loop():
+    _reset_globals(["pond_main"])
+    polling_signal = FakePollingSignal()
+    signals = {"instantaneous_raw": _PassthroughSignal(), "avg": polling_signal}
+    configs = {"instantaneous_raw": {"mode": "raw"}, "avg": {"mode": "raw", "input": "instantaneous_raw"}}
+    sensor = FakeSensorDriver([{"raw": 100}])
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=server.poll_sensor,
+        args=("pond_main", sensor, signals, configs, "avg", stop_event, 0.001),
+    )
+    thread.start()
+    for _ in range(200):
+        with server._state_lock:
+            if server._state["pond_main"]["instantaneous_mm"] == 100:
+                break
+        time.sleep(0.005)
+    stop_event.set()
+    thread.join(timeout=1)
+
+    assert "instantaneous_raw" in server._state["pond_main"]["signals"]
+    assert "avg" not in server._state["pond_main"]["signals"]
 
 
 def test_poll_sensor_caches_processed_readings_as_is():
@@ -409,10 +470,16 @@ def test_level_returns_503_before_first_reading():
 
 def test_level_returns_current_reading():
     _reset_globals(["pond_main"])
+    server._signal_objects = {
+        "rolling_median5": FakeSignal(),
+        "rolling_avg": FakePollingSignal(
+            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400, "poll_interval_s": 1}
+        ),
+        "instantaneous_raw": FakeSignal(),
+    }
     server._state["pond_main"].update(
-        instantaneous_mm=101.0,
-        rolling_avg_mm=850.0,
         primary_name="rolling_avg",
+        signal_names=["rolling_median5", "rolling_avg", "instantaneous_raw"],
         emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
         configs={
             "rolling_median5": {"unit": "cm"},
@@ -421,7 +488,6 @@ def test_level_returns_current_reading():
         },
         signals={
             "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
-            "rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400},
             "instantaneous_raw": {"value": 101.0, "at": "2026-01-01T00:00:00+00:00", "sensor": "pond_main"},
         },
     )
@@ -477,13 +543,12 @@ def test_level_processed_mode_returns_current_reading():
 
 def test_level_unrecognized_mode_falls_back_to_raw():
     _reset_globals(["pond_main"])
+    server._signal_objects = {"rolling_avg": FakePollingSignal({"value": 850.0, "at": "2026-01-01T00:00:00+00:00"})}
     server._state["pond_main"].update(
-        instantaneous_mm=101.0,
-        rolling_avg_mm=850.0,
         primary_name="rolling_avg",
+        signal_names=["rolling_avg"],
         emit_flags={"rolling_avg": True},
         configs={"rolling_avg": {"unit": "cm"}},
-        signals={"rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00"}},
     )
     server._polling_interval_ms = 10
     server._default_sensor_name = "pond_main"
@@ -506,13 +571,12 @@ def test_sensor_level_returns_404_for_unknown_sensor():
 
 def test_sensor_level_targets_named_sensor_independently_of_default():
     _reset_globals(["pond_main", "rain_barrel"])
+    server._signal_objects["raw"] = FakePollingSignal({"value": 200.0, "at": "2026-01-01T00:00:00+00:00"})
     server._state["rain_barrel"].update(
-        instantaneous_mm=200.0,
-        rolling_avg_mm=200.0,
         primary_name="raw",
+        signal_names=["raw"],
         emit_flags={"raw": True},
         configs={"raw": {"unit": "cm"}},
-        signals={"raw": {"value": 200.0, "at": "2026-01-01T00:00:00+00:00"}},
     )
     server._polling_interval_ms = 150
     server._default_sensor_name = "pond_main"
@@ -536,8 +600,15 @@ def test_diag_returns_503_before_first_reading():
 
 def test_diag_returns_config_and_output_for_every_signal():
     _reset_globals(["pond_main"])
+    server._signal_objects = {
+        "rolling_median5": FakeSignal(),
+        "rolling_avg": FakePollingSignal(
+            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 200, "samples_in_window": 200}
+        ),
+    }
     server._state["pond_main"].update(
-        instantaneous_mm=101.0,
+        primary_name="rolling_avg",
+        signal_names=["rolling_median5", "rolling_avg"],
         configs={
             "rolling_median5": {
                 "type": "rolling_median",
@@ -548,7 +619,7 @@ def test_diag_returns_config_and_output_for_every_signal():
                 "unit": "cm",
             },
             "rolling_avg": {
-                "type": "rolling_average",
+                "type": "polling_rolling_average",
                 "params": {"window_size": 200},
                 "primary": True,
                 "emit": True,
@@ -558,7 +629,6 @@ def test_diag_returns_config_and_output_for_every_signal():
         },
         signals={
             "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
-            "rolling_avg": {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 200, "samples_in_window": 200},
         },
     )
     server._default_sensor_name = "pond_main"
@@ -589,7 +659,7 @@ def test_diag_returns_config_and_output_for_every_signal():
             },
             "rolling_avg": {
                 "config": {
-                    "type": "rolling_average",
+                    "type": "polling_rolling_average",
                     "params": {"window_size": 200},
                     "primary": True,
                     "emit": True,
@@ -645,18 +715,12 @@ def test_signals_list_returns_every_configured_signal_name():
 def test_signal_detail_returns_value_and_extra_state():
     _reset_globals(["pond_main"])
     server._signal_owner = {"rolling_avg": "pond_main"}
-    server._state["pond_main"].update(
-        instantaneous_mm=101.0,
-        configs={"rolling_avg": {"unit": "cm"}},
-        signals={
-            "rolling_avg": {
-                "value": 850.0,
-                "at": "2026-01-01T00:00:00+00:00",
-                "window_size": 400,
-                "samples_in_window": 400,
-            }
-        },
-    )
+    server._signal_objects = {
+        "rolling_avg": FakePollingSignal(
+            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
+        )
+    }
+    server._state["pond_main"].update(configs={"rolling_avg": {"unit": "cm"}})
     client = server.app.test_client()
 
     resp = client.get("/signals/rolling_avg")
@@ -685,6 +749,7 @@ def test_signal_detail_returns_404_for_unknown_signal():
 def test_signal_detail_returns_503_before_first_reading():
     _reset_globals(["pond_main"])
     server._signal_owner = {"rolling_avg": "pond_main"}
+    server._signal_objects = {"rolling_avg": FakePollingSignal(None)}
     client = server.app.test_client()
 
     resp = client.get("/signals/rolling_avg")
@@ -695,24 +760,20 @@ def test_signal_detail_returns_503_before_first_reading():
 def test_signal_diag_returns_config_and_output():
     _reset_globals(["pond_main"])
     server._signal_owner = {"rolling_avg": "pond_main"}
+    server._signal_objects = {
+        "rolling_avg": FakePollingSignal(
+            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
+        )
+    }
     server._state["pond_main"].update(
-        instantaneous_mm=101.0,
         configs={
             "rolling_avg": {
-                "type": "rolling_average",
+                "type": "polling_rolling_average",
                 "params": {"window_size": 400},
                 "primary": True,
                 "emit": True,
                 "input": "instantaneous_raw",
                 "unit": "cm",
-            }
-        },
-        signals={
-            "rolling_avg": {
-                "value": 850.0,
-                "at": "2026-01-01T00:00:00+00:00",
-                "window_size": 400,
-                "samples_in_window": 400,
             }
         },
     )
@@ -725,7 +786,7 @@ def test_signal_diag_returns_config_and_output():
         "name": "rolling_avg",
         "sensor": "pond_main",
         "config": {
-            "type": "rolling_average",
+            "type": "polling_rolling_average",
             "params": {"window_size": 400},
             "primary": True,
             "emit": True,
@@ -754,6 +815,7 @@ def test_signal_diag_returns_404_for_unknown_signal():
 def test_signal_diag_returns_503_before_first_reading():
     _reset_globals(["pond_main"])
     server._signal_owner = {"rolling_avg": "pond_main"}
+    server._signal_objects = {"rolling_avg": FakePollingSignal(None)}
     client = server.app.test_client()
 
     resp = client.get("/signals/rolling_avg/diag")

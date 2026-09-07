@@ -3,10 +3,10 @@ from pondpi.signals.base import LevelSignal
 
 class SensorSignal(LevelSignal):
     """Passes the named sensor's raw reading through unchanged. `sensor`
-    names which configured sensor this signal reads from -- the only
-    signal type that connects directly to a sensor; every other signal
-    type gets its input from another named signal via `input:` instead
-    (see signal_config.py).
+    names which configured sensor this signal reads from -- one of the
+    two signal types that connect directly to a sensor; every other
+    signal type gets its input from another named signal via `input:`
+    instead (see signal_config.py).
 
     `mode` selects which of that sensor's named readings this signal is
     fed -- "raw" (default) or "processed", matching the reading keys a

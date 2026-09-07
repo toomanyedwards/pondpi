@@ -24,11 +24,13 @@ _state_lock = threading.Lock()
 _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 
 _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
-_default_sensor_name = None
-_poll_threads = {}  # dict[sensor_name -> Thread]
+_signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since signal names are unique file-wide
+_poll_threads = {}  # dict[sensor_name -> Thread running poll_sensor()]
+_polling_signal_threads = {}  # dict[sensor_name -> Thread running its primary signal's run_loop()]
 _reset_locks = {}  # dict[sensor_name -> Lock], so one sensor's reset never blocks another's
 _polling_interval_ms = None
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
+_default_sensor_name = None
 _commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
 _started_monotonic = time.monotonic()
@@ -37,7 +39,6 @@ _started_monotonic = time.monotonic()
 def _new_sensor_state():
     return {
         "instantaneous_mm": None,
-        "rolling_avg_mm": None,
         "processed_mm": None,
         "signals": {},
         "signal_names": [],
@@ -65,13 +66,16 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
     replaced wholesale, since "raw"- and "processed"-rooted signals
     update on different, independent cadences (see each signal's own
     `at` timestamp on /diag and /signals/<name> to tell how fresh a
-    given one actually is). The "raw"-rooted primary signal's own
-    freshness additionally still drives `instantaneous_mm`/
-    `last_reading_monotonic`, which /level's default view and
-    /health's staleness check are built around -- see
-    signal_config.py's requirement that a sensor's `primary` signal be
-    rooted at mode "raw". One of these runs per configured sensor,
-    each in its own thread."""
+    given one actually is).
+
+    A signal with `owns_read_loop = True` (currently just
+    PollingRollingAverageSignal, always the sensor's `primary`) is
+    skipped here entirely -- it's fed by its own dedicated thread
+    instead (see server.py's `main()`), sampling its `input:` signal's
+    cached output on its own pace rather than being pushed a value on
+    every one of this loop's much faster ticks.
+
+    One of these runs per configured sensor, each in its own thread."""
     while not stop_event.is_set():
         readings = sensor.read()
 
@@ -79,6 +83,8 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
             at = datetime.now(timezone.utc).isoformat()
             results = {}
             for sname, signal in signals.items():
+                if signal.owns_read_loop:
+                    continue
                 if configs[sname]["mode"] != reading_key:
                     continue
                 input_name = configs[sname].get("input")
@@ -90,8 +96,6 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
                     _state[name]["signals"].update(results)
                 if reading_key == "raw":
                     _state[name]["instantaneous_mm"] = distance_mm
-                    if primary_name in results:
-                        _state[name]["rolling_avg_mm"] = results[primary_name]["value"]
                     _state[name]["last_reading_monotonic"] = time.monotonic()
                 elif reading_key == "processed":
                     _state[name]["processed_mm"] = distance_mm
@@ -99,14 +103,28 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
         time.sleep(poll_interval_s)
 
 
+def _signal_result(sensor_name, signal_name):
+    """A signal's current {"value", "at", ...} result -- from its own
+    background-maintained cache if it owns a read loop (just
+    PollingRollingAverageSignal today), or from poll_sensor()'s shared
+    per-sensor cache otherwise. Returns None if there's no reading yet
+    either way."""
+    signal = _signal_objects[signal_name]
+    if signal.owns_read_loop:
+        return signal.current()
+
+    with _state_lock:
+        return _state[sensor_name]["signals"].get(signal_name)
+
+
 def _signal_output(result, unit):
-    """Converts one signal's cached poll_sensor() result ({"value": mm,
-    "at": ..., **extra_state}) into its /level and /diag output shape
-    ({"value": cm, "unit": ..., "at": ..., **extra_state}). `unit` is
-    that signal's own configured/derived unit (see signal_config.py's
+    """Converts one signal's cached result ({"value": mm, "at": ...,
+    **extra_state}) into its /level and /diag output shape ({"value":
+    cm, "unit": ..., "at": ..., **extra_state}). `unit` is that
+    signal's own configured/derived unit (see signal_config.py's
     `_config_summary()`) -- static per-signal metadata, not something
-    poll_sensor() recomputes every cycle, so it's passed in rather than
-    read off `result`."""
+    recomputed every cycle, so it's passed in rather than read off
+    `result`."""
     extra_state = {k: v for k, v in result.items() if k not in ("value", "at")}
     return {"value": round(result["value"] / 10.0, 1), "unit": unit, "at": result["at"], **extra_state}
 
@@ -191,36 +209,42 @@ def _level_response(name, mode):
     if mode == "processed":
         with _state_lock:
             processed_mm = _state[name]["processed_mm"]
-            if processed_mm is None:
-                return jsonify(error="no readings yet"), 503
-
-            return jsonify(
-                measure_name="level",
-                units="cm",
-                mode="processed",
-                distance_cm=round(processed_mm / 10.0, 1),
-            )
-
-    with _state_lock:
-        if _state[name]["instantaneous_mm"] is None:
+        if processed_mm is None:
             return jsonify(error="no readings yet"), 503
-
-        signals = {}
-        for sname, result in _state[name]["signals"].items():
-            if _state[name]["emit_flags"].get(sname, True):
-                unit = _state[name]["configs"][sname]["unit"]
-                signals[sname] = _signal_output(result, unit)["value"]
-
-        rolling_avg_distance_cm = round(_state[name]["rolling_avg_mm"] / 10.0, 1)
 
         return jsonify(
             measure_name="level",
             units="cm",
-            mode="raw",
-            polling_interval_ms=_polling_interval_ms,
-            primary_signal={"value": rolling_avg_distance_cm, "name": _state[name]["primary_name"]},
-            signals=signals,
+            mode="processed",
+            distance_cm=round(processed_mm / 10.0, 1),
         )
+
+    primary_name = _state[name]["primary_name"]
+    if primary_name is None:
+        return jsonify(error="no readings yet"), 503
+    primary_result = _signal_result(name, primary_name)
+    if primary_result is None:
+        return jsonify(error="no readings yet"), 503
+
+    signals = {}
+    for sname in _state[name]["signal_names"]:
+        if not _state[name]["emit_flags"].get(sname, True):
+            continue
+        result = primary_result if sname == primary_name else _signal_result(name, sname)
+        if result is None:
+            continue
+        unit = _state[name]["configs"][sname]["unit"]
+        signals[sname] = _signal_output(result, unit)["value"]
+
+    primary_unit = _state[name]["configs"][primary_name]["unit"]
+    return jsonify(
+        measure_name="level",
+        units="cm",
+        mode="raw",
+        polling_interval_ms=_polling_interval_ms,
+        primary_signal={"value": _signal_output(primary_result, primary_unit)["value"], "name": primary_name},
+        signals=signals,
+    )
 
 
 @app.route("/level")
@@ -242,19 +266,25 @@ def _diag_response(name):
     configured signals, regardless of `emit` -- unlike /level's
     `signals`, which only shows signals meant to be read as final
     output."""
-    with _state_lock:
-        if _state[name]["instantaneous_mm"] is None:
-            return jsonify(error="no readings yet"), 503
+    primary_name = _state[name]["primary_name"]
+    if primary_name is None:
+        return jsonify(error="no readings yet"), 503
+    primary_result = _signal_result(name, primary_name)
+    if primary_result is None:
+        return jsonify(error="no readings yet"), 503
 
-        signals = {
-            sname: {
-                "config": _state[name]["configs"][sname],
-                "output": _signal_output(result, _state[name]["configs"][sname]["unit"]),
-            }
-            for sname, result in _state[name]["signals"].items()
+    signals = {}
+    for sname in _state[name]["signal_names"]:
+        result = primary_result if sname == primary_name else _signal_result(name, sname)
+        if result is None:
+            continue
+        unit = _state[name]["configs"][sname]["unit"]
+        signals[sname] = {
+            "config": _state[name]["configs"][sname],
+            "output": _signal_output(result, unit),
         }
 
-        return jsonify(signals=signals)
+    return jsonify(signals=signals)
 
 
 @app.route("/diag")
@@ -293,15 +323,14 @@ def signal_detail(name):
     if sensor_name is None:
         return jsonify(error=f"unknown signal '{name}'"), 404
 
-    with _state_lock:
-        if _state[sensor_name]["instantaneous_mm"] is None:
-            return jsonify(error="no readings yet"), 503
+    result = _signal_result(sensor_name, name)
+    if result is None:
+        return jsonify(error="no readings yet"), 503
 
-        result = _state[sensor_name]["signals"][name]
-        unit = _state[sensor_name]["configs"][name]["unit"]
-        payload = {"name": name, "sensor": sensor_name}
-        payload.update(_signal_output(result, unit))
-        return jsonify(payload)
+    unit = _state[sensor_name]["configs"][name]["unit"]
+    payload = {"name": name, "sensor": sensor_name}
+    payload.update(_signal_output(result, unit))
+    return jsonify(payload)
 
 
 @app.route("/signals/<name>/diag")
@@ -310,18 +339,17 @@ def signal_diag(name):
     if sensor_name is None:
         return jsonify(error=f"unknown signal '{name}'"), 404
 
-    with _state_lock:
-        if _state[sensor_name]["instantaneous_mm"] is None:
-            return jsonify(error="no readings yet"), 503
+    result = _signal_result(sensor_name, name)
+    if result is None:
+        return jsonify(error="no readings yet"), 503
 
-        result = _state[sensor_name]["signals"][name]
-        config = _state[sensor_name]["configs"][name]
-        return jsonify(
-            name=name,
-            sensor=sensor_name,
-            config=config,
-            output=_signal_output(result, config["unit"]),
-        )
+    config = _state[sensor_name]["configs"][name]
+    return jsonify(
+        name=name,
+        sensor=sensor_name,
+        config=config,
+        output=_signal_output(result, config["unit"]),
+    )
 
 
 def main():
@@ -364,8 +392,9 @@ def main():
         _state[name]["configs"] = cfg["configs"]
         _state[name]["primary_name"] = cfg["primary_name"]
 
-        for signal_name in cfg["signals"]:
+        for signal_name, signal_obj in cfg["signals"].items():
             _signal_owner[signal_name] = name
+            _signal_objects[signal_name] = signal_obj
 
         poll_thread = threading.Thread(
             target=poll_sensor,
@@ -382,6 +411,22 @@ def main():
         )
         poll_thread.start()
         _poll_threads[name] = poll_thread
+
+        primary_signal = cfg["signals"][cfg["primary_name"]]
+        primary_input_name = cfg["configs"][cfg["primary_name"]]["input"]
+
+        def get_raw_value(sensor_name=name, input_name=primary_input_name):
+            with _state_lock:
+                result = _state[sensor_name]["signals"].get(input_name)
+                return result["value"] if result else None
+
+        polling_signal_thread = threading.Thread(
+            target=primary_signal.run_loop,
+            args=(stop_event, get_raw_value),
+            daemon=True,
+        )
+        polling_signal_thread.start()
+        _polling_signal_threads[name] = polling_signal_thread
 
     try:
         app.run(host=args.host, port=args.port)
