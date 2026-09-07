@@ -27,7 +27,6 @@ _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
 _signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since signal names are unique file-wide
 _poll_threads = {}  # dict[sensor_name -> Thread running poll_sensor()]
 _polling_signal_threads = {}  # dict[sensor_name -> Thread running its primary signal's run_loop()]
-_reset_locks = {}  # dict[sensor_name -> Lock], so one sensor's reset never blocks another's
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
 _default_sensor_name = None
 _commit_sha = read_commit_sha(Path.cwd())
@@ -167,6 +166,19 @@ def health():
     return payload if status == "ok" else (payload, 503)
 
 
+def _reset_sensor(name, sensor):
+    """Power-cycles one sensor and records when. No locking needed here
+    -- LevelSensor implementations are responsible for their own
+    hardware-access safety (see sensors/base.py's docstring); server.py
+    just calls reset() and trusts it's safe to call concurrently with
+    that sensor's own poll_sensor() thread."""
+    sensor.reset()
+    reset_at = datetime.now(timezone.utc)
+    with _state_lock:
+        _state[name]["last_reset_at"] = reset_at
+    return reset_at
+
+
 def _reset_response(name):
     sensor = _sensors.get(name)
     if sensor is None:
@@ -174,23 +186,28 @@ def _reset_response(name):
     if not sensor.supports_reset:
         return jsonify(error="sensor does not support reset"), 501
 
-    with _reset_locks[name]:
-        sensor.reset()
-        reset_at = datetime.now(timezone.utc)
-        with _state_lock:
-            _state[name]["last_reset_at"] = reset_at
-
+    reset_at = _reset_sensor(name, sensor)
     return jsonify(status="reset", sensor=name, reset_at=reset_at.isoformat())
 
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    """Power-cycles the default sensor to force a hardware reset -- e.g.
-    if it appears wedged/stuck and a serial buffer flush alone hasn't
-    helped. Not every sensor driver supports this; returns 501 if it
-    doesn't. See POST /sensors/<name>/reset to target a specific
-    non-default sensor."""
-    return _reset_response(_default_sensor_name)
+    """Power-cycles every configured sensor that supports it, to force a
+    hardware reset -- e.g. if one or more appear wedged/stuck and a
+    serial buffer flush alone hasn't helped. Sensors that don't support
+    it (checked via `supports_reset`) are reported as `"not_supported"`
+    rather than failing the whole request -- one sensor lacking the
+    capability shouldn't block resetting the others. See POST
+    /sensors/<name>/reset to target exactly one sensor instead."""
+    results = {}
+    for name, sensor in _sensors.items():
+        if not sensor.supports_reset:
+            results[name] = {"status": "not_supported"}
+            continue
+        reset_at = _reset_sensor(name, sensor)
+        results[name] = {"status": "reset", "reset_at": reset_at.isoformat()}
+
+    return jsonify(sensors=results)
 
 
 @app.route("/sensors/<name>/reset", methods=["POST"])
@@ -317,7 +334,6 @@ def main():
     stop_event = threading.Event()
     for name, cfg in sensor_configs.items():
         _sensors[name] = cfg["driver"]
-        _reset_locks[name] = threading.Lock()
 
         _state[name] = _new_sensor_state()
         _state[name]["signal_names"] = list(cfg["signals"])

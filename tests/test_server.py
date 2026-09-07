@@ -96,13 +96,11 @@ def _reset_globals(names):
     server._sensors = {}
     server._poll_threads = {}
     server._polling_signal_threads = {}
-    server._reset_locks = {}
     server._state = {}
     server._signal_owner = {}
     server._signal_objects = {}
     for name in names:
         server._state[name] = server._new_sensor_state()
-        server._reset_locks[name] = threading.Lock()
 
 
 def test_health_ok_when_poller_alive():
@@ -238,7 +236,7 @@ def test_health_reports_multiple_sensors_independently():
     assert data["sensors"]["rain_barrel"]["poller_alive"] is False
 
 
-def test_reset_powercycles_default_sensor_and_records_last_reset_at():
+def test_reset_powercycles_a_single_configured_sensor_and_records_last_reset_at():
     _reset_globals(["pond_main"])
     fake_sensor = FakeResetSensor()
     server._sensors = {"pond_main": fake_sensor}
@@ -249,20 +247,57 @@ def test_reset_powercycles_default_sensor_and_records_last_reset_at():
 
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["status"] == "reset"
-    assert data["sensor"] == "pond_main"
+    assert data["sensors"]["pond_main"]["status"] == "reset"
     assert fake_sensor.reset_calls == 1
     assert server._state["pond_main"]["last_reset_at"] is not None
-    assert data["reset_at"] == server._state["pond_main"]["last_reset_at"].isoformat()
+    assert data["sensors"]["pond_main"]["reset_at"] == server._state["pond_main"]["last_reset_at"].isoformat()
 
 
-def test_reset_returns_501_when_sensor_does_not_support_reset():
-    _reset_globals(["pond_main"])
-    server._sensors = {"pond_main": FakeResetSensor(supports_reset=False)}
+def test_reset_powercycles_every_supporting_sensor():
+    _reset_globals(["pond_main", "rain_barrel"])
+    fake_main = FakeResetSensor()
+    fake_barrel = FakeResetSensor()
+    server._sensors = {"pond_main": fake_main, "rain_barrel": fake_barrel}
     server._default_sensor_name = "pond_main"
     client = server.app.test_client()
 
     resp = client.post("/reset")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["sensors"]["pond_main"]["status"] == "reset"
+    assert data["sensors"]["rain_barrel"]["status"] == "reset"
+    assert fake_main.reset_calls == 1
+    assert fake_barrel.reset_calls == 1
+    assert server._state["pond_main"]["last_reset_at"] is not None
+    assert server._state["rain_barrel"]["last_reset_at"] is not None
+
+
+def test_reset_reports_not_supported_without_failing_other_sensors():
+    _reset_globals(["pond_main", "rain_barrel"])
+    fake_main = FakeResetSensor()
+    unsupported_barrel = FakeResetSensor(supports_reset=False)
+    server._sensors = {"pond_main": fake_main, "rain_barrel": unsupported_barrel}
+    server._default_sensor_name = "pond_main"
+    client = server.app.test_client()
+
+    resp = client.post("/reset")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["sensors"]["pond_main"]["status"] == "reset"
+    assert data["sensors"]["rain_barrel"] == {"status": "not_supported"}
+    assert fake_main.reset_calls == 1
+    assert unsupported_barrel.reset_calls == 0
+    assert server._state["rain_barrel"]["last_reset_at"] is None
+
+
+def test_sensor_reset_returns_501_when_sensor_does_not_support_reset():
+    _reset_globals(["pond_main"])
+    server._sensors = {"pond_main": FakeResetSensor(supports_reset=False)}
+    client = server.app.test_client()
+
+    resp = client.post("/sensors/pond_main/reset")
 
     assert resp.status_code == 501
 
