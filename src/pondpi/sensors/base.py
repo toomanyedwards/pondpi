@@ -8,19 +8,21 @@ class Sensor:
     type (e.g. `a02yyuw_sensor.py`), mirroring how `signals/` is
     structured.
 
-    `read()` returns canonical readings -- distance from the sensor's
-    mount point down to the water surface, in millimeters -- regardless
-    of the underlying sensing technology. Different sensor hardware
-    measures fundamentally different physical quantities (an ultrasonic
-    sensor's raw distance vs. a resistive sensor's submerged length,
-    with opposite sign conventions), so each driver is responsible for
-    converting its own native reading into this shared unit before
-    returning it; nothing downstream (signals, the HTTP API) needs to
-    know which sensing technology produced a given value.
+    A driver's canonical readings -- distance from the sensor's mount
+    point down to the water surface, in millimeters, regardless of the
+    underlying sensing technology -- are always in millimeters by the
+    time they reach `_record_reading()` (below); different sensor
+    hardware measures fundamentally different physical quantities (an
+    ultrasonic sensor's raw distance vs. a resistive sensor's submerged
+    length, with opposite sign conventions), so each driver is
+    responsible for converting its own native reading into this shared
+    unit before recording it -- nothing downstream (signals, the HTTP
+    API) needs to know which sensing technology produced a given value.
 
-    A driver reports one or more named signals -- e.g. `A02YYUWSensor`
+    A driver reports one or more named readings -- e.g. `A02YYUWSensor`
     reports "raw" and "processed", corresponding to the sensor's two
     hardware modes, while a simpler sensor might only ever report one.
+    `read(settings)` (below) is how a caller retrieves one of them.
 
     This class defines the *contract* every driver must satisfy --
     canonical readings, the capability flags below, and the health/reset
@@ -35,7 +37,7 @@ class Sensor:
     `last_reading_monotonic()`/`is_healthy()` and to populate
     `last_reading()`'s cache -- there's no push path out of a driver at
     all; a `reads_from_sensor` signal (see signals/sensor_signal.py)
-    pulls from that cache on its own schedule instead.
+    pulls from that cache, via `read()`, on its own schedule instead.
 
     `supports_reset` is a capability flag: override it to True (and
     implement `reset_hardware()`) only if the underlying hardware can
@@ -52,11 +54,11 @@ class Sensor:
     judgment call of their own about what counts as stale for a given
     sensor type.
 
-    `read()` itself is not required to touch hardware at all -- it just
-    has to return this driver's canonical reading(s), however it gets
-    them. `A02YYUWSensor`, for instance, implements `read()` as a plain
-    cache lookup and does the actual UART polling in its own private
-    `_read_hardware()` instead, called from its own background thread.
+    `read()` itself is not required to touch hardware at all -- it's a
+    cache lookup, keyed by whatever `settings` (see below) selects.
+    `A02YYUWSensor`, for instance, does the actual UART polling in its
+    own private `_read_hardware()` instead, called from its own
+    background thread; `read()` just looks in the cache that populates.
     Whatever internal method *does* touch hardware must be safe to call
     concurrently with `reset_hardware()` if it runs on its own
     background thread -- e.g. `A02YYUWSensor`'s thread calls
@@ -77,14 +79,23 @@ class Sensor:
         self._last_reset_at = None
         self._last_readings = {}
 
-    def read(self):
-        """Returns a dict of {signal_name: distance_mm} for this
-        driver's canonical reading(s), or an empty dict if nothing's
-        available yet. Must never block. This base class has no opinion
-        on *how* a concrete driver gets there -- it might poll hardware
-        directly on every call, or (like `A02YYUWSensor`) be a plain
-        lookup against a cache some other, driver-private mechanism
-        keeps warm (see the class docstring above)."""
+    def read(self, settings=None):
+        """Thread-safe cache lookup -- `{"value": distance_mm, "at":
+        ...}` (the same shape `last_reading()` returns), or None if
+        nothing's available yet for whatever `settings` selects. Must
+        never block.
+
+        `settings` is the *caller's* own settings -- e.g. a
+        `reads_from_sensor` Signal's own `settings:` from
+        config/sensors.yaml (see signal_config.py/sensor_signal.py) --
+        not this driver's construction settings, which it already has
+        on `self`. It's optional (None for a caller with no settings of
+        its own, or that doesn't care) and entirely driver-specific in
+        meaning: a driver that reports more than one named reading (like
+        `A02YYUWSensor`'s "raw"/"processed") looks for whatever key in
+        `settings` picks one; a driver with only ever one reading can
+        ignore `settings` entirely.
+        """
         raise NotImplementedError
 
     def reset_hardware(self):
@@ -131,10 +142,10 @@ class Sensor:
     def last_reading(self, key):
         """Thread-safe snapshot `{"value": distance_mm, "at": ...}` of
         this driver's last recorded reading for one reading key (e.g.
-        "raw"/"processed" -- see `read()`), or None before it's ever
-        arrived. This is the only way a `reads_from_sensor` signal gets
-        data out of a sensor -- it pulls this on its own schedule,
-        there's no push path in the other direction."""
+        "raw"/"processed"), or None before it's ever arrived. `read()`
+        is generally what a caller wants instead -- this is the lower-
+        level per-key lookup it (and any driver-specific logic) is built
+        on."""
         with self._lock:
             return self._last_readings.get(key)
 
@@ -152,10 +163,9 @@ class Sensor:
         """Subclasses call this whenever they obtain one or more fresh
         readings -- however they get them (polling, a push callback,
         anything else) is entirely up to them. `readings` is a dict of
-        `{reading_key: distance_mm}`, the same shape `read()` returns.
-        Updates both the timestamp `last_reading_monotonic()`/
-        `is_healthy()` are built on and the per-key cache `last_reading()`
-        reads back."""
+        `{reading_key: distance_mm}`. Updates both the timestamp
+        `last_reading_monotonic()`/`is_healthy()` are built on and the
+        per-key cache `last_reading()`/`read()` read back."""
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._lock:
             self._last_reading_monotonic = time.monotonic()
