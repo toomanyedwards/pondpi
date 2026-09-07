@@ -10,24 +10,38 @@ from pondpi.signals.sensor_signal import SensorSignal
 
 
 def test_sensor_signal_converts_mm_into_its_declared_unit():
-    signal = SensorSignal(sensor="pond_main", unit="cm")
+    signal = SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="cm")
     assert signal.add(101) == 10.1
     assert signal.add(999) == 99.9
 
 
 def test_sensor_signal_rejects_unsupported_unit():
-    signal = SensorSignal(sensor="pond_main", unit="mm")
-    with pytest.raises(KeyError):
-        signal.add(101)
+    with pytest.raises(ValueError, match="invalid params.unit 'mm'"):
+        SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="mm")
+
+
+def test_sensor_signal_rejects_missing_unit():
+    with pytest.raises(ValueError, match="is missing required params.unit"):
+        SensorSignal(sensor_names={"pond_main"}, sensor="pond_main")
+
+
+def test_sensor_signal_rejects_unknown_sensor():
+    with pytest.raises(ValueError, match="invalid or missing params.sensor 'rain_barrel'"):
+        SensorSignal(sensor_names={"pond_main"}, sensor="rain_barrel", unit="cm")
+
+
+def test_sensor_signal_rejects_unsupported_mode():
+    with pytest.raises(ValueError, match="invalid params.mode 'smoothed'"):
+        SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="cm", mode="smoothed")
 
 
 def test_sensor_signal_extra_state_reports_its_sensor_and_mode():
-    signal = SensorSignal(sensor="pond_main", unit="cm")
+    signal = SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="cm")
     assert signal.extra_state() == {"sensor": "pond_main", "mode": "raw"}
 
 
 def test_sensor_signal_extra_state_reports_explicit_mode():
-    signal = SensorSignal(sensor="pond_main", unit="cm", mode="processed")
+    signal = SensorSignal(sensor_names={"pond_main"}, sensor="pond_main", unit="cm", mode="processed")
     assert signal.extra_state() == {"sensor": "pond_main", "mode": "processed"}
 
 

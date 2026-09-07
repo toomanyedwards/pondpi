@@ -20,10 +20,13 @@ class SensorSignal(LevelSignal):
     downstream -- including every other signal type and server.py itself
     -- stay unaware that millimeters were ever involved.
 
-    `UNIT_DIVISORS` is the single source of truth for which units this
-    type supports (`signal_config.py` validates `params.unit` against it
-    before construction) and how to convert into each one from the
-    sensor's raw millimeter reading.
+    `reads_from_sensor = True` (see LevelSignal) -- signal_config.py
+    constructs this type with a `sensor_names` kwarg (the full set of
+    configured sensor names) purely so `__init__` can validate `sensor`
+    against it; it's not stored. Every other param (`sensor`, `unit`,
+    `mode`) is validated here too -- `UNIT_DIVISORS`/`VALID_MODES` are
+    this class's own declared single source of truth for what it
+    supports, not something signal_config.py knows or checks itself.
 
     `mode` selects which of that sensor's named readings this signal is
     fed -- "raw" (default) or "processed", matching the reading keys a
@@ -34,13 +37,35 @@ class SensorSignal(LevelSignal):
     `_build_on_reading()`.
     """
 
+    reads_from_sensor = True
     UNIT_DIVISORS: ClassVar[dict] = {"cm": 10.0}
+    VALID_MODES: ClassVar[tuple] = ("raw", "processed")
 
-    def __init__(self, sensor, unit, mode="raw"):
+    def __init__(self, sensor_names, sensor=None, unit=None, mode="raw"):
         super().__init__()
+        if sensor not in sensor_names:
+            raise ValueError(f"invalid or missing params.sensor '{sensor}' (expected one of {sorted(sensor_names)})")
+        if not unit:
+            raise ValueError("is missing required params.unit")
+        if unit not in self.UNIT_DIVISORS:
+            raise ValueError(f"invalid params.unit '{unit}' (expected one of {sorted(self.UNIT_DIVISORS)})")
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"invalid params.mode '{mode}' (expected one of {self.VALID_MODES})")
         self._sensor = sensor
         self._unit = unit
         self._mode = mode
+
+    @property
+    def sensor(self):
+        return self._sensor
+
+    @property
+    def unit(self):
+        return self._unit
+
+    @property
+    def mode(self):
+        return self._mode
 
     def add(self, raw_value):
         return raw_value / self.UNIT_DIVISORS[self._unit]

@@ -2,8 +2,6 @@ import yaml
 
 from pondpi.signals import discover_signal_types
 
-_VALID_MODES = ("raw", "processed")
-
 
 def load_signals(path, sensor_names):
     """Loads named LevelSignal instances from a YAML file's top-level
@@ -11,31 +9,25 @@ def load_signals(path, sensor_names):
     ultimately rooted at.
 
     `sensor_names` is the set of already-configured sensor names (from
-    sensor_config.py) -- every `type: sensor` signal must name one of
-    them via `params.sensor`, since `sensor` is the only signal type
-    that reads directly from a sensor. Every other signal type instead
-    names another, earlier-defined signal via a top-level `input:` key,
-    reading *that* signal's live output rather than a sensor's raw
-    reading -- this is how sequential composition (e.g.
-    median-then-average) is expressed, without a dedicated "chain"
-    type.
+    sensor_config.py). Every signal type either sets `reads_from_sensor
+    = True` (see LevelSignal.reads_from_sensor) and connects directly to
+    a sensor via its own params (currently just `SensorSignal`, via
+    `params.sensor`) -- validating those params, `sensor_names` included,
+    is entirely that type's own responsibility, not something this
+    module knows or checks -- or names another, earlier-defined signal
+    via a top-level `input:` key instead, reading *that* signal's live
+    output rather than a sensor's raw reading. This is how sequential
+    composition (e.g. median-then-average) is expressed, without a
+    dedicated "chain" type.
 
-    Every `type: sensor` signal must also set `params.unit` (e.g.
-    "cm") -- required, since it's the boundary where a physical
-    reading enters the signal graph and nothing upstream can tell us
-    what unit it's in. Validated against `SensorSignal.UNIT_DIVISORS`
-    (the signal's own declared set of units it knows how to convert a
-    sensor's canonical millimeter reading into), not just any non-empty
-    string. Every other signal type derives its `unit` automatically
-    from whichever signal its `input:` names (they're pure numeric
-    transforms -- a rolling average of centimeters is still in
-    centimeters), and must not set `params.unit` itself.
-
-    A `type: sensor` signal may also set `params.mode` ("raw", the
-    default, or "processed") -- which of that sensor's two hardware
-    readings (see LevelSensor.read()) feeds it. Every other signal type
-    derives its `mode` from `input`, same as `unit`, and must not set
-    `params.mode` itself.
+    `unit`/`mode` are tracked and propagated here as generic concepts,
+    without this module knowing or caring what specific values either
+    one holds: a `reads_from_sensor` signal's own `unit`/`mode` (however
+    it derived and validated them) become the root of its group's chain;
+    every other signal type inherits them automatically from whichever
+    signal its `input:` names (they're pure numeric transforms -- a
+    rolling average of centimeters is still in centimeters) and must not
+    set `params.unit`/`params.mode` directly.
 
     Returns dict[sensor_name -> {"signals", "emit_flags", "configs"}],
     one entry per name in `sensor_names` (even if that sensor ends up
@@ -65,7 +57,17 @@ def build_signals(entries, sensor_names, path):
     """Builds named LevelSignal instances from an already-parsed list of
     signal entries and groups them by root sensor -- the shared core
     `load_signals` also uses after reading its own top-level `signals:`
-    key. `path` is used only for error messages."""
+    key. `path` is used only for error messages.
+
+    This function has no notion of what any particular signal type's
+    `params` mean or which values are valid for them -- it only enforces
+    the two structural rules every type is bound by regardless of its
+    own semantics (a `reads_from_sensor` type must not set `input:`; any
+    other type must) and dispatches construction generically on the
+    `reads_from_sensor`/`owns_read_loop` capability flags. Every other
+    validation (is this unit/mode/sensor-name actually valid) is each
+    signal type's own responsibility, surfaced as a `ValueError` from its
+    own constructor and wrapped here with config-file context."""
     signal_types = discover_signal_types()
 
     instances = {}
@@ -86,40 +88,23 @@ def build_signals(entries, sensor_names, path):
         if signal_type not in signal_types:
             raise ValueError(f"{path}: signal '{name}' has unknown type '{signal_type}' (expected one of {sorted(signal_types)})")
 
+        signal_class = signal_types[signal_type]
         input_name = entry.get("input")
         params = dict(entry.get("params") or {})
 
-        if signal_type == "sensor":
+        extra_kwargs = {}
+        if signal_class.reads_from_sensor:
             if input_name is not None:
                 raise ValueError(
-                    f"{path}: signal '{name}' is type 'sensor' and must not set 'input' "
-                    "(sensor signals read from a sensor via params.sensor, not another signal)"
+                    f"{path}: signal '{name}' is type '{signal_type}' and must not set 'input' "
+                    f"({signal_type} signals read from a sensor directly, not another signal)"
                 )
-            sensor = params.get("sensor")
-            if sensor not in sensor_names:
-                raise ValueError(
-                    f"{path}: signal '{name}' (type 'sensor') has invalid or missing params.sensor "
-                    f"'{sensor}' (expected one of {sorted(sensor_names)})"
-                )
-            unit = params.get("unit")
-            if not unit:
-                raise ValueError(f"{path}: signal '{name}' (type 'sensor') is missing required params.unit")
-            if unit not in signal_types[signal_type].UNIT_DIVISORS:
-                raise ValueError(
-                    f"{path}: signal '{name}' (type 'sensor') has invalid params.unit '{unit}' "
-                    f"(expected one of {sorted(signal_types[signal_type].UNIT_DIVISORS)})"
-                )
-            mode = params.get("mode", "raw")
-            if mode not in _VALID_MODES:
-                raise ValueError(f"{path}: signal '{name}' (type 'sensor') has invalid params.mode '{mode}' (expected one of {_VALID_MODES})")
-            root_sensor[name] = sensor
-            unit_by_name[name] = unit
-            mode_by_name[name] = mode
+            extra_kwargs["sensor_names"] = sensor_names
         else:
             if not input_name:
                 raise ValueError(
                     f"{path}: signal '{name}' must set 'input' naming the signal it reads from "
-                    "(only 'sensor' signals read directly from a sensor)"
+                    "(only signals that read directly from a sensor may omit it)"
                 )
             if input_name not in entries_by_name:
                 raise ValueError(f"{path}: signal '{name}' references undefined input '{input_name}' (must be defined earlier in the file)")
@@ -133,28 +118,33 @@ def build_signals(entries, sensor_names, path):
                     f"{path}: signal '{name}' must not set params.mode directly "
                     "(mode is derived automatically from 'input')"
                 )
+
+        if signal_class.owns_read_loop:
+            # input_name is guaranteed set and already constructed --
+            # validated above (non-reads_from_sensor types require
+            # `input:` naming an earlier-defined signal, and instances
+            # only ever gains an entry for names already fully built).
+            input_instance = instances[input_name]
+
+            def get_raw_value(input_instance=input_instance):
+                result = input_instance.current()
+                return result["value"] if result else None
+
+            extra_kwargs["get_raw_value"] = get_raw_value
+
+        try:
+            instances[name] = signal_class(**params, **extra_kwargs)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{path}: signal '{name}' has invalid params for type '{signal_type}': {e}") from e
+
+        if signal_class.reads_from_sensor:
+            root_sensor[name] = instances[name].sensor
+            unit_by_name[name] = instances[name].unit
+            mode_by_name[name] = instances[name].mode
+        else:
             root_sensor[name] = root_sensor[input_name]
             unit_by_name[name] = unit_by_name[input_name]
             mode_by_name[name] = mode_by_name[input_name]
-
-        signal_class = signal_types[signal_type]
-        try:
-            if signal_class.owns_read_loop:
-                # input_name is guaranteed set and already constructed --
-                # validated above (non-"sensor" types require `input:`
-                # naming an earlier-defined signal, and instances only
-                # ever gains an entry for names already fully built).
-                input_instance = instances[input_name]
-
-                def get_raw_value(input_instance=input_instance):
-                    result = input_instance.current()
-                    return result["value"] if result else None
-
-                instances[name] = signal_class(**params, get_raw_value=get_raw_value)
-            else:
-                instances[name] = signal_class(**params)
-        except TypeError as e:
-            raise ValueError(f"{path}: signal '{name}' has invalid params for type '{signal_type}': {e}") from e
 
         entries_by_name[name] = entry
 
