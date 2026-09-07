@@ -26,7 +26,6 @@ _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
 _signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since signal names are unique file-wide
 _poll_threads = {}  # dict[sensor_name -> Thread running poll_sensor()]
-_polling_signal_threads = {}  # dict[signal_name -> Thread running that signal's own run_loop()]
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
 _commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
@@ -63,8 +62,9 @@ def poll_sensor(name, sensor, signals, configs, stop_event, poll_interval_s):
 
     A signal with `owns_read_loop = True` (currently just
     RollingAverageSignal) is skipped here entirely -- it's fed by its
-    own dedicated thread instead (see server.py's `main()`, which spawns
-    one such thread per owns_read_loop signal in the sensor's group),
+    own dedicated thread instead (see server.py's `main()`, which calls
+    `start()` once per owns_read_loop signal in the sensor's group and
+    otherwise leaves that thread's lifecycle to the signal itself),
     sampling its `input:` signal's cached output on its own pace rather
     than being pushed a value on every one of this loop's much faster
     ticks.
@@ -359,13 +359,7 @@ def main():
                     result = _state[sensor_name]["signals"].get(input_name)
                     return result["value"] if result else None
 
-            polling_signal_thread = threading.Thread(
-                target=signal_obj.run_loop,
-                args=(stop_event, get_raw_value),
-                daemon=True,
-            )
-            polling_signal_thread.start()
-            _polling_signal_threads[signal_name] = polling_signal_thread
+            signal_obj.start(stop_event, get_raw_value)
 
     try:
         app.run(host=args.host, port=args.port)

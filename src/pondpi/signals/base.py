@@ -16,8 +16,9 @@ class LevelSignal:
     via `add()` by poll_sensor()'s loop (see RollingAverageSignal,
     which samples its `input:` signal's cached value on its own
     schedule rather than being pushed a new one every poll tick).
-    server.py's `main()` spawns one such thread per owns_read_loop
-    signal in a sensor's group -- any number, no config marker needed.
+    server.py's `main()` calls `start()` once per owns_read_loop signal
+    in a sensor's group -- any number, no config marker needed -- and
+    otherwise has no involvement in how that signal runs itself.
     """
 
     owns_read_loop = False
@@ -27,3 +28,14 @@ class LevelSignal:
 
     def extra_state(self):
         return {}
+
+    def start(self, stop_event, get_raw_value):
+        """Only implemented by `owns_read_loop = True` types: spawns
+        and owns whatever background thread this signal needs to keep
+        itself updated. `get_raw_value` is a zero-arg callable returning
+        this signal's `input:` signal's current cached value (in mm),
+        or None if it isn't ready yet -- supplied by server.py, which
+        owns the shared per-sensor state it reads from. `stop_event` is
+        shared with every other background thread in the process; this
+        signal's own thread must exit once it's set."""
+        raise NotImplementedError

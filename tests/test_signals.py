@@ -119,6 +119,25 @@ def test_rolling_average_signal_last_reading_monotonic_updates_after_a_reading()
     assert signal.last_reading_monotonic() is not None
 
 
+def test_rolling_average_signal_start_spawns_its_own_thread():
+    # Unlike _run_briefly (which drives run_loop() directly on a
+    # thread the test owns), start() is the real entry point server.py
+    # calls -- confirms it actually spawns a live background thread
+    # rather than, say, blocking the caller or running synchronously.
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
+    stop_event = threading.Event()
+
+    signal.start(stop_event, _fixed_getter(100))
+    deadline = time.monotonic() + 1
+    while signal.current() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    stop_event.set()
+
+    result = signal.current()
+    assert result is not None
+    assert result["value"] == 100
+
+
 def test_exponential_smoothing_signal_first_reading_passes_through():
     signal = ExponentialSmoothingSignal(alpha=0.5)
     assert signal.add(10) == 10

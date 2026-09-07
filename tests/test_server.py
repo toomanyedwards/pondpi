@@ -95,7 +95,6 @@ def _reset_globals(names):
     baseline regardless of what an earlier test left behind."""
     server._sensors = {}
     server._poll_threads = {}
-    server._polling_signal_threads = {}
     server._state = {}
     server._signal_owner = {}
     server._signal_objects = {}
