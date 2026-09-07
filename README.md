@@ -17,7 +17,11 @@ own `read()`, or, for a `sensor`-type signal, its sensor's own
 as the caller-settings `Sensor.read()` takes), computing lazily the
 moment something actually asks and caching the result so a repeat
 `read()` with no new upstream data
-is cheap and doesn't recompute. The one exception, `rolling_average`,
+is cheap and doesn't recompute. Both `Sensor.read()` and `Signal.read()`
+take the same shape of optional `settings` param -- the *caller's* own
+settings, not forwarded any further than the one link that receives
+them, so a setting scoped to one signal can never be misread by
+something further up its own chain. The one exception, `rolling_average`,
 owns a background thread that proactively samples its `source:` on its
 own schedule and writes the cache directly instead of waiting to be
 asked, overriding `read()` itself to just return whatever that thread
@@ -722,7 +726,7 @@ server.py itself, ever needs to think about millimeters again.
 (median, average, EMA, unit conversion); nothing calls it directly except
 `Signal.read()` (concrete, shared by every type), which pulls this
 signal's `source:` (its own `read()`, or, for `sensor`-type signals, the
-sensor's `last_reading()`) and, if that's newer than what this signal
+sensor's `read()`) and, if that's newer than what this signal
 already incorporated, computes a fresh value via `add()` and
 thread-safely caches it alongside that source's own `at`. Calling
 `read()` any number of times with no new upstream data is safe and
