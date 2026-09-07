@@ -1,3 +1,7 @@
+import threading
+import time
+
+
 class LevelSensor:
     """Base class every sensor driver implements, one file per sensor
     type (e.g. `a02yyuw_sensor.py`), mirroring how `signals/` is
@@ -23,13 +27,20 @@ class LevelSensor:
     before calling `reset()`.
 
     `read()` and `reset()` must be safe to call concurrently from
-    different threads -- server.py calls `read()` continuously from a
-    background polling thread while `POST /reset` calls `reset()` from
-    a request-handling thread, with no synchronization at that layer.
-    It's each driver's own responsibility to serialize its hardware
-    access internally (e.g. a lock around whatever touches the physical
-    connection) if a concurrent reset could otherwise corrupt or wedge
-    an in-flight read.
+    different threads -- this driver's own `poll_loop()` calls `read()`
+    continuously from its background polling thread while `POST /reset`
+    calls `reset()` from a request-handling thread, with no
+    synchronization at that layer. It's each driver's own responsibility
+    to serialize its hardware access internally (e.g. a lock around
+    whatever touches the physical connection) if a concurrent reset
+    could otherwise corrupt or wedge an in-flight read.
+
+    `start()`/`poll_loop()` are concrete, not abstract: `read()`'s
+    "non-blocking, call repeatedly" contract is identical for every
+    driver type, so the polling loop itself has nothing driver-specific
+    in it and every subclass gets it for free. Override only if some
+    future driver type genuinely needs something other than a plain
+    polling thread.
     """
 
     supports_reset = False
@@ -47,3 +58,22 @@ class LevelSensor:
 
     def close(self):
         pass
+
+    def start(self, stop_event, poll_interval_s, on_reading):
+        """Spawns this driver's own background thread running
+        `poll_loop()` (see server.py's `main()`, which calls this once
+        per configured sensor and otherwise leaves that thread's
+        lifecycle to the driver itself, same pattern as
+        `LevelSignal.start()`)."""
+        threading.Thread(target=self.poll_loop, args=(stop_event, poll_interval_s, on_reading), daemon=True).start()
+
+    def poll_loop(self, stop_event, poll_interval_s, on_reading):
+        """Repeatedly calls `read()` and passes each (reading_key,
+        distance_mm) pair it returns to `on_reading(reading_key,
+        distance_mm)` -- e.g. server.py's `_route_reading()`, which owns
+        deciding what a reading actually feeds, this loop just supplies
+        it with each one as it arrives."""
+        while not stop_event.is_set():
+            for reading_key, distance_mm in self.read().items():
+                on_reading(reading_key, distance_mm)
+            time.sleep(poll_interval_s)

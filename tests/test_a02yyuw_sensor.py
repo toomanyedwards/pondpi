@@ -212,3 +212,41 @@ def test_close_closes_serial_mode_and_power_controllers():
 
     sensor.close()
     assert closed == ["ser", "mode", "power"]
+
+
+def test_poll_loop_routes_each_reading_to_on_reading():
+    # poll_loop()/start() are inherited unchanged from LevelSensor
+    # (see sensors/base.py) -- exercised here through the concrete
+    # A02YYUWSensor, same as every other behavioral test in this file.
+    sensor = A02YYUWSensor(FakeSerial(_frame(0x01, 0x2C)), FakeModeController(), FakePowerController())
+    stop_event = threading.Event()
+    readings = []
+
+    thread = threading.Thread(
+        target=sensor.poll_loop,
+        args=(stop_event, 0.001, lambda key, value: readings.append((key, value))),
+    )
+    thread.start()
+
+    deadline = time.monotonic() + 1
+    while not readings and time.monotonic() < deadline:
+        time.sleep(0.005)
+    stop_event.set()
+    thread.join(timeout=1)
+
+    assert readings == [("raw", 0x012C)]
+
+
+def test_start_spawns_its_own_thread():
+    sensor = A02YYUWSensor(FakeSerial(_frame(0x01, 0x2C)), FakeModeController(), FakePowerController())
+    stop_event = threading.Event()
+    readings = []
+
+    sensor.start(stop_event, 0.001, lambda key, value: readings.append((key, value)))
+
+    deadline = time.monotonic() + 1
+    while not readings and time.monotonic() < deadline:
+        time.sleep(0.005)
+    stop_event.set()
+
+    assert readings == [("raw", 0x012C)]
