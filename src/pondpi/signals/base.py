@@ -35,9 +35,19 @@ class LevelSignal:
     it's initialized -- there's no separate `start()` to call, and no
     public loop-control API at all; server.py has no involvement in how
     it runs itself.
+
+    `reads_from_sensor` is a second, independent capability flag, same
+    pattern again: override it to True only for a signal type that
+    connects directly to a sensor (via its own `sensor`-naming param)
+    rather than reading another signal via `input:` (see SensorSignal,
+    the only type that sets it). signal_config.py dispatches on this
+    generically -- it has no notion of what params a `reads_from_sensor`
+    type actually needs beyond that; that type validates its own params
+    entirely and raises `ValueError` if something's wrong.
     """
 
     owns_read_loop = False
+    reads_from_sensor = False
 
     def __init__(self):
         self._lock = threading.Lock()

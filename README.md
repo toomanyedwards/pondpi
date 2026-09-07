@@ -704,26 +704,34 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 Every type except `sensor` also requires a top-level `input: <name>`,
 naming the signal (defined earlier in the file) whose output feeds it.
 
-A `sensor` signal must also set `params.unit` (e.g. `"cm"`) -- the unit
-to convert its sensor's canonical millimeter reading into, required
-since it's the boundary where a value enters the signal graph and
-nothing upstream can tell us that. Validated against
-`SensorSignal.UNIT_DIVISORS` (currently just `{"cm": 10.0}`), not any
-arbitrary string -- an unsupported unit fails config loading outright
-rather than silently mislabeling a number. Every other signal type
-derives its `unit` automatically from whichever signal its `input:`
-names, since none of them perform any unit conversion -- a rolling
-average of centimeters is still in centimeters -- and must not set
-`params.unit` itself (that raises a config error, since it would
-silently be ignored otherwise). This is reported on `/diag` and
+`sensor` is the one signal type with `LevelSignal.reads_from_sensor = True`
+(same capability-flag pattern as `owns_read_loop`, below) -- the only
+generic thing `signal_config.py` knows about it is that flag itself; it
+has no notion of `params.sensor`/`params.unit`/`params.mode` or what
+values are valid for them. All of that -- including validating
+`params.sensor` against the configured sensor names, and `params.unit`
+against `SensorSignal.UNIT_DIVISORS` (currently just `{"cm": 10.0}`) --
+happens inside `SensorSignal`'s own constructor, which raises if
+something's wrong; `signal_config.py` just wraps whatever it raises with
+file/signal-name context. `params.unit` (e.g. `"cm"`) is required, since
+it's the boundary where a value enters the signal graph and nothing
+upstream can tell us what unit to convert into -- an unsupported unit
+fails config loading outright rather than silently mislabeling a number.
+Every other signal type derives its `unit` automatically from whichever
+signal its `input:` names, since none of them perform any unit
+conversion -- a rolling average of centimeters is still in centimeters --
+and must not set `params.unit` itself (that raises a config error, since
+it would silently be ignored otherwise). This is reported on `/diag` and
 `/signals/<name>`; see those endpoints above.
 
 A `sensor` signal may also set `params.mode` -- `"raw"` (the default)
 or `"processed"`, picking which of the sensor's own named readings
 feeds it (see `LevelSensor.read()` in [Sensor drivers](#sensor-drivers)
 and the A02YYUW's two hardware modes in [Sensor
-notes](#sensor-notes)). Every other signal type derives `mode` from
-`input`, same as `unit`, and must not set it directly either.
+notes](#sensor-notes)), validated against `SensorSignal.VALID_MODES` --
+same story as `unit` above, `signal_config.py` doesn't know this rule
+exists. Every other signal type derives `mode` from `input`, same as
+`unit`, and must not set it directly either.
 Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/diag` were computed at the
