@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 from pondpi.commit_sha import read_commit_sha
 from pondpi.duration import format_duration
@@ -28,7 +28,6 @@ _signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since 
 _poll_threads = {}  # dict[sensor_name -> Thread running poll_sensor()]
 _polling_signal_threads = {}  # dict[sensor_name -> Thread running its primary signal's run_loop()]
 _reset_locks = {}  # dict[sensor_name -> Lock], so one sensor's reset never blocks another's
-_polling_interval_ms = None
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
 _default_sensor_name = None
 _commit_sha = read_commit_sha(Path.cwd())
@@ -38,11 +37,8 @@ _started_monotonic = time.monotonic()
 
 def _new_sensor_state():
     return {
-        "instantaneous_mm": None,
-        "processed_mm": None,
         "signals": {},
         "signal_names": [],
-        "emit_flags": {},
         "configs": {},
         "primary_name": None,
         "last_reading_monotonic": None,
@@ -50,7 +46,7 @@ def _new_sensor_state():
     }
 
 
-def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_interval_s):
+def poll_sensor(name, sensor, signals, configs, stop_event, poll_interval_s):
     """Sensor-agnostic polling loop for one named sensor: repeatedly
     calls `sensor.read()` and routes whichever named readings it
     returns into that sensor's own state slot. Each reading key (e.g.
@@ -95,10 +91,7 @@ def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_i
                 if results:
                     _state[name]["signals"].update(results)
                 if reading_key == "raw":
-                    _state[name]["instantaneous_mm"] = distance_mm
                     _state[name]["last_reading_monotonic"] = time.monotonic()
-                elif reading_key == "processed":
-                    _state[name]["processed_mm"] = distance_mm
 
         time.sleep(poll_interval_s)
 
@@ -119,9 +112,9 @@ def _signal_result(sensor_name, signal_name):
 
 def _signal_output(result, unit):
     """Converts one signal's cached result ({"value": mm, "at": ...,
-    **extra_state}) into its /level and /diag output shape ({"value":
-    cm, "unit": ..., "at": ..., **extra_state}). `unit` is that
-    signal's own configured/derived unit (see signal_config.py's
+    **extra_state}) into its /diag and /signals/<name> output shape
+    ({"value": cm, "unit": ..., "at": ..., **extra_state}). `unit` is
+    that signal's own configured/derived unit (see signal_config.py's
     `_config_summary()`) -- static per-signal metadata, not something
     recomputed every cycle, so it's passed in rather than read off
     `result`."""
@@ -205,67 +198,9 @@ def sensor_reset(name):
     return _reset_response(name)
 
 
-def _level_response(name, mode):
-    if mode == "processed":
-        with _state_lock:
-            processed_mm = _state[name]["processed_mm"]
-        if processed_mm is None:
-            return jsonify(error="no readings yet"), 503
-
-        return jsonify(
-            measure_name="level",
-            units="cm",
-            mode="processed",
-            distance_cm=round(processed_mm / 10.0, 1),
-        )
-
-    primary_name = _state[name]["primary_name"]
-    if primary_name is None:
-        return jsonify(error="no readings yet"), 503
-    primary_result = _signal_result(name, primary_name)
-    if primary_result is None:
-        return jsonify(error="no readings yet"), 503
-
-    signals = {}
-    for sname in _state[name]["signal_names"]:
-        if not _state[name]["emit_flags"].get(sname, True):
-            continue
-        result = primary_result if sname == primary_name else _signal_result(name, sname)
-        if result is None:
-            continue
-        unit = _state[name]["configs"][sname]["unit"]
-        signals[sname] = _signal_output(result, unit)["value"]
-
-    primary_unit = _state[name]["configs"][primary_name]["unit"]
-    return jsonify(
-        measure_name="level",
-        units="cm",
-        mode="raw",
-        polling_interval_ms=_polling_interval_ms,
-        primary_signal={"value": _signal_output(primary_result, primary_unit)["value"], "name": primary_name},
-        signals=signals,
-    )
-
-
-@app.route("/level")
-def level():
-    """Current reading from the default sensor. See GET
-    /sensors/<name>/level to target a specific non-default sensor."""
-    return _level_response(_default_sensor_name, request.args.get("mode", "raw"))
-
-
-@app.route("/sensors/<name>/level")
-def sensor_level(name):
-    if name not in _state:
-        return jsonify(error=f"unknown sensor '{name}'"), 404
-    return _level_response(name, request.args.get("mode", "raw"))
-
-
 def _diag_response(name):
     """Full config + live output for every one of this sensor's
-    configured signals, regardless of `emit` -- unlike /level's
-    `signals`, which only shows signals meant to be read as final
-    output."""
+    configured signals."""
     primary_name = _state[name]["primary_name"]
     if primary_name is None:
         return jsonify(error="no readings yet"), 503
@@ -353,7 +288,7 @@ def signal_diag(name):
 
 
 def main():
-    global _default_sensor_name, _polling_interval_ms
+    global _default_sensor_name
 
     parser = argparse.ArgumentParser(description="Multi-sensor water level HTTP server")
     parser.add_argument(
@@ -377,8 +312,6 @@ def main():
     )
     args = parser.parse_args()
 
-    _polling_interval_ms = args.polling_interval_ms
-
     sensor_configs, _default_sensor_name = load_sensors(args.sensors_config, simulate=args.simulate)
 
     stop_event = threading.Event()
@@ -388,7 +321,6 @@ def main():
 
         _state[name] = _new_sensor_state()
         _state[name]["signal_names"] = list(cfg["signals"])
-        _state[name]["emit_flags"] = cfg["emit_flags"]
         _state[name]["configs"] = cfg["configs"]
         _state[name]["primary_name"] = cfg["primary_name"]
 
@@ -403,7 +335,6 @@ def main():
                 cfg["driver"],
                 cfg["signals"],
                 cfg["configs"],
-                cfg["primary_name"],
                 stop_event,
                 args.polling_interval_ms / 1000,
             ),
