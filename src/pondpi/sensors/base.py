@@ -21,59 +21,95 @@ class LevelSensor:
     reports "raw" and "processed", corresponding to the sensor's two
     hardware modes, while a simpler sensor might only ever report one.
 
-    `supports_reset` is a capability flag: override it to True (and
-    implement `reset()`) only if the underlying hardware can actually be
-    power-cycled or otherwise reset in software. Callers must check it
-    before calling `reset()`.
+    A driver's background read thread -- calling `read()` repeatedly and
+    passing each reading to `on_reading` -- starts the moment it's
+    constructed (`__init__` calls it as its last step; see below).
+    There's no public `start()`/loop-control method: `reset()` is the
+    only way to make it stop and start a fresh one.
 
-    `read()` and `reset()` must be safe to call concurrently from
-    different threads -- this driver's own `poll_loop()` calls `read()`
-    continuously from its background polling thread while `POST /reset`
-    calls `reset()` from a request-handling thread, with no
+    `supports_reset` is a capability flag: override it to True (and
+    implement `reset_hardware()`) only if the underlying hardware can
+    actually be power-cycled or otherwise reset in software. Callers
+    must check it before calling `reset()`.
+
+    `read()` and `reset_hardware()` must be safe to call concurrently
+    from different threads -- this driver's own background thread calls
+    `read()` continuously while `POST /reset` calls `reset()` (which
+    calls `reset_hardware()`) from a request-handling thread, with no
     synchronization at that layer. It's each driver's own responsibility
     to serialize its hardware access internally (e.g. a lock around
     whatever touches the physical connection) if a concurrent reset
     could otherwise corrupt or wedge an in-flight read.
-
-    `start()`/`poll_loop()` are concrete, not abstract: `read()`'s
-    "non-blocking, call repeatedly" contract is identical for every
-    driver type, so the polling loop itself has nothing driver-specific
-    in it and every subclass gets it for free. Override only if some
-    future driver type genuinely needs something other than a plain
-    polling thread.
     """
 
     supports_reset = False
+
+    def __init__(self, on_reading, poll_interval_s):
+        """Every subclass must call this as the LAST line of its own
+        `__init__`, once all of its own state (serial connection, mode
+        controller, ...) is fully set up -- it immediately starts a
+        background thread that calls `self.read()`, so nothing it
+        depends on can still be uninitialized when that first call
+        happens. `on_reading(reading_key, distance_mm)` is called once
+        per reading `read()` produces -- e.g. sensor_config.py's
+        `_build_on_reading()`, which owns deciding what a reading
+        actually feeds; this class just supplies it with each one as it
+        arrives, staying fully unaware of signals."""
+        self._on_reading = on_reading
+        self._poll_interval_s = poll_interval_s
+        self._reading_lock = threading.Lock()
+        self._last_reading_monotonic = None
+        self._begin_polling()
 
     def read(self):
         """Returns a dict of {signal_name: distance_mm} for whichever
         signals produced a fresh valid reading since the last call, or
         an empty dict if nothing new is available this call. Must not
-        block waiting for a frame -- callers are expected to call this
-        repeatedly from their own polling loop."""
+        block waiting for a frame -- called repeatedly from this
+        driver's own background thread."""
+        raise NotImplementedError
+
+    def reset_hardware(self):
+        """Only implemented by `supports_reset = True` drivers: the
+        hardware-specific action of power-cycling (or otherwise
+        resetting) the physical sensor. Called by `reset()`, which also
+        restarts this driver's own read thread around it."""
         raise NotImplementedError
 
     def reset(self):
-        raise NotImplementedError
+        """Stops the current read thread and waits for it to actually
+        exit *before* power-cycling the hardware (`reset_hardware()`)
+        and starting a fresh thread -- so there's never a moment where
+        the old thread could still call `read()`/`_on_reading()`
+        against state we're in the middle of resetting."""
+        self._stop_event.set()
+        self._thread.join(timeout=self._poll_interval_s + 1)
+        self.reset_hardware()
+        with self._reading_lock:
+            self._last_reading_monotonic = None
+        self._begin_polling()
 
     def close(self):
         pass
 
-    def start(self, stop_event, poll_interval_s, on_reading):
-        """Spawns this driver's own background thread running
-        `poll_loop()` (see server.py's `main()`, which calls this once
-        per configured sensor and otherwise leaves that thread's
-        lifecycle to the driver itself, same pattern as
-        `LevelSignal.start()`)."""
-        threading.Thread(target=self.poll_loop, args=(stop_event, poll_interval_s, on_reading), daemon=True).start()
+    def last_reading_monotonic(self):
+        """`time.monotonic()` timestamp of this driver's last non-empty
+        `read()` result (any reading key, not just "raw"), or None
+        before its first -- used by /health's staleness check."""
+        with self._reading_lock:
+            return self._last_reading_monotonic
 
-    def poll_loop(self, stop_event, poll_interval_s, on_reading):
-        """Repeatedly calls `read()` and passes each (reading_key,
-        distance_mm) pair it returns to `on_reading(reading_key,
-        distance_mm)` -- e.g. server.py's `_route_reading()`, which owns
-        deciding what a reading actually feeds, this loop just supplies
-        it with each one as it arrives."""
-        while not stop_event.is_set():
-            for reading_key, distance_mm in self.read().items():
-                on_reading(reading_key, distance_mm)
-            time.sleep(poll_interval_s)
+    def _poll_loop(self):
+        while not self._stop_event.is_set():
+            readings = self.read()
+            if readings:
+                with self._reading_lock:
+                    self._last_reading_monotonic = time.monotonic()
+            for reading_key, distance_mm in readings.items():
+                self._on_reading(reading_key, distance_mm)
+            time.sleep(self._poll_interval_s)
+
+    def _begin_polling(self):
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()

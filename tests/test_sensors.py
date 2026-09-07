@@ -79,7 +79,10 @@ def test_discover_sensor_types_finds_a_directory_package_with_class_defined_in_i
     driver_dir.mkdir()
     (driver_dir / "__init__.py").write_text(
         "from pondpi.sensors.base import LevelSensor\n\n"
-        "class Widget(LevelSensor):\n    def read(self):\n        return {}\n\n"
+        "class Widget(LevelSensor):\n"
+        "    def __init__(self):\n"
+        "        super().__init__(on_reading=lambda k, v: None, poll_interval_s=1000)\n"
+        "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )
 
@@ -99,7 +102,10 @@ def test_discover_sensor_types_finds_a_directory_package_re_exporting_from_a_sub
     driver_dir.mkdir()
     (driver_dir / "driver.py").write_text(
         "from pondpi.sensors.base import LevelSensor\n\n"
-        "class Widget(LevelSensor):\n    def read(self):\n        return {}\n\n"
+        "class Widget(LevelSensor):\n"
+        "    def __init__(self):\n"
+        "        super().__init__(on_reading=lambda k, v: None, poll_interval_s=1000)\n"
+        "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )
     (driver_dir / "__init__.py").write_text("from .driver import Widget, create\n")

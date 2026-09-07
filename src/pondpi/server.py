@@ -1,5 +1,4 @@
 import argparse
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,15 +11,14 @@ from pondpi.sensor_config import load_sensors
 
 app = Flask(__name__)
 
-# Comfortably above the sensor's ~100ms response time and our 150ms default
+# Comfortably above the sensor's ~100ms response time and its own default
 # poll interval -- used to flag a sensor degraded in /health if no valid
-# "raw" reading has landed in this long. A separate, driver-owned threshold
-# of the same name governs each A02YYUW's own internal resync behavior (see
+# reading has landed in this long. A separate, driver-owned threshold of
+# the same name governs each A02YYUW's own internal resync behavior (see
 # sensors/a02yyuw_sensor.py) -- the two are conceptually distinct even
 # though they default to the same value.
 STALE_READING_THRESHOLD_S = 3.0
 
-_state_lock = threading.Lock()
 _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 
 _sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
@@ -33,70 +31,18 @@ _started_monotonic = time.monotonic()
 
 def _new_sensor_state():
     return {
-        "signals": {},
         "signal_names": [],
         "configs": {},
-        "last_reading_monotonic": None,
         "last_reset_at": None,
     }
 
 
-def _route_reading(name, signals, configs, reading_key, distance_mm):
-    """Routes one (reading_key, distance_mm) pair from a sensor's
-    read() -- e.g. "raw" or "processed", see LevelSensor.read() -- into
-    that sensor's own state slot. Each reading key only feeds the
-    signals rooted at that same `mode` (`configs[sname]["mode"]`, see
-    signal_config.py) -- a signal either reads that reading directly (a
-    `sensor`-type signal, config's `configs[name]` has no `"input"`) or
-    reads whatever its `input:`-named signal just computed this same
-    call (`configs[name]["input"]`, already resolved into `results`
-    since `signals`' iteration order is a valid dependency order).
-    Signals rooted at other modes keep their last-computed value
-    untouched -- results are merged into this sensor's state, not
-    replaced wholesale, since "raw"- and "processed"-rooted signals
-    update on different, independent cadences (see each signal's own
-    `at` timestamp on /diag and /signals/<name> to tell how fresh a
-    given one actually is).
-
-    A signal with `owns_read_loop = True` (currently just
-    RollingAverageSignal) is skipped here entirely -- it's fed by its
-    own dedicated thread instead (see LevelSignal.start()), sampling
-    its `input:` signal's cached output on its own pace rather than
-    being pushed a value on every one of this sensor's own readings.
-
-    Called once per (reading_key, distance_mm) pair from this sensor's
-    own background thread (see LevelSensor.start()/poll_loop(), and
-    server.py's `main()` which wires the two together)."""
-    at = datetime.now(timezone.utc).isoformat()
-    results = {}
-    for sname, signal in signals.items():
-        if signal.owns_read_loop:
-            continue
-        if configs[sname]["mode"] != reading_key:
-            continue
-        input_name = configs[sname].get("input")
-        value = distance_mm if input_name is None else results[input_name]["value"]
-        results[sname] = {"value": signal.add(value), "at": at, **signal.extra_state()}
-
-    with _state_lock:
-        if results:
-            _state[name]["signals"].update(results)
-        if reading_key == "raw":
-            _state[name]["last_reading_monotonic"] = time.monotonic()
-
-
 def _signal_result(sensor_name, signal_name):
-    """A signal's current {"value", "at", ...} result -- from its own
-    background-maintained cache if it owns a read loop (just
-    RollingAverageSignal today), or from _route_reading()'s shared
-    per-sensor cache otherwise. Returns None if there's no reading yet
-    either way."""
-    signal = _signal_objects[signal_name]
-    if signal.owns_read_loop:
-        return signal.current()
-
-    with _state_lock:
-        return _state[sensor_name]["signals"].get(signal_name)
+    """A signal's current {"value", "at", ...} result, straight from
+    its own cache -- every signal (owns_read_loop or not) maintains
+    this itself now (see LevelSignal.feed()/current()). Returns None
+    if there's no reading yet."""
+    return _signal_objects[signal_name].current()
 
 
 def _signal_output(result, unit):
@@ -116,8 +62,8 @@ def health():
     sensors_health = {}
     overall_ok = True
 
-    for name in _sensors:
-        last_reading_monotonic = _state[name]["last_reading_monotonic"]
+    for name, sensor in _sensors.items():
+        last_reading_monotonic = sensor.last_reading_monotonic()
         if last_reading_monotonic is None:
             last_reading_age_s = None
             stale = False
@@ -152,15 +98,20 @@ def health():
 
 
 def _reset_sensor(name, sensor):
-    """Power-cycles one sensor and records when. No locking needed here
-    -- LevelSensor implementations are responsible for their own
-    hardware-access safety (see sensors/base.py's docstring); server.py
-    just calls reset() and trusts it's safe to call concurrently with
-    that sensor's own poll_loop() thread."""
+    """Power-cycles one sensor (restarting its own read thread as part
+    of what `reset()` does -- see sensors/base.py) and records when,
+    then cascades: resets every signal rooted at this sensor too, since
+    accumulated signal state (a rolling window, an average) built from
+    readings around the time something looked wrong enough to warrant
+    a reset is suspect too. No locking needed for `last_reset_at` --
+    this is only ever written from a request-handling thread, and
+    Flask's dev server (what this deploys as) handles one request at a
+    time."""
     sensor.reset()
     reset_at = datetime.now(timezone.utc)
-    with _state_lock:
-        _state[name]["last_reset_at"] = reset_at
+    _state[name]["last_reset_at"] = reset_at
+    for signal_name in _state[name]["signal_names"]:
+        _signal_objects[signal_name].reset()
     return reset_at
 
 
@@ -292,12 +243,6 @@ def main():
         default=Path.cwd() / "config" / "sensors.yaml",
         help="path to the YAML file configuring sensors and their level-processing pipelines (default: config/sensors.yaml)",
     )
-    parser.add_argument(
-        "--polling-interval-ms",
-        type=int,
-        default=150,
-        help="how often to check every sensor for a new reading, in milliseconds (default: 150)",
-    )
     parser.add_argument("--host", default="0.0.0.0", help="address to bind the HTTP server to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8080, help="port to bind the HTTP server to (default: 8080)")
     parser.add_argument(
@@ -307,9 +252,12 @@ def main():
     )
     args = parser.parse_args()
 
+    # load_sensors() fully constructs and wires up every sensor and
+    # signal -- each one's own background read thread is already
+    # running by the time this returns. Nothing here touches threads at
+    # all; see sensors/base.py's and signals/base.py's __init__()s.
     sensor_configs = load_sensors(args.sensors_config, simulate=args.simulate)
 
-    stop_event = threading.Event()
     for name, cfg in sensor_configs.items():
         _sensors[name] = cfg["driver"]
 
@@ -321,27 +269,9 @@ def main():
             _signal_owner[signal_name] = name
             _signal_objects[signal_name] = signal_obj
 
-        def on_reading(reading_key, distance_mm, name=name, signals=cfg["signals"], configs=cfg["configs"]):
-            _route_reading(name, signals, configs, reading_key, distance_mm)
-
-        cfg["driver"].start(stop_event, args.polling_interval_ms / 1000, on_reading)
-
-        for signal_name, signal_obj in cfg["signals"].items():
-            if not signal_obj.owns_read_loop:
-                continue
-            input_name = cfg["configs"][signal_name]["input"]
-
-            def get_raw_value(sensor_name=name, input_name=input_name):
-                with _state_lock:
-                    result = _state[sensor_name]["signals"].get(input_name)
-                    return result["value"] if result else None
-
-            signal_obj.start(stop_event, get_raw_value)
-
     try:
         app.run(host=args.host, port=args.port)
     finally:
-        stop_event.set()
         for sensor in _sensors.values():
             sensor.close()
 

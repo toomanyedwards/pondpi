@@ -9,15 +9,19 @@ class ExponentialSmoothingSignal(LevelSignal):
     weighted down forever."""
 
     def __init__(self, alpha):
+        super().__init__()
         self._alpha = alpha
-        self._value = None
+        self._ema_value = None
 
     def add(self, raw_value):
-        if self._value is None:
-            self._value = raw_value
+        if self._ema_value is None:
+            self._ema_value = raw_value
         else:
-            self._value = self._alpha * raw_value + (1 - self._alpha) * self._value
-        return self._value
+            self._ema_value = self._alpha * raw_value + (1 - self._alpha) * self._ema_value
+        return self._ema_value
 
     def extra_state(self):
         return {"alpha": self._alpha}
+
+    def _reset_state(self):
+        self._ema_value = None
