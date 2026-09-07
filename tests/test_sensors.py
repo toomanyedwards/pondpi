@@ -12,16 +12,15 @@ def test_discover_sensor_types_finds_all_built_ins():
 
 
 class _StubSensor(LevelSensor):
-    """Minimal concrete LevelSensor -- never produces a reading on its
-    own (read() always returns {}, so its background thread never
-    touches last_reading_monotonic), letting tests drive
-    is_healthy()/last_reading_monotonic() directly without racing that
-    thread. A small poll_interval_s keeps reset()'s thread-join fast."""
+    """Minimal concrete LevelSensor -- no polling loop of its own (the
+    base class has no notion of one), so tests drive
+    is_healthy()/last_reading_monotonic() directly with no thread to
+    race at all."""
 
     def __init__(self, stale_threshold_s=None):
         if stale_threshold_s is not None:
             self.STALE_READING_THRESHOLD_S = stale_threshold_s
-        super().__init__(on_reading=lambda k, v: None, poll_interval_s=0.01)
+        super().__init__()
 
     def read(self):
         return {}
@@ -139,8 +138,6 @@ def test_discover_sensor_types_finds_a_directory_package_with_class_defined_in_i
     (driver_dir / "__init__.py").write_text(
         "from pondpi.sensors.base import LevelSensor\n\n"
         "class Widget(LevelSensor):\n"
-        "    def __init__(self):\n"
-        "        super().__init__(on_reading=lambda k, v: None, poll_interval_s=1000)\n"
         "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )
@@ -162,8 +159,6 @@ def test_discover_sensor_types_finds_a_directory_package_re_exporting_from_a_sub
     (driver_dir / "driver.py").write_text(
         "from pondpi.sensors.base import LevelSensor\n\n"
         "class Widget(LevelSensor):\n"
-        "    def __init__(self):\n"
-        "        super().__init__(on_reading=lambda k, v: None, poll_interval_s=1000)\n"
         "    def read(self):\n        return {}\n\n"
         "def create(params, simulate):\n    return Widget()\n"
     )
