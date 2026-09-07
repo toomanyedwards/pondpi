@@ -9,19 +9,28 @@ sensor's current reading over a small HTTP API.
 
 Each configured sensor is driven by its own `LevelSensor` driver instance
 (see [Sensor drivers](#sensor-drivers) below) polled on its own background
-thread. A driver's readings are run through that sensor's own configured
-`LevelSignal` instances (see [Signal processing](#signal-processing));
-a Flask server exposes every sensor's output on `GET /level` (the
-configured *default* sensor) and `GET /sensors/<name>/level` (any sensor,
-by name).
+thread, `poll_sensor()`. A driver's readings are pushed through that
+sensor's own configured `LevelSignal` instances (see [Signal
+processing](#signal-processing)) as they arrive -- except the one signal
+marked `primary` (always `type: polling_rolling_average`), which instead
+owns a *second* dedicated background thread that samples its own `input:`
+signal's cached output on its own independent schedule, rather than being
+pushed a value on every one of `poll_sensor()`'s much faster ticks (see
+[Signal processing](#signal-processing) for why). A Flask server exposes
+every sensor's output on `GET /level` (the configured *default* sensor)
+and `GET /sensors/<name>/level` (any sensor, by name).
 
 ```
 ┌────────────────┐  read()  ┌──────────────────┐  add()  ┌────────────────────────────┐
-│ LevelSensor      │ ───────>│ poll_sensor()      │───────> │ that sensor's configured     │
-│ driver (sensors/)│         │ (one thread/sensor)│         │ LevelSignal instances        │
+│ LevelSensor      │ ───────>│ poll_sensor()      │───────> │ every other configured       │
+│ driver (sensors/)│         │ (one thread/sensor)│         │ LevelSignal instance         │
 └────────────────┘         └──────────┬─────────┘         └──────────────┬─────────────┘
         ▲ one instance per                │ writes that sensor's own state              │
         │ config/sensors.yaml entry       v                                            v
+        │                     ┌──────────────────────┐  current()                       │
+        │                     │ primary signal's own  │ ────────────────────────────────>│
+        │                     │ 2nd background thread │  (samples its input: signal's     │
+        │                     └──────────────────────┘   cached value on its own timer)  │
         └──────────────────────  Flask app: GET /level, GET /sensors, GET /sensors/<name>/level,
                                   GET /health, GET /diag, POST /reset, GET /signals,
                                   GET /signals/<name>, GET /signals/<name>/diag
@@ -574,12 +583,13 @@ longer wall-clock span than it would with continuous polling -- at the
 defaults, the raw pipeline only gets fresh samples during ~86% of
 wall-clock time (9s of `raw` per 10s cycle, minus `MODE_SETTLE_S` lost
 right after switching back into it). `polling_rolling_avg` (`type:
-polling_rolling_average`) sidesteps this: its `poll_interval_s` gates
-on real elapsed time between *accepted* samples rather than a raw
-sample count assumed to arrive at a fixed poll rate, so `window_size:
-60` at `poll_interval_s: 1` stays a genuine ~60s window regardless of
-how the raw pipeline's duty cycle drifts -- see [Signal
-processing](#signal-processing).
+polling_rolling_average`) sidesteps this: it owns its own background
+thread (see [Signal processing](#signal-processing)) that samples its
+`input:` signal's current cached value once every `poll_interval_s` on
+its own timer, rather than being pushed a new one on every one of
+`poll_sensor()`'s much faster ticks, so `window_size: 60` at
+`poll_interval_s: 1` stays a genuine ~60s window regardless of how the
+raw pipeline's duty cycle drifts.
 
 ### Power pin: software-triggered reset
 
@@ -636,7 +646,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 | `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
-| `polling_rolling_average` | `window_size`, `poll_interval_s` | Like `rolling_average`, but only admits a new sample into the window once `poll_interval_s` has elapsed since the last one it accepted -- calls in between just return the current average unchanged. `window_size * poll_interval_s` is the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
+| `polling_rolling_average` | `window_size`, `poll_interval_s` | Like `rolling_average`, but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_s`, on its own timer. `window_size * poll_interval_s` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. Exactly one signal per sensor -- the `primary` one -- must be this type, since `/health` and `/level`'s default view are built around its own background-sampling cadence (see `LevelSignal.owns_read_loop`). |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,
@@ -662,9 +672,10 @@ Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/level` or `/diag` were
 computed at the same moment. Exactly one signal per sensor is marked
-`primary: true`, and it must be rooted at `mode: "raw"` -- /level's
-default view and /health's staleness check are both built around that
-pipeline's cadence specifically.
+`primary: true`, and it must be `type: polling_rolling_average` (the
+one type with `owns_read_loop = True`) -- /level's default view and
+/health's staleness check are both built around that signal's own
+background-sampling cadence specifically.
 
 Every signal's `/diag`/`/signals/<name>` output also includes `at` — an
 ISO 8601 UTC timestamp of when that signal's `value` was last computed,
@@ -736,17 +747,15 @@ notes](#sensor-notes)).
 
 Exactly one signal rooted at each sensor must be marked `primary: true`.
 Its output becomes `primary_signal` in that sensor's `/level`, and it's
-also reachable directly at `/signals/<name>` (see above) — **the
-deployed Home Assistant "Pond Level Rolling Avg" sensor reads it that
-way**, a `rest` sensor in Home Assistant's `configuration.yaml` polling
-`http://<pi-host>:8080/signals/polling_rolling_avg` every 60s via
-`value_json.value`, so renaming or repurposing the default sensor's
-`primary` signal means updating that HA sensor's `resource`/
+also reachable directly at `/signals/<name>` (see above). **The deployed
+Home Assistant integration reads `pond_main_sensor_raw` and
+`pond_main_sensor_processed` directly** -- two `rest` sensors in Home
+Assistant's `configuration.yaml`, each polling
+`http://<pi-host>:8080/signals/<name>` every 60s via `value_json.value`
+-- rather than `primary_signal`, so renaming either of those two specific
+signals means updating the matching HA sensor's `resource`/
 `value_template` too. `signals.pond_main_sensor_raw` is unaffected by
-other signals — it's always the raw last-valid reading — and is what
-`sensor.pond_level_sensor_raw` reads (via
-`http://<pi-host>:8080/signals/pond_main_sensor_raw`'s own
-`value_json.value`).
+other signals — it's always the raw last-valid reading.
 
 Any signal can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —

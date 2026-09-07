@@ -26,11 +26,12 @@ def test_loads_valid_config(tmp_path):
             params:
               window_size: 5
           - name: rolling_avg
-            type: rolling_average
+            type: polling_rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 40
+              poll_interval_s: 1
         """,
     )
 
@@ -68,7 +69,6 @@ def test_emit_false_is_respected(tmp_path):
         signals:
           - name: instantaneous_raw
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
@@ -78,12 +78,19 @@ def test_emit_false_is_respected(tmp_path):
             emit: false
             params:
               window_size: 5
+          - name: rolling_avg
+            type: polling_rolling_average
+            input: rolling_median5
+            primary: true
+            params:
+              window_size: 40
+              poll_interval_s: 1
         """,
     )
 
     group = load_signals(path, {"pond_main"})["pond_main"]
 
-    assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": False}
+    assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": False, "rolling_avg": True}
     assert group["configs"]["rolling_median5"]["emit"] is False
 
 
@@ -94,30 +101,37 @@ def test_signals_grouped_independently_per_sensor(tmp_path):
         signals:
           - name: pond_raw
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: pond_avg
+            type: polling_rolling_average
+            input: pond_raw
+            primary: true
+            params:
+              window_size: 2
+              poll_interval_s: 1
           - name: barrel_raw
             type: sensor
-            primary: true
             params:
               sensor: rain_barrel
               unit: cm
-          - name: pond_smoothed
-            type: rolling_average
-            input: pond_raw
+          - name: barrel_avg
+            type: polling_rolling_average
+            input: barrel_raw
+            primary: true
             params:
               window_size: 2
+              poll_interval_s: 1
         """,
     )
 
     grouped = load_signals(path, {"pond_main", "rain_barrel"})
 
-    assert set(grouped["pond_main"]["signals"]) == {"pond_raw", "pond_smoothed"}
-    assert set(grouped["rain_barrel"]["signals"]) == {"barrel_raw"}
-    assert grouped["pond_main"]["primary_name"] == "pond_raw"
-    assert grouped["rain_barrel"]["primary_name"] == "barrel_raw"
+    assert set(grouped["pond_main"]["signals"]) == {"pond_raw", "pond_avg"}
+    assert set(grouped["rain_barrel"]["signals"]) == {"barrel_raw", "barrel_avg"}
+    assert grouped["pond_main"]["primary_name"] == "pond_avg"
+    assert grouped["rain_barrel"]["primary_name"] == "barrel_avg"
 
 
 def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
@@ -136,11 +150,12 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
             params:
               window_size: 3
           - name: rolling_avg
-            type: rolling_average
+            type: polling_rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 2
+              poll_interval_s: 1
         """,
     )
 
@@ -331,11 +346,12 @@ def test_downstream_signal_derives_unit_from_input(tmp_path):
             params:
               window_size: 3
           - name: rolling_avg
-            type: rolling_average
+            type: polling_rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 2
+              poll_interval_s: 1
         """,
     )
 
@@ -355,10 +371,16 @@ def test_sensor_mode_defaults_to_raw(tmp_path):
         signals:
           - name: a
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: b
+            type: polling_rolling_average
+            input: a
+            primary: true
+            params:
+              window_size: 2
+              poll_interval_s: 1
         """,
     )
 
@@ -373,7 +395,6 @@ def test_sensor_mode_processed_is_respected(tmp_path):
         signals:
           - name: a
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
@@ -383,6 +404,13 @@ def test_sensor_mode_processed_is_respected(tmp_path):
               sensor: pond_main
               unit: cm
               mode: processed
+          - name: c
+            type: polling_rolling_average
+            input: a
+            primary: true
+            params:
+              window_size: 2
+              poll_interval_s: 1
         """,
     )
 
@@ -440,7 +468,6 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
         signals:
           - name: a
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
@@ -455,6 +482,13 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
             input: b
             params:
               window_size: 2
+          - name: d
+            type: polling_rolling_average
+            input: a
+            primary: true
+            params:
+              window_size: 2
+              poll_interval_s: 1
         """,
     )
 
@@ -462,7 +496,7 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
     assert group["configs"]["c"]["mode"] == "processed"
 
 
-def test_primary_rooted_at_processed_mode_raises(tmp_path):
+def test_primary_not_owning_a_read_loop_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
@@ -473,11 +507,10 @@ def test_primary_rooted_at_processed_mode_raises(tmp_path):
             params:
               sensor: pond_main
               unit: cm
-              mode: processed
         """,
     )
 
-    with pytest.raises(ValueError, match="primary signal 'a' must be rooted at mode 'raw'"):
+    with pytest.raises(ValueError, match="primary signal 'a' must be a type that owns its own read loop"):
         load_signals(path, {"pond_main"})
 
 
@@ -488,10 +521,16 @@ def test_sensor_with_no_signals_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            primary: true
             params:
               sensor: pond_main
               unit: cm
+          - name: b
+            type: polling_rolling_average
+            input: a
+            primary: true
+            params:
+              window_size: 2
+              poll_interval_s: 1
         """,
     )
 

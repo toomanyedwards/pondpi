@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -51,30 +52,84 @@ def test_rolling_average_signal_extra_state():
     assert signal.extra_state() == {"window_size": 2, "samples_in_window": 1}
 
 
-def test_polling_rolling_average_signal_accepts_the_first_sample_immediately():
-    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
-    assert signal.add(10) == 10
+def _run_briefly(signal, get_raw_value, timeout_s=1, until=None):
+    """Starts signal.run_loop() in a background thread, waits until
+    `until(signal)` is true (default: signal.current() is populated) or
+    `timeout_s` elapses, then stops the thread and joins it."""
+    if until is None:
+        until = lambda s: s.current() is not None
+
+    stop_event = threading.Event()
+    thread = threading.Thread(target=signal.run_loop, args=(stop_event, get_raw_value))
+    thread.start()
+
+    deadline = time.monotonic() + timeout_s
+    while not until(signal) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    stop_event.set()
+    thread.join(timeout=1)
 
 
-def test_polling_rolling_average_signal_ignores_samples_within_the_poll_interval():
-    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
-    signal.add(10)
-    # Still within poll_interval_s of the first accepted sample -- ignored,
-    # average returned unchanged rather than folded into the window.
-    assert signal.add(9999) == 10
+def _fixed_getter(value):
+    return lambda: value
 
 
-def test_polling_rolling_average_signal_accepts_a_sample_once_the_interval_elapses():
-    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=0.05)
-    signal.add(10)
-    time.sleep(0.06)
-    assert signal.add(20) == 15  # (10 + 20) / 2
+def _queue_getter(values):
+    queue = list(values)
+
+    def get():
+        return queue.pop(0) if queue else None
+
+    return get
 
 
-def test_polling_rolling_average_signal_extra_state():
-    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
-    signal.add(10)
-    assert signal.extra_state() == {"window_size": 2, "samples_in_window": 1, "poll_interval_s": 100}
+def test_polling_rolling_average_signal_current_is_none_before_first_reading():
+    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+    assert signal.current() is None
+
+
+def test_polling_rolling_average_signal_run_loop_populates_current():
+    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+    _run_briefly(signal, _fixed_getter(100))
+
+    result = signal.current()
+    assert result["value"] == 100
+    assert result["window_size"] == 5
+    assert result["poll_interval_s"] == 0.01
+    assert "at" in result
+
+
+def test_polling_rolling_average_signal_run_loop_averages_over_its_window():
+    signal = PollingRollingAverageSignal(window_size=3, poll_interval_s=0.01)
+    _run_briefly(
+        signal,
+        _queue_getter([10, 20, 30] + [30] * 100),
+        until=lambda s: s.current() is not None and s.current()["samples_in_window"] == 3,
+    )
+
+    result = signal.current()
+    assert result["value"] == 20  # (10 + 20 + 30) / 3
+    assert result["samples_in_window"] == 3
+
+
+def test_polling_rolling_average_signal_ignores_a_none_reading():
+    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+    _run_briefly(signal, _queue_getter([None, None, 100] + [100] * 100))
+
+    assert signal.current()["value"] == 100
+
+
+def test_polling_rolling_average_signal_last_reading_monotonic_is_none_before_first_reading():
+    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+    assert signal.last_reading_monotonic() is None
+
+
+def test_polling_rolling_average_signal_last_reading_monotonic_updates_after_a_reading():
+    signal = PollingRollingAverageSignal(window_size=5, poll_interval_s=0.01)
+    _run_briefly(signal, _fixed_getter(100))
+
+    assert signal.last_reading_monotonic() is not None
 
 
 def test_exponential_smoothing_signal_first_reading_passes_through():

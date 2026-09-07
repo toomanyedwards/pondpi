@@ -13,11 +13,12 @@ def load_signals(path, sensor_names):
     `sensor_names` is the set of already-configured sensor names (from
     sensor_config.py) -- every `type: sensor` signal must name one of
     them via `params.sensor`, since `sensor` is the only signal type
-    that reads directly from a sensor. Every other signal type instead names
-    another, earlier-defined signal via a top-level `input:` key,
+    that reads directly from a sensor. Every other signal type instead
+    names another, earlier-defined signal via a top-level `input:` key,
     reading *that* signal's live output rather than a sensor's raw
     reading -- this is how sequential composition (e.g.
-    median-then-average) is expressed, without a dedicated "chain" type.
+    median-then-average) is expressed, without a dedicated "chain"
+    type.
 
     Every `type: sensor` signal must also set `params.unit` (e.g.
     "cm") -- required, since it's the boundary where a physical
@@ -28,23 +29,22 @@ def load_signals(path, sensor_names):
     still in centimeters), and must not set `params.unit` itself.
 
     A `type: sensor` signal may also set `params.mode` ("raw", the
-    default, or "processed") -- which of that sensor's named readings
-    (see LevelSensor.read()) feeds it. Every other signal type derives
-    its `mode` from `input`, same as `unit`, and must not set
-    `params.mode` itself. The sensor rooted at `mode: "processed"`
-    updates on a different poll cadence than one rooted at "raw" (see
-    poll_sensor() in server.py), so a sensor's `primary` signal must be
-    rooted at "raw" -- /health's staleness check and /level's default
-    view are both built around that cadence.
+    default, or "processed") -- which of that sensor's two hardware
+    readings (see LevelSensor.read()) feeds it. Every other signal type
+    derives its `mode` from `input`, same as `unit`, and must not set
+    `params.mode` itself.
 
     Returns dict[sensor_name -> {"signals", "primary_name",
     "emit_flags", "configs"}], one entry per name in `sensor_names`
     (even if that sensor ends up with zero signals -- see build_signals,
     which raises for that case rather than silently omitting it).
     Within each group: exactly one signal must be marked `primary:
-    true`; any signal may set `emit: false` (default true) to keep it
-    out of /level's `signals` section while still showing up in full on
-    /diag.
+    true`, and it must be a type that owns its own read loop (see
+    LevelSignal.owns_read_loop and PollingRollingAverageSignal) --
+    /health's staleness check and /level's default view are both built
+    around that signal's own background-sampling cadence. Any signal
+    may set `emit: false` (default true) to keep it out of /level's
+    `signals` section while still showing up in full on /diag.
     """
     with open(path) as f:
         config = yaml.safe_load(f)
@@ -155,11 +155,12 @@ def build_signals(entries, sensor_names, path):
             raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with params.sensor: {sensor})")
         if group["primary_name"] is None:
             raise ValueError(f"{path}: sensor '{sensor}': exactly one signal must be marked 'primary: true'")
-        primary_mode = mode_by_name[group["primary_name"]]
-        if primary_mode != "raw":
+        primary_signal = instances[group["primary_name"]]
+        if not primary_signal.owns_read_loop:
             raise ValueError(
-                f"{path}: sensor '{sensor}': primary signal '{group['primary_name']}' must be rooted at mode "
-                f"'raw' (got '{primary_mode}')"
+                f"{path}: sensor '{sensor}': primary signal '{group['primary_name']}' must be a type that owns "
+                "its own read loop (e.g. 'polling_rolling_average'), since /health and /level's default view "
+                "are built around its background-sampling cadence"
             )
 
     return grouped
