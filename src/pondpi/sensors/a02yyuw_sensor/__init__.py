@@ -11,6 +11,10 @@ from . import read_sensor, sensor_mode, sensor_power
 # passes with no valid frame, read_frame() has likely lost byte
 # alignment with the sensor's stream and isn't going to resync on its
 # own. A plain input-buffer flush is enough to force a fresh resync.
+# Conceptually distinct from LevelSensor.STALE_READING_THRESHOLD_S (used
+# by is_healthy(), server.py's /health) even though they default to the
+# same value -- this one governs this driver's own internal resync,
+# nothing to do with what counts as healthy externally.
 STALE_READING_THRESHOLD_S = 3.0
 
 # This driver spends most of its time with the sensor in "raw" mode (so
@@ -28,6 +32,12 @@ PROCESSED_MODE_DURATION_S = 1.0
 # stale reading from the previous mode is never mistaken for the new
 # one.
 MODE_SETTLE_S = 0.4
+
+# How often this driver's own background thread calls read() -- see
+# LevelSensor.__init__(). Comfortably above the sensor's ~100ms response
+# time, so every poll is an independent look at the water surface rather
+# than re-reading the same frame multiple times in a row.
+DEFAULT_POLL_INTERVAL_S = 0.15
 
 
 class A02YYUWSensor(LevelSensor):
@@ -47,16 +57,18 @@ class A02YYUWSensor(LevelSensor):
     `read()` then only ever reports that one key.
 
     `read()` does at most one serial read per call and never blocks
-    waiting for a frame -- callers must call it repeatedly from their
-    own polling loop.
+    waiting for a frame -- called repeatedly from this driver's own
+    background thread (started automatically at construction; see
+    `LevelSensor.__init__()`).
 
-    `read()` and `reset()` are safe to call concurrently from different
-    threads (server.py does exactly that: a background thread calls
-    `read()` continuously while `POST /reset` calls `reset()` from a
-    request-handling thread) -- internally serialized via
-    `_hardware_lock`, since power-cycling mid-read could otherwise wedge
-    the UART. Callers never need to know about this; it's this driver's
-    own responsibility to be safe under that usage pattern.
+    `read()` and `reset_hardware()` are safe to call concurrently from
+    different threads (this driver's own background thread calls
+    `read()` continuously while `POST /reset` calls `reset()`, which
+    calls `reset_hardware()`, from a request-handling thread) --
+    internally serialized via `_hardware_lock`, since power-cycling
+    mid-read could otherwise wedge the UART. Callers never need to know
+    about this; it's this driver's own responsibility to be safe under
+    that usage pattern.
     """
 
     supports_reset = True
@@ -66,6 +78,8 @@ class A02YYUWSensor(LevelSensor):
         ser,
         mode_controller,
         power_controller,
+        on_reading,
+        poll_interval_s=DEFAULT_POLL_INTERVAL_S,
         stale_threshold_s=STALE_READING_THRESHOLD_S,
         mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
         processed_mode_duration_s=PROCESSED_MODE_DURATION_S,
@@ -91,6 +105,11 @@ class A02YYUWSensor(LevelSensor):
         # frames right after a real mid-run mode switch are.
         self._last_mode_switch_monotonic = time.monotonic() - mode_settle_s
         self._cycle_start_monotonic = time.monotonic()
+
+        # Must be last: this starts a background thread that immediately
+        # begins calling self.read(), so every attribute above must
+        # already be set.
+        super().__init__(on_reading, poll_interval_s)
 
     def read(self):
         with self._hardware_lock:
@@ -140,7 +159,7 @@ class A02YYUWSensor(LevelSensor):
 
             return {}
 
-    def reset(self):
+    def reset_hardware(self):
         with self._hardware_lock:
             self._power_controller.reset()
 
@@ -150,7 +169,7 @@ class A02YYUWSensor(LevelSensor):
         self._power_controller.close()
 
 
-def create(params, simulate):
+def create(params, simulate, on_reading):
     """Builds an A02YYUWSensor from a sensor config entry's `params`
     dict -- see discover_sensor_types() for why driver types need a
     factory function rather than being constructed directly.
@@ -163,6 +182,8 @@ def create(params, simulate):
       see A02YYUWSensor) -- governs this driver's own mode-cycling
       logic rather than hardware wiring, so it still applies under
       `simulate` too.
+      poll_interval_ms (default 150) -- how often this driver's own
+      background thread calls read().
     """
     read_mode = params.get("read_mode")
     if read_mode is not None and read_mode not in (sensor_mode.RAW, sensor_mode.PROCESSED):
@@ -180,4 +201,8 @@ def create(params, simulate):
         mode_controller = sensor_mode.GpioModeController(params.get("mode_select_pin", 25))
         power_controller = sensor_power.GpioPowerController(params.get("power_pin", 24))
 
-    return A02YYUWSensor(ser, mode_controller, power_controller, read_mode=read_mode)
+    poll_interval_s = params.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_S * 1000) / 1000
+
+    return A02YYUWSensor(
+        ser, mode_controller, power_controller, on_reading, poll_interval_s=poll_interval_s, read_mode=read_mode
+    )

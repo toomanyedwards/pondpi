@@ -39,12 +39,14 @@ def load_signals(path, sensor_names):
     with zero signals -- see build_signals, which raises for that case
     rather than silently omitting it). Any signal type may set
     `owns_read_loop = True` as a class attribute (see
-    LevelSignal.owns_read_loop and RollingAverageSignal) -- server.py's
-    `main()` spawns one dedicated background thread per such signal in
-    a sensor's group, whatever their number (zero, one, or more), no
-    config marker needed. Any signal may set `emit: false` (default
-    true) to keep it out of /level's `signals` section while still
-    showing up in full on /diag.
+    LevelSignal.owns_read_loop and RollingAverageSignal) -- such a type
+    is constructed with a `get_raw_value` callable (built here, closing
+    over its already-constructed `input:` signal) and starts its own
+    background thread the moment it's constructed, whatever their
+    number per sensor's group (zero, one, or more), no config marker
+    needed. Any signal may set `emit: false` (default true) to keep it
+    out of /level's `signals` section while still showing up in full on
+    /diag.
     """
     with open(path) as f:
         config = yaml.safe_load(f)
@@ -127,8 +129,22 @@ def build_signals(entries, sensor_names, path):
             unit_by_name[name] = unit_by_name[input_name]
             mode_by_name[name] = mode_by_name[input_name]
 
+        signal_class = signal_types[signal_type]
         try:
-            instances[name] = signal_types[signal_type](**params)
+            if signal_class.owns_read_loop:
+                # input_name is guaranteed set and already constructed --
+                # validated above (non-"sensor" types require `input:`
+                # naming an earlier-defined signal, and instances only
+                # ever gains an entry for names already fully built).
+                input_instance = instances[input_name]
+
+                def get_raw_value(input_instance=input_instance):
+                    result = input_instance.current()
+                    return result["value"] if result else None
+
+                instances[name] = signal_class(**params, get_raw_value=get_raw_value)
+            else:
+                instances[name] = signal_class(**params)
         except TypeError as e:
             raise ValueError(f"{path}: signal '{name}' has invalid params for type '{signal_type}': {e}") from e
 

@@ -1,28 +1,45 @@
+import threading
+from datetime import datetime, timezone
+
+
 class LevelSignal:
     """Base class for a level signal.
 
     Most subclasses take raw sensor readings one at a time via `add()`
-    and return this signal's current output -- composable via `input:`
-    in config/sensors.yaml, fed by each sensor's own background read
-    loop (see LevelSensor.poll_loop()) routed through server.py's
-    `_route_reading()`. `extra_state()` surfaces any signal-specific
-    metadata (window sizes, sample counts, ...) for the /level response.
-    Signals are unit-agnostic — they don't know or care whether the
-    values they're passed are mm, cm, or anything else; unit conversion
-    happens at the HTTP layer in server.py.
+    (pure computation, no caching) -- composable via `input:` in
+    config/sensors.yaml, fed by the sensor-to-signal wiring built in
+    sensor_config.py, which calls `feed()` (not `add()` directly) as
+    each reading arrives. Signals are unit-agnostic — they don't know
+    or care whether the values they're passed are mm, cm, or anything
+    else; unit conversion happens at the HTTP layer in server.py.
+
+    `feed()`/`current()` are concrete on this base class and shared by
+    every signal type, `owns_read_loop` or not: `feed()` computes (via
+    `add()`) and thread-safely caches this signal's new output;
+    `current()` reads that cache back as `{"value", "at",
+    **extra_state()}`, or None before the first `feed()`. This is what
+    lets a signal like RollingAverageSignal read its `input:` signal's
+    live value directly (`input_signal.current()`), with no shared
+    state in server.py mediating it.
 
     `owns_read_loop` is a capability flag, same pattern as
     `LevelSensor.supports_reset`: override it to True only for a signal
     type that maintains its own background thread instead of being fed
-    via `add()` from each sensor's own read loop (see RollingAverageSignal,
-    which samples its `input:` signal's cached value on its own
-    schedule rather than being pushed a new one every poll tick).
-    server.py's `main()` calls `start()` once per owns_read_loop signal
-    in a sensor's group -- any number, no config marker needed -- and
-    otherwise has no involvement in how that signal runs itself.
+    via `feed()` from the sensor's own read loop (see
+    RollingAverageSignal, which samples its `input:` signal's `current()`
+    on its own schedule rather than being pushed a new one every poll
+    tick). Such a type constructs and starts its own thread the moment
+    it's initialized -- there's no separate `start()` to call, and no
+    public loop-control API at all; server.py has no involvement in how
+    it runs itself.
     """
 
     owns_read_loop = False
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._value = None
+        self._at = None
 
     def add(self, raw_value):
         raise NotImplementedError
@@ -30,13 +47,42 @@ class LevelSignal:
     def extra_state(self):
         return {}
 
-    def start(self, stop_event, get_raw_value):
-        """Only implemented by `owns_read_loop = True` types: spawns
-        and owns whatever background thread this signal needs to keep
-        itself updated. `get_raw_value` is a zero-arg callable returning
-        this signal's `input:` signal's current cached value (in mm),
-        or None if it isn't ready yet -- supplied by server.py, which
-        owns the shared per-sensor state it reads from. `stop_event` is
-        shared with every other background thread in the process; this
-        signal's own thread must exit once it's set."""
-        raise NotImplementedError
+    def feed(self, raw_value):
+        """Computes this signal's new output via `add()` and caches it
+        (thread-safely) as its current value -- the uniform entry point
+        anything driving this signal calls, whether that's the sensor's
+        own read loop (via sensor_config.py's wiring) or, for an
+        `owns_read_loop` signal, its own background thread. Returns the
+        raw computed value, so a downstream `input:`-chained signal can
+        be fed the same call's result without an extra `current()`
+        round trip."""
+        value = self.add(raw_value)
+        with self._lock:
+            self._value = value
+            self._at = datetime.now(timezone.utc).isoformat()
+        return value
+
+    def current(self):
+        """Thread-safe snapshot of this signal's current output --
+        `{"value", "at", **extra_state()}` -- or None before its first
+        `feed()`."""
+        with self._lock:
+            if self._value is None:
+                return None
+            return {"value": self._value, "at": self._at, **self.extra_state()}
+
+    def reset(self):
+        """Clears this signal back to its just-constructed state: no
+        cached current() value, and (via `_reset_state()`) any
+        subclass-specific accumulator (a rolling window, an EMA) reset
+        to empty. An `owns_read_loop` type additionally restarts its
+        own background thread -- see RollingAverageSignal.reset()."""
+        with self._lock:
+            self._value = None
+            self._at = None
+        self._reset_state()
+
+    def _reset_state(self):
+        """Hook for a subclass holding its own accumulator to clear it
+        on reset(). No-op by default, for types with no state beyond
+        the cached current() value the base class already owns."""

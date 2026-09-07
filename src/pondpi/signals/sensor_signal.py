@@ -13,10 +13,12 @@ class SensorSignal(LevelSignal):
     LevelSensor driver's `read()` can report (see sensors/base.py).
     Most drivers report both on their own schedule; a sensor signal
     only updates when its own `mode`'s reading arrives, independent of
-    signals rooted at the other mode -- see server.py's `_route_reading()`.
+    signals rooted at the other mode -- see sensor_config.py's
+    `_build_on_reading()`.
     """
 
     def __init__(self, sensor, mode="raw"):
+        super().__init__()
         self._sensor = sensor
         self._mode = mode
 

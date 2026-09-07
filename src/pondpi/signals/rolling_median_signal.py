@@ -6,6 +6,7 @@ class RollingMedianSignal(LevelSignal):
     """Median-filters the raw reading over a rolling window."""
 
     def __init__(self, window_size):
+        super().__init__()
         self._rolling_median = RollingMedianFilter(window_size)
 
     def add(self, raw_value):
@@ -13,3 +14,6 @@ class RollingMedianSignal(LevelSignal):
 
     def extra_state(self):
         return {"window_size": self._rolling_median.window_size, "samples_in_window": self._rolling_median.count}
+
+    def _reset_state(self):
+        self._rolling_median = RollingMedianFilter(self._rolling_median.window_size)

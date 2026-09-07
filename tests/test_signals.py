@@ -1,4 +1,3 @@
-import threading
 import time
 
 import pytest
@@ -39,23 +38,21 @@ def test_rolling_median_signal_extra_state():
     assert signal.extra_state() == {"window_size": 3, "samples_in_window": 1}
 
 
-def _run_briefly(signal, get_raw_value, timeout_s=1, until=None):
-    """Starts signal.run_loop() in a background thread, waits until
-    `until(signal)` is true (default: signal.current() is populated) or
-    `timeout_s` elapses, then stops the thread and joins it."""
-    if until is None:
-        until = lambda s: s.current() is not None
+def test_rolling_median_signal_reset_clears_accumulated_window():
+    signal = RollingMedianSignal(window_size=3)
+    signal.add(10)
+    signal.add(30)
 
-    stop_event = threading.Event()
-    thread = threading.Thread(target=signal.run_loop, args=(stop_event, get_raw_value))
-    thread.start()
+    signal.reset()
 
+    assert signal.extra_state() == {"window_size": 3, "samples_in_window": 0}
+    assert signal.add(20) == 20  # median of just [20] -- old readings gone
+
+
+def _wait_until(predicate, timeout_s=1):
     deadline = time.monotonic() + timeout_s
-    while not until(signal) and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    stop_event.set()
-    thread.join(timeout=1)
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.002)
 
 
 def _fixed_getter(value):
@@ -72,13 +69,15 @@ def _queue_getter(values):
 
 
 def test_rolling_average_signal_current_is_none_before_first_reading():
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10, get_raw_value=_fixed_getter(None))
     assert signal.current() is None
 
 
-def test_rolling_average_signal_run_loop_populates_current():
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
-    _run_briefly(signal, _fixed_getter(100))
+def test_rolling_average_signal_polls_its_source_and_populates_current():
+    # Its background thread starts the moment it's constructed -- no
+    # separate start() call needed.
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10, get_raw_value=_fixed_getter(100))
+    _wait_until(lambda: signal.current() is not None)
 
     result = signal.current()
     assert result["value"] == 100
@@ -87,13 +86,11 @@ def test_rolling_average_signal_run_loop_populates_current():
     assert "at" in result
 
 
-def test_rolling_average_signal_run_loop_averages_over_its_window():
-    signal = RollingAverageSignal(window_size=3, poll_interval_ms=10)
-    _run_briefly(
-        signal,
-        _queue_getter([10, 20, 30] + [30] * 100),
-        until=lambda s: s.current() is not None and s.current()["samples_in_window"] == 3,
+def test_rolling_average_signal_averages_over_its_window():
+    signal = RollingAverageSignal(
+        window_size=3, poll_interval_ms=10, get_raw_value=_queue_getter([10, 20, 30] + [30] * 100)
     )
+    _wait_until(lambda: signal.current() is not None and signal.current()["samples_in_window"] == 3)
 
     result = signal.current()
     assert result["value"] == 20  # (10 + 20 + 30) / 3
@@ -101,41 +98,25 @@ def test_rolling_average_signal_run_loop_averages_over_its_window():
 
 
 def test_rolling_average_signal_ignores_a_none_reading():
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
-    _run_briefly(signal, _queue_getter([None, None, 100] + [100] * 100))
+    signal = RollingAverageSignal(
+        window_size=5, poll_interval_ms=10, get_raw_value=_queue_getter([None, None, 100] + [100] * 100)
+    )
+    _wait_until(lambda: signal.current() is not None)
 
     assert signal.current()["value"] == 100
 
 
-def test_rolling_average_signal_last_reading_monotonic_is_none_before_first_reading():
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
-    assert signal.last_reading_monotonic() is None
+def test_rolling_average_signal_reset_clears_accumulated_window():
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=15, get_raw_value=_fixed_getter(10))
+    _wait_until(lambda: signal.current() is not None and signal.current()["samples_in_window"] >= 3)
 
+    signal.reset()
 
-def test_rolling_average_signal_last_reading_monotonic_updates_after_a_reading():
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
-    _run_briefly(signal, _fixed_getter(100))
-
-    assert signal.last_reading_monotonic() is not None
-
-
-def test_rolling_average_signal_start_spawns_its_own_thread():
-    # Unlike _run_briefly (which drives run_loop() directly on a
-    # thread the test owns), start() is the real entry point server.py
-    # calls -- confirms it actually spawns a live background thread
-    # rather than, say, blocking the caller or running synchronously.
-    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10)
-    stop_event = threading.Event()
-
-    signal.start(stop_event, _fixed_getter(100))
-    deadline = time.monotonic() + 1
-    while signal.current() is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    stop_event.set()
-
-    result = signal.current()
-    assert result is not None
-    assert result["value"] == 100
+    # Polling resumes on its own (no external re-trigger needed) with a
+    # genuinely fresh window -- samples_in_window starts back at 1, not
+    # continuing to grow from before reset().
+    _wait_until(lambda: signal.current() is not None)
+    assert signal.current()["samples_in_window"] == 1
 
 
 def test_exponential_smoothing_signal_first_reading_passes_through():
@@ -154,6 +135,16 @@ def test_exponential_smoothing_signal_extra_state():
     signal = ExponentialSmoothingSignal(alpha=0.3)
     signal.add(10)
     assert signal.extra_state() == {"alpha": 0.3}
+
+
+def test_exponential_smoothing_signal_reset_clears_accumulated_average():
+    signal = ExponentialSmoothingSignal(alpha=0.5)
+    signal.add(10)
+    signal.add(20)
+
+    signal.reset()
+
+    assert signal.add(50) == 50  # first reading after reset passes through unchanged
 
 
 def test_discover_signal_types_finds_all_built_ins():
