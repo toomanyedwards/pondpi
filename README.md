@@ -109,7 +109,7 @@ pondpi/
 
 | File | Responsibility |
 |---|---|
-| `sensors/base.py` | `Sensor` — the interface every driver implements. `read(options)` returns `{"value": distance_mm, "at": ...}` (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before recording it) for whatever the caller's own `options` selects. Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
+| `sensors/base.py` | `Sensor` — the interface every driver implements. `read(options)` returns `{"value": distance_mm, "at": ...}` (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning it) for whatever the caller's own `options` selects. Defines the contract (`read()`, `reset_hardware()`, `check_health()` — every one a required override) but has no notion of *how* a driver obtains a reading, how many named readings it has, or what "healthy" means for it -- no polling loop, no reading cache, no health policy of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in the one piece of generic bookkeeping this class does own, `last_reading_monotonic()`. `supports_reset` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
 | `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `Sensor` subclass + `create()`. |
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
@@ -424,27 +424,24 @@ service info:
 
 The top-level `status` is `"degraded"` (HTTP 503) if **any** configured
 sensor's own `status` is degraded. Each sensor's `status` comes entirely
-from that sensor's own `is_healthy()` (`Sensor.STALE_READING_THRESHOLD_S`,
-3s by default -- see [Sensor drivers](#sensor-drivers)) -- server.py holds
-no threshold of its own and makes no staleness judgment itself, it just
-asks. `is_healthy()` returning `False` means no reading has landed in
-over that sensor's own threshold, which would otherwise silently leave
-its rooted signals (e.g. `pond_main_sensor_raw`, `rolling_avg`) serving
-stale data forever with no signal anything was wrong. This also catches
-a driver's read thread dying outright (an unhandled exception in
-`poll_loop()`, say) within a few seconds of it happening, same as it
-catches genuinely stale hardware -- e.g. a wiring disturbance knocking
-the A02YYUW driver's byte alignment out of sync in just the wrong way,
-so its incremental header-hunting resync never lands on a fresh header.
-The driver itself watches for this same condition and forces a
-`reset_input_buffer()` once it's crossed, so in practice a stale
-reading should self-resolve within a few seconds — `last_reading_age_s`
-climbing past the threshold and staying there is the signal that
-didn't happen.
+from that sensor's own `is_healthy()`/`check_health()` (see [Sensor
+drivers](#sensor-drivers)) -- server.py holds no health policy of its
+own and makes no judgment call itself, it just asks. This base class
+has no shared definition of "healthy" at all -- each driver decides for
+itself. `A02YYUWSensor.check_health()` is a **presence check, not a
+staleness one**: healthy once its "raw" reading has ever arrived, and
+stays that way even if its background thread later dies or the
+hardware goes stale -- unlike an age-based check, it won't flip back to
+degraded on its own. `last_reading_age_s` (below) is still there for a
+caller (or a future driver's own `check_health()`) that wants to notice
+staleness itself; `GET /health`'s top-level `status` currently doesn't.
 
 `last_reading_age_s` is seconds since that sensor's last valid frame, or
 `null` before its first ever reading (not itself a degraded condition —
-right after startup, before anything has been read yet, is normal).
+right after startup, before anything has been read yet, is normal). This
+is generic (`last_reading_monotonic()`, concrete on `Sensor`) and
+independent of `check_health()` -- every driver gets it the same way,
+regardless of how it defines "healthy".
 
 `last_reset_at` is when `POST /reset` (or `/sensors/<name>/reset`) last
 reset that sensor, or `null` if it's never been called since this
@@ -473,11 +470,20 @@ from the sensor's mount point down to the water surface, in millimeters
 — for whatever the *caller's own* `options` selects (a driver that
 reports more than one named reading, like the A02YYUW's `"raw"`/
 `"processed"`, looks for a `read_mode` key in it; `options` is optional,
-defaulting to whatever the driver considers its primary reading) — and
-`close()`. `supports_reset`/`reset_hardware()` is an optional capability
-a driver can add if its hardware can actually be power-cycled or
-otherwise reset in software; `POST /reset` checks this flag rather than
-assuming every sensor has it.
+defaulting to whatever the driver considers its primary reading), plus
+`reset_hardware()`, `check_health()`, and `close()` -- every one of
+these a required override, entirely driver-specific in both meaning and
+mechanism. `Sensor` itself holds no reading cache, no notion of how many
+named readings a driver reports, and no health policy — it's
+deliberately thin, since a future driver might report just one reading
+(no per-key cache needed at all) or define "healthy" completely
+differently; see `A02YYUWSensor` below for one driver's own choices, not
+something forced on every driver by the base class. `supports_reset`
+is a capability flag a driver sets to True only if its hardware can
+actually be power-cycled (`POST /reset` checks this flag rather than
+assuming every sensor has it) — `check_health()`, by contrast, is
+*always* required, since every driver needs to answer *some* health
+question even if trivially.
 
 `Sensor` has no notion of *how* a driver actually obtains a reading
 -- no polling loop, no thread, nothing background-shaped on the base
@@ -489,43 +495,50 @@ all of its own state -- serial connection, mode controller, whatever it
 needs -- is fully set up); that loop calls a driver-private method
 (`_read_hardware()`, not `read()`) repeatedly (every `poll_interval_s`)
 and, for each `(reading_key, distance_mm)` pair it gets back, caches it
-via `self._record_reading()`. `read()` itself is then just a lookup
-against that same cache, keyed by whatever mode `options` asks for --
-always instant, never touching the UART or the hardware lock. Nothing
-is ever pushed onward from there -- a `reads_from_sensor` signal pulls
-its own configured `read_mode`'s last cached value on its own schedule
-instead, passing its own `source.options` (`{"read_mode": ...}`,
-straight through unmodified -- the same key its own YAML config uses,
-see [Signal processing](#signal-processing)) into `read()`. A future
-driver that's push-driven
-instead (reacting to an async callback, never looping at all) is just
-as valid -- it simply wouldn't implement a poll loop, since the base
-class never assumed one; it would just call `_record_reading()`
-whenever its callback fires.
+in its own `_last_readings` dict *and* calls `self._record_reading()`
+(concrete on `Sensor`) to keep the generic `last_reading_monotonic()`
+current. `read()` itself is then just a lookup against that per-key
+cache, keyed by whatever mode `options` asks for -- always instant,
+never touching the UART or the hardware lock. Nothing is ever pushed
+onward from there -- a `reads_from_sensor` signal pulls its own
+configured `read_mode`'s last cached value on its own schedule instead,
+passing its own `source.options` (`{"read_mode": ...}`, straight
+through unmodified -- the same key its own YAML config uses, see
+[Signal processing](#signal-processing)) into `read()`. A future driver
+that's push-driven instead (reacting to an async callback, never
+looping at all) is just as valid -- it simply wouldn't implement a poll
+loop, since the base class never assumed one; it would just cache its
+own reading somehow and call `_record_reading()` whenever its callback
+fires. A driver that only ever reports one reading wouldn't need a
+per-key cache like `A02YYUWSensor`'s at all -- it could just hold one
+`{"value", "at"}` snapshot directly; this base class has no opinion
+either way.
 
-Whatever mechanism a driver uses to obtain readings, it calls
-`self._record_reading(readings)` (concrete on `Sensor`) each time it
-gets one or more, to participate in health tracking (below) *and* to
-populate `last_reading()`'s cache -- that's the one thing the base
-class asks of every driver. `reset()` is also concrete on the
-base class, but only handles the generic part: calling the driver's own
-`reset_hardware()` and recording when. A driver that owns a background
-loop (like `A02YYUWSensor`) overrides `reset()` to stop that loop, wait
-for it to actually exit, call `super().reset()`, then start a fresh
-loop -- so there's never a moment where two threads could both be
-touching hardware, and a reset always leaves the driver's own loop in a
-genuinely fresh state, not just the hardware.
+`reset()` is concrete on the base class, but only handles the generic
+part: calling the driver's own `reset_hardware()`, recording when
+(`last_reset_at()`), and clearing the generic `last_reading_monotonic()`
+bookkeeping. A driver with its own reading cache (like
+`A02YYUWSensor`'s `_last_readings`) must clear that itself, in its own
+`reset()` override -- otherwise a signal pulling from it would
+immediately re-read the stale pre-reset value. A driver that owns a
+background loop (like `A02YYUWSensor`) overrides `reset()` to stop that
+loop, wait for it to actually exit, call `super().reset()` (plus its own
+cache clear), then start a fresh loop -- so there's never a moment where
+two threads could both be touching hardware, and a reset always leaves
+the driver's own loop in a genuinely fresh state, not just the hardware.
 
-`last_reading_monotonic()`/`last_reset_at()`/`is_healthy()` are also
-concrete, and are how `GET /health` (below) gets its per-sensor status --
-`STALE_READING_THRESHOLD_S` (a class attribute, default `3.0` seconds,
-any driver type free to override) plus `is_healthy()`'s comparison
-against it live entirely on `Sensor`, so server.py holds no
-threshold and makes no staleness judgment of its own; it just calls
-`sensor.is_healthy()` and trusts the answer. `reset()` also records its
-own `last_reset_at()` timestamp as part of the same call, and clears
-`last_reading()`'s cache -- otherwise a signal pulling from this sensor
-would immediately re-read the stale pre-reset value.
+`last_reading_monotonic()`/`last_reset_at()` are concrete, generic
+bookkeeping every driver shares regardless of its own reading shape.
+`is_healthy()` is concrete too, but holds no policy of its own -- it
+just calls `check_health()`, which every driver must implement, since
+what "healthy" means (a staleness threshold, a presence check, or
+something entirely hardware-specific) can vary too much for this base
+class to guess at a shared default. `GET /health` (below) relies
+entirely on `is_healthy()` for its per-sensor status -- server.py holds
+no threshold and makes no judgment call of its own; it just calls
+`sensor.is_healthy()` and trusts the answer. `A02YYUWSensor.check_health()`
+is a presence check: healthy if its "raw" reading has ever arrived --
+see `GET /health` below for what that does and doesn't catch.
 
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw

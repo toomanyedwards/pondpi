@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 import serial
 
@@ -11,10 +12,9 @@ from . import read_sensor, sensor_mode, sensor_power
 # passes with no valid frame, read_frame() has likely lost byte
 # alignment with the sensor's stream and isn't going to resync on its
 # own. A plain input-buffer flush is enough to force a fresh resync.
-# Conceptually distinct from Sensor.STALE_READING_THRESHOLD_S (used
-# by is_healthy(), server.py's /health) even though they default to the
-# same value -- this one governs this driver's own internal resync,
-# nothing to do with what counts as healthy externally.
+# Conceptually distinct from check_health() (below) even though they
+# default to the same value -- this one governs this driver's own
+# internal resync, nothing to do with what counts as healthy externally.
 STALE_READING_THRESHOLD_S = 3.0
 
 # This driver spends most of its time with the sensor in "raw" mode (so
@@ -46,7 +46,9 @@ class A02YYUWSensor(Sensor):
     two hardware output modes and why this driver alternates between
     them on a single physical unit rather than reading both at once.
 
-    Keeps two named readings warm in `last_reading()`'s cache:
+    Keeps two named readings warm in its own `_last_readings` cache
+    (`last_reading()`, below -- this shape lives here, not on `Sensor`,
+    since a driver with only one reading wouldn't need it at all):
     - "raw": the sensor's real-time hardware mode.
     - "processed": the sensor's own internally-smoothed hardware mode.
 
@@ -62,13 +64,22 @@ class A02YYUWSensor(Sensor):
     `"raw"`), or None if nothing's arrived for that mode yet -- so it's
     always instant and never touches the UART. `_read_hardware()`
     (below) is the method that actually talks to the sensor: it does at
-    most one serial read
-    per call and never blocks waiting for a frame, so this driver polls
-    it repeatedly from its own background thread (started automatically
-    at construction; see `_begin_polling()` below -- `Sensor` itself has
-    no notion of polling, this is entirely this driver's own choice of
-    how to obtain readings) and caches whatever it gets via
-    `_record_reading()`.
+    most one serial read per call and never blocks waiting for a frame,
+    so this driver polls it repeatedly from its own background thread
+    (started automatically at construction; see `_begin_polling()`
+    below -- `Sensor` itself has no notion of polling, this is entirely
+    this driver's own choice of how to obtain readings), caches
+    whatever it gets in `_last_readings`, and calls `_record_reading()`
+    (concrete on `Sensor`) to keep `last_reading_monotonic()` current.
+
+    `check_health()` (required by `Sensor`, see there) is a presence
+    check, not a staleness one: healthy if `read()` (its "raw" reading,
+    specifically) has ever returned a value. This is deliberately
+    simpler than comparing `last_reading_monotonic()`'s age against a
+    threshold -- it won't notice this driver's own background thread
+    having died after at least one successful reading (unlike a
+    staleness check would); `GET /health`'s `last_reading_age_s` is
+    still there for a caller that wants to notice that itself.
 
     `_read_hardware()` and `reset_hardware()` are safe to call
     concurrently from different threads (this driver's own background
@@ -104,6 +115,7 @@ class A02YYUWSensor(Sensor):
         self._mode_settle_s = mode_settle_s
         self._read_mode = read_mode
         self._hardware_lock = threading.Lock()
+        self._last_readings = {}
 
         self._last_valid_monotonic = time.monotonic()
         self._current_mode = self._read_mode if self._read_mode is not None else sensor_mode.RAW
@@ -134,6 +146,23 @@ class A02YYUWSensor(Sensor):
         `last_reading()`'s cache warm."""
         read_mode = (options or {}).get("read_mode", sensor_mode.RAW)
         return self.last_reading(read_mode)
+
+    def last_reading(self, key):
+        """Thread-safe snapshot `{"value": distance_mm, "at": ...}` of
+        this driver's last recorded reading for one reading key ("raw"/
+        "processed"), or None before it's ever arrived. `read()` is
+        generally what a caller wants instead -- this is the lower-level
+        per-key lookup it's built on. Lives here, not on `Sensor`, since
+        this per-key cache shape is specific to a driver (like this one)
+        that reports more than one independently-updating reading."""
+        with self._lock:
+            return self._last_readings.get(key)
+
+    def check_health(self):
+        """Healthy if this driver's "raw" reading has ever arrived --
+        see the class docstring for why this is a presence check, not
+        a staleness one."""
+        return self.read() is not None
 
     def _read_hardware(self):
         with self._hardware_lock:
@@ -190,13 +219,18 @@ class A02YYUWSensor(Sensor):
     def reset(self):
         """Stops the current polling thread and waits for it to actually
         exit *before* calling `super().reset()` (which power-cycles the
-        hardware and clears reading/reset bookkeeping), then starts a
-        fresh thread -- so there's never a moment where the old thread
-        could still call `_read_hardware()`/`_record_reading()` against
-        state that's mid-reset."""
+        hardware and clears the generic `last_reading_monotonic()`
+        bookkeeping) and clearing this driver's own `_last_readings`
+        cache, then starts a fresh thread -- so there's never a moment
+        where the old thread could still call
+        `_read_hardware()`/populate stale-reset state, and a signal
+        pulling from this sensor can't immediately re-read the
+        pre-reset value."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         super().reset()
+        with self._lock:
+            self._last_readings = {}
         self._begin_polling()
 
     def close(self):
@@ -208,7 +242,11 @@ class A02YYUWSensor(Sensor):
         while not self._stop_event.is_set():
             readings = self._read_hardware()
             if readings:
-                self._record_reading(readings)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                with self._lock:
+                    for key, value in readings.items():
+                        self._last_readings[key] = {"value": value, "at": now_iso}
+                self._record_reading()
             time.sleep(self._poll_interval_s)
 
     def _begin_polling(self):

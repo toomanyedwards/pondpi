@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from pondpi.sensors import discover_sensor_types
@@ -12,47 +10,43 @@ def test_discover_sensor_types_finds_all_built_ins():
 
 
 class _StubSensor(Sensor):
-    """Minimal concrete Sensor -- no polling loop of its own (the
-    base class has no notion of one), so tests drive
-    is_healthy()/last_reading_monotonic() directly with no thread to
+    """Minimal concrete Sensor -- no polling loop, and no reading cache
+    of its own (that shape isn't on the base class at all -- see
+    A02YYUWSensor for a driver that has one), so tests drive
+    last_reading_monotonic()/check_health() directly with no thread to
     race at all."""
 
-    def __init__(self, stale_threshold_s=None):
-        if stale_threshold_s is not None:
-            self.STALE_READING_THRESHOLD_S = stale_threshold_s
+    def __init__(self, healthy=True):
+        self._healthy = healthy
         super().__init__()
 
-    def read(self):
+    def read(self, options=None):
         return {}
 
     def reset_hardware(self):
         pass
 
+    def check_health(self):
+        return self._healthy
 
-def test_is_healthy_true_before_first_reading():
+
+def test_is_healthy_delegates_to_check_health():
+    assert _StubSensor(healthy=True).is_healthy() is True
+    assert _StubSensor(healthy=False).is_healthy() is False
+
+
+def test_last_reading_monotonic_is_none_before_any_reading():
     sensor = _StubSensor()
     assert sensor.last_reading_monotonic() is None
-    assert sensor.is_healthy() is True
 
 
-def test_is_healthy_true_when_reading_recent():
-    sensor = _StubSensor(stale_threshold_s=10)
-    with sensor._lock:
-        sensor._last_reading_monotonic = time.monotonic()
+def test_record_reading_updates_last_reading_monotonic():
+    sensor = _StubSensor()
+    assert sensor.last_reading_monotonic() is None
 
-    assert sensor.is_healthy() is True
+    sensor._record_reading()
 
-
-def test_is_healthy_false_when_reading_older_than_its_own_threshold():
-    sensor = _StubSensor(stale_threshold_s=0.05)
-    with sensor._lock:
-        sensor._last_reading_monotonic = time.monotonic() - 1
-
-    assert sensor.is_healthy() is False
-
-
-def test_stale_reading_threshold_s_defaults_to_three_seconds():
-    assert Sensor.STALE_READING_THRESHOLD_S == 3.0
+    assert sensor.last_reading_monotonic() is not None
 
 
 def test_last_reset_at_is_none_before_any_reset():
@@ -66,44 +60,13 @@ def test_last_reset_at_updates_after_reset():
     assert sensor.last_reset_at() is not None
 
 
-def test_last_reading_is_none_before_any_reading():
+def test_reset_clears_last_reading_monotonic():
     sensor = _StubSensor()
-    assert sensor.last_reading("raw") is None
-
-
-def test_last_reading_returns_the_most_recently_recorded_value_for_its_key():
-    sensor = _StubSensor()
-    sensor._record_reading({"raw": 101})
-
-    result = sensor.last_reading("raw")
-
-    assert result["value"] == 101
-    assert "at" in result
-
-
-def test_last_reading_is_independent_per_key():
-    sensor = _StubSensor()
-    sensor._record_reading({"raw": 101})
-
-    assert sensor.last_reading("processed") is None
-
-
-def test_record_reading_updates_health_tracking_too():
-    sensor = _StubSensor()
-    assert sensor.last_reading_monotonic() is None
-
-    sensor._record_reading({"raw": 101})
-
-    assert sensor.last_reading_monotonic() is not None
-
-
-def test_reset_clears_last_reading_cache():
-    sensor = _StubSensor()
-    sensor._record_reading({"raw": 101})
+    sensor._record_reading()
 
     sensor.reset()
 
-    assert sensor.last_reading("raw") is None
+    assert sensor.last_reading_monotonic() is None
 
 
 def _write_fake_flat_package(tmp_path, package_name, module_filename, module_source):
