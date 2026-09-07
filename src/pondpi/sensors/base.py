@@ -22,7 +22,7 @@ class Sensor:
     A driver reports one or more named readings -- e.g. `A02YYUWSensor`
     reports "raw" and "processed", corresponding to the sensor's two
     hardware modes, while a simpler sensor might only ever report one.
-    `read(settings)` (below) is how a caller retrieves one of them.
+    `read(options)` (below) is how a caller retrieves one of them.
 
     This class defines the *contract* every driver must satisfy --
     canonical readings, the capability flags below, and the health/reset
@@ -55,7 +55,7 @@ class Sensor:
     sensor type.
 
     `read()` itself is not required to touch hardware at all -- it's a
-    cache lookup, keyed by whatever `settings` (see below) selects.
+    cache lookup, keyed by whatever `options` (see below) selects.
     `A02YYUWSensor`, for instance, does the actual UART polling in its
     own private `_read_hardware()` instead, called from its own
     background thread; `read()` just looks in the cache that populates.
@@ -79,22 +79,23 @@ class Sensor:
         self._last_reset_at = None
         self._last_readings = {}
 
-    def read(self, settings=None):
+    def read(self, options=None):
         """Thread-safe cache lookup -- `{"value": distance_mm, "at":
         ...}` (the same shape `last_reading()` returns), or None if
-        nothing's available yet for whatever `settings` selects. Must
+        nothing's available yet for whatever `options` selects. Must
         never block.
 
-        `settings` is the *caller's* own settings -- e.g. a
-        `reads_from_sensor` Signal's own `settings:` from
-        config/sensors.yaml (see signal_config.py/sensor_signal.py) --
-        not this driver's construction settings, which it already has
-        on `self`. It's optional (None for a caller with no settings of
-        its own, or that doesn't care) and entirely driver-specific in
-        meaning: a driver that reports more than one named reading (like
+        `options` is the *caller's* own `source.options` -- e.g. a
+        `reads_from_sensor` Signal's own `source:` mapping from
+        config/sensors.yaml, passed straight through unmodified (see
+        signal_config.py/sensor_signal.py) -- not this driver's
+        construction settings, which it already has on `self`. It's
+        optional (None for a caller with no options of its own, or that
+        doesn't care) and entirely driver-specific in meaning: a driver
+        that reports more than one named reading (like
         `A02YYUWSensor`'s "raw"/"processed") looks for whatever key in
-        `settings` picks one; a driver with only ever one reading can
-        ignore `settings` entirely.
+        `options` picks one; a driver with only ever one reading can
+        ignore `options` entirely.
         """
         raise NotImplementedError
 

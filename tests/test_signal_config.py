@@ -17,7 +17,7 @@ class _FakeSensor:
     regardless, so `read()` needs to exist (returning nothing is fine --
     these tests never assert on an actual pulled value)."""
 
-    def read(self, settings=None):
+    def read(self, options=None):
         return None
 
 

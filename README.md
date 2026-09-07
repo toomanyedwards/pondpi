@@ -13,19 +13,23 @@ below) keeps a cache of its own last known value, and anything
 downstream reads it *on demand* -- a `Signal`'s `read()` pulls
 recursively from whatever it names as its `source:` (another signal's
 own `read()`, or, for a `sensor`-type signal, its sensor's own
-`read()`, passing that signal's own settings -- just its `mode` -- in
-as the caller-settings `Sensor.read()` takes), computing lazily the
-moment something actually asks and caching the result so a repeat
-`read()` with no new upstream data
-is cheap and doesn't recompute. Both `Sensor.read()` and `Signal.read()`
-take the same shape of optional `settings` param -- the *caller's* own
-settings, not forwarded any further than the one link that receives
-them, so a setting scoped to one signal can never be misread by
-something further up its own chain. The one exception, `rolling_average`,
-owns a background thread that proactively samples its `source:` on its
-own schedule and writes the cache directly instead of waiting to be
-asked, overriding `read()` itself to just return whatever that thread
-last wrote -- everything else is lazy. Most `Sensor` drivers (e.g.
+`read()`, passing that signal's own `source.options` -- e.g. its
+`read_mode` -- straight through as the caller-options `Sensor.read()`
+takes), computing lazily the moment something actually asks and caching
+the result so a repeat `read()` with no new upstream data is cheap and
+doesn't recompute. Both `Sensor.read()` and `Signal.read()` take the
+same shape of optional `options` param -- the *caller's* own options,
+not forwarded any further than the one link that receives them. This
+is a wholly separate thing from a signal's own `source.options`: when a
+signal calls its source's `read()`, *it's* the caller now, so it's
+*its own* `source.options` that goes in, never whatever `options` it
+was itself handed -- a setting scoped to one signal can never be
+misread by something further up its own chain. The one exception,
+`rolling_average`, owns a background thread that proactively samples
+its `source:` on its own schedule and writes the cache directly
+instead of waiting to be asked, overriding `read()` itself to just
+return whatever that thread last wrote -- everything else is lazy.
+Most `Sensor` drivers (e.g.
 `A02YYUWSensor`) also own a background
 thread, for the more fundamental reason that *something* has to
 actually poll the hardware -- but that thread only ever writes its own
@@ -53,10 +57,11 @@ sensor_config.py's load_sensors():
 
   ┌───────────────────────┐          ┌──────────────────────────┐          ┌───────────────────────────┐
   │ Sensor driver           │          │ sensor-type Signal          │          │ chain Signal (median,        │
-  │ own read thread writes    │ <────── │ read({"mode": ...}), lazily    │ <────── │ average, EMA...) pulls          │
-  │ last_reading() as frames     │ read() │ on demand -- or, for rolling_ │ read() │ source.read() lazily, on demand,   │
-  │ arrive                          │          │ average, on its own timer      │          │ unless its own read() override        │
-  └───────────────────────┘          └──────────────────────────┘          │ says otherwise (rolling_average)          │
+  │ own read thread writes    │ <────── │ read(source_options), lazily  │ <────── │ average, EMA...) pulls          │
+  │ last_reading() as frames     │ read() │ on demand -- or, for rolling_ │ read() │ source.read(source_options)        │
+  │ arrive                          │          │ average, on its own timer      │          │ lazily, on demand, unless its       │
+  └───────────────────────┘          └──────────────────────────┘          │ own read() override says otherwise   │
+                                                                              │ (rolling_average)                          │
                                                                               └───────────────────────────┘
                                                                                     ^
                                                                                     │ read()
@@ -103,7 +108,7 @@ pondpi/
 
 | File | Responsibility |
 |---|---|
-| `sensors/base.py` | `Sensor` — the interface every driver implements. `read(settings)` returns `{"value": distance_mm, "at": ...}` (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before recording it) for whatever the caller's own `settings` selects. Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
+| `sensors/base.py` | `Sensor` — the interface every driver implements. `read(options)` returns `{"value": distance_mm, "at": ...}` (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before recording it) for whatever the caller's own `options` selects. Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
 | `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `Sensor` subclass + `create()`. |
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
@@ -462,11 +467,11 @@ dev checkouts, or `null` if neither is available.
 ## Sensor drivers
 
 Every sensor implements the small `Sensor` interface (`sensors/base.py`):
-`read(settings)` returns `{"value": distance_mm, "at": ...}` — distance
+`read(options)` returns `{"value": distance_mm, "at": ...}` — distance
 from the sensor's mount point down to the water surface, in millimeters
-— for whatever the *caller's own* `settings` selects (a driver that
+— for whatever the *caller's own* `options` selects (a driver that
 reports more than one named reading, like the A02YYUW's `"raw"`/
-`"processed"`, looks for a `mode` key in it; `settings` is optional,
+`"processed"`, looks for a `read_mode` key in it; `options` is optional,
 defaulting to whatever the driver considers its primary reading) — and
 `close()`. `supports_reset`/`reset_hardware()` is an optional capability
 a driver can add if its hardware can actually be power-cycled or
@@ -484,14 +489,14 @@ needs -- is fully set up); that loop calls a driver-private method
 (`_read_hardware()`, not `read()`) repeatedly (every `poll_interval_s`)
 and, for each `(reading_key, distance_mm)` pair it gets back, caches it
 via `self._record_reading()`. `read()` itself is then just a lookup
-against that same cache, keyed by whatever mode `settings` asks for --
+against that same cache, keyed by whatever mode `options` asks for --
 always instant, never touching the UART or the hardware lock. Nothing
 is ever pushed onward from there -- a `reads_from_sensor` signal pulls
 its own configured `read_mode`'s last cached value on its own schedule
-instead, passing its own `settings` (`{"mode": ...}` -- the dict key
-`Sensor.read()` itself expects, independent of what the signal's own
-config calls the setting) into `read()` (see [Signal
-processing](#signal-processing)). A future driver that's push-driven
+instead, passing its own `source.options` (`{"read_mode": ...}`,
+straight through unmodified -- the same key its own YAML config uses,
+see [Signal processing](#signal-processing)) into `read()`. A future
+driver that's push-driven
 instead (reacting to an async callback, never looping at all) is just
 as valid -- it simply wouldn't implement a poll loop, since the base
 class never assumed one; it would just call `_record_reading()`
@@ -644,7 +649,12 @@ which of whatever the driver *is* producing a given signal *pulls*
 confuse a sensor entry's `settings.read_mode` with a signal entry's
 `source.options.read_mode` -- they read as the same word at a
 glance but live in different top-level list entries (`sensors:` vs
-`signals:`) and mean different things. Pinning the driver's `read_mode`
+`signals:`) and mean different things (and, since `SensorSignal` now
+passes `source.options` straight through into `Sensor.read()`
+unmodified, `read_mode` is also the literal key `Sensor.read()`'s
+`options` dict carries at runtime -- one more reason not to conflate
+the two: they share a name at three different layers now, not just
+two). Pinning the driver's `read_mode`
 to `"processed"` means only signals whose own `source.options.read_mode`
 is `"processed"` (e.g. `pond_main_sensor_processed`) ever have anything
 to read — the default `raw`-reading pipeline (`pond_main_sensor_raw`,
@@ -747,8 +757,10 @@ server.py itself, ever needs to think about millimeters again.
 `add()` is the pure-computation hook every signal type implements
 (median, average, EMA, unit conversion); nothing calls it directly except
 `Signal.read()` (concrete, shared by every type), which pulls this
-signal's `source:` (its own `read()`, or, for `sensor`-type signals, the
-sensor's `read()`) and, if that's newer than what this signal
+signal's `source:` (its own `read(source.options)`, or, for
+`sensor`-type signals, the sensor's `read(source.options)` -- this
+signal's own `source.options`, passed straight through, empty for every
+type except `sensor`) and, if that's newer than what this signal
 already incorporated, computes a fresh value via `add()` and
 thread-safely caches it alongside that source's own `at`. Calling
 `read()` any number of times with no new upstream data is safe and
@@ -756,9 +768,9 @@ cheap -- `add()` only reruns when there's genuinely something new, so a
 stateful accumulator (a rolling window, an EMA) is never double-fed by
 two callers reading in quick succession. This pull-and-cache mechanism
 is what lets `rolling_average` sample its `source:` signal directly
-(`source_signal.read()`, from its own background thread) rather than
-needing anything in server.py to mediate between them -- see [How it
-works](#how-it-works).
+(`source_signal.read(source.options)`, from its own background thread)
+rather than needing anything in server.py to mediate between them --
+see [How it works](#how-it-works).
 
 Every signal entry has four generic top-level fields -- `name`, `type`,
 `source`, and (optionally) `emit` -- that `signal_config.py` itself
@@ -815,7 +827,11 @@ modes in [Sensor notes](#sensor-notes)), validated against
 `signal_config.py` doesn't know this rule exists (it only knows that a
 non-`reads_from_sensor` type must leave `source.options` empty -- see
 [How it works](#how-it-works) for why it isn't forwarded past this one
-signal even for the type that does use it). `source.options` is a
+signal even for the type that does use it). Once validated (default
+filled in if omitted), this is exactly the dict `SensorSignal` passes
+into `Sensor.read()` when it pulls -- no translation into some other
+shape, so the key `Sensor.read()` looks for is `read_mode`, the same
+one the YAML uses. `source.options` is a
 nested sub-section, distinct from `settings:`, because it holds
 settings that specifically govern *how this signal reads its source*
 -- currently just `read_mode` -- as opposed to `unit`, which governs how

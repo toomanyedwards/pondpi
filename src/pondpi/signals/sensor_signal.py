@@ -46,14 +46,15 @@ class SensorSignal(Signal):
     all. The one option it currently recognizes is `read_mode`, which
     selects which of that sensor's named readings this signal pulls --
     "raw" (default) or "processed", matching the reading keys a Sensor
-    driver can report. `_pull_source()` (below) ignores whatever
-    `settings` *it* was given (this signal's own caller's settings --
-    see `Signal._pull_source()`) and instead passes this signal's own
-    `{"mode": self._read_mode}` into `Sensor.read()`, the caller-
-    settings-driven entry point every sensor exposes (see
-    sensors/base.py) -- note the dict key stays `"mode"` there, since
-    that's `Sensor.read()`'s own contract, independent of what this
-    signal's YAML config happens to call the setting. Each mode updates
+    driver can report. Once validated, it's passed to `Signal.__init__`
+    as `source_options` -- the same mechanism (and attribute,
+    `self._source_options`) every signal type has, just always empty for
+    every other one (see `Signal`). `_pull_source()` (below) passes it
+    straight through to `Sensor.read()`, unmodified and untranslated, as
+    the caller-options-driven entry point every sensor exposes (see
+    sensors/base.py) -- ignoring whatever `options` *this call itself*
+    was given (this signal's own caller's options, a different thing
+    entirely -- see `Signal._pull_source()`). Each mode updates
     independently, on whatever schedule the sensor itself keeps that
     reading fresh, so this signal only ever sees its own `read_mode`'s
     reading, independent of signals rooted at the other.
@@ -64,7 +65,6 @@ class SensorSignal(Signal):
     VALID_READ_MODES: ClassVar[tuple] = ("raw", "processed")
 
     def __init__(self, sensor_objects, sensor=None, unit=None, sensor_options=None):
-        super().__init__()
         if sensor not in sensor_objects:
             raise ValueError(f"invalid or missing 'source' '{sensor}' (expected one of {sorted(sensor_objects)})")
         if not unit:
@@ -78,6 +78,7 @@ class SensorSignal(Signal):
         read_mode = sensor_options.get("read_mode", "raw")
         if read_mode not in self.VALID_READ_MODES:
             raise ValueError(f"invalid 'read_mode' '{read_mode}' (expected one of {self.VALID_READ_MODES})")
+        super().__init__(source_options={"read_mode": read_mode})
         self._sensor = sensor
         self._sensor_obj = sensor_objects[sensor]
         self._unit = unit
@@ -95,8 +96,8 @@ class SensorSignal(Signal):
     def read_mode(self):
         return self._read_mode
 
-    def _pull_source(self, settings=None):
-        return self._sensor_obj.read({"mode": self._read_mode})
+    def _pull_source(self, options=None):
+        return self._sensor_obj.read(self._source_options)
 
     def add(self, raw_value):
         return raw_value / self.UNIT_DIVISORS[self._unit]
