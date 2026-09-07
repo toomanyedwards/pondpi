@@ -65,30 +65,50 @@ def test_sensor_signal_rejects_unknown_sensor():
         SensorSignal(sensor_objects={"pond_main": _FakeSensor()}, sensor="rain_barrel", unit="cm")
 
 
-def test_sensor_signal_rejects_unsupported_mode():
-    with pytest.raises(ValueError, match="invalid 'mode' 'smoothed'"):
-        SensorSignal(sensor_objects={"pond_main": _FakeSensor()}, sensor="pond_main", unit="cm", mode="smoothed")
+def test_sensor_signal_rejects_unsupported_read_mode():
+    with pytest.raises(ValueError, match="invalid 'read_mode' 'smoothed'"):
+        SensorSignal(
+            sensor_objects={"pond_main": _FakeSensor()},
+            sensor="pond_main",
+            unit="cm",
+            sensor_options={"read_mode": "smoothed"},
+        )
 
 
-def test_sensor_signal_extra_state_reports_its_sensor_and_mode():
+def test_sensor_signal_rejects_unknown_sensor_options_key():
+    with pytest.raises(ValueError, match="invalid sensor_options key.*typo"):
+        SensorSignal(
+            sensor_objects={"pond_main": _FakeSensor()},
+            sensor="pond_main",
+            unit="cm",
+            sensor_options={"typo": "raw"},
+        )
+
+
+def test_sensor_signal_extra_state_reports_its_sensor_and_read_mode():
     signal = SensorSignal(sensor_objects={"pond_main": _FakeSensor()}, sensor="pond_main", unit="cm")
-    assert signal.extra_state() == {"sensor": "pond_main", "mode": "raw"}
+    assert signal.extra_state() == {"sensor": "pond_main", "read_mode": "raw"}
 
 
-def test_sensor_signal_extra_state_reports_explicit_mode():
-    signal = SensorSignal(sensor_objects={"pond_main": _FakeSensor()}, sensor="pond_main", unit="cm", mode="processed")
-    assert signal.extra_state() == {"sensor": "pond_main", "mode": "processed"}
+def test_sensor_signal_extra_state_reports_explicit_read_mode():
+    signal = SensorSignal(
+        sensor_objects={"pond_main": _FakeSensor()},
+        sensor="pond_main",
+        unit="cm",
+        sensor_options={"read_mode": "processed"},
+    )
+    assert signal.extra_state() == {"sensor": "pond_main", "read_mode": "processed"}
 
 
-def test_sensor_signal_read_pulls_its_own_mode_from_the_sensor():
+def test_sensor_signal_read_pulls_its_own_read_mode_from_the_sensor():
     sensor = _FakeSensor({"raw": {"value": 101, "at": "t1"}, "processed": {"value": 202, "at": "t2"}})
-    raw_signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="raw")
+    raw_signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm")
     processed_signal = SensorSignal(
-        sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="processed"
+        sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", sensor_options={"read_mode": "processed"}
     )
 
-    assert raw_signal.read() == {"value": 10.1, "at": "t1", "sensor": "pond_main", "mode": "raw"}
-    assert processed_signal.read() == {"value": 20.2, "at": "t2", "sensor": "pond_main", "mode": "processed"}
+    assert raw_signal.read() == {"value": 10.1, "at": "t1", "sensor": "pond_main", "read_mode": "raw"}
+    assert processed_signal.read() == {"value": 20.2, "at": "t2", "sensor": "pond_main", "read_mode": "processed"}
 
 
 def test_sensor_signal_read_is_none_before_the_sensor_has_a_reading():
@@ -97,12 +117,15 @@ def test_sensor_signal_read_is_none_before_the_sensor_has_a_reading():
     assert signal.read() is None
 
 
-def test_sensor_signal_passes_its_own_mode_as_the_sensors_read_settings():
-    # The sensor doesn't know or care about "mode" as a concept of its
-    # own -- it's purely the caller's (this signal's) settings, passed
-    # straight through to Sensor.read().
+def test_sensor_signal_passes_its_own_read_mode_as_the_sensors_read_settings():
+    # The sensor doesn't know or care about "read_mode" as a signal-
+    # config concept -- it's purely the caller's (this signal's)
+    # settings, passed to Sensor.read() under the key its own contract
+    # expects ("mode"), independent of what this signal's YAML calls it.
     sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
-    signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="processed")
+    signal = SensorSignal(
+        sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", sensor_options={"read_mode": "processed"}
+    )
 
     signal.read()
 
@@ -112,10 +135,12 @@ def test_sensor_signal_passes_its_own_mode_as_the_sensors_read_settings():
 def test_sensor_signal_ignores_its_own_callers_settings_when_pulling_its_sensor():
     # Whatever settings this signal's own caller passes into its read()
     # are irrelevant to what it hands its sensor -- it always builds its
-    # own {"mode": ...} from its own configured mode, never forwarding
-    # what it was given.
+    # own {"mode": ...} from its own configured read_mode, never
+    # forwarding what it was given.
     sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
-    signal = SensorSignal(sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", mode="processed")
+    signal = SensorSignal(
+        sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", sensor_options={"read_mode": "processed"}
+    )
 
     signal.read({"mode": "raw", "unrelated": "value"})
 

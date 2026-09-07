@@ -28,11 +28,14 @@ def load_signals(path, sensor_objects):
     `unit`/`mode` are tracked and propagated here as generic concepts,
     without this module knowing or caring what specific values either
     one holds: a `reads_from_sensor` signal's own `unit`/`mode` (however
-    it derived and validated them, from its own `settings:`) become the
-    root of its group's chain; every other signal type inherits them
-    automatically from whichever signal its `source:` names (they're
-    pure numeric transforms -- a rolling average of centimeters is still
-    in centimeters) and must not set `unit`/`mode` in its own `settings:`.
+    it derived and validated them, from its own `settings:` -- for
+    `SensorSignal`, `unit` directly and `mode` nested under
+    `settings.sensor_options.read_mode`, see signals/sensor_signal.py)
+    become the root of its group's chain; every other signal type
+    inherits them automatically from whichever signal its `source:`
+    names (they're pure numeric transforms -- a rolling average of
+    centimeters is still in centimeters) and must not set `unit` or
+    `sensor_options` in its own `settings:`.
 
     Returns dict[sensor_name -> {"signals", "emit_flags", "configs"}],
     one entry per name in `sensor_objects` (even if that sensor ends up
@@ -113,9 +116,9 @@ def build_signals(entries, sensor_objects, path):
                     f"{path}: signal '{name}' must not set 'unit' directly "
                     "(unit is derived automatically from 'source')"
                 )
-            if "mode" in settings:
+            if "sensor_options" in settings:
                 raise ValueError(
-                    f"{path}: signal '{name}' must not set 'mode' directly "
+                    f"{path}: signal '{name}' must not set 'sensor_options' directly "
                     "(mode is derived automatically from 'source')"
                 )
             extra_kwargs["source_signal"] = instances[source_name]
@@ -128,7 +131,7 @@ def build_signals(entries, sensor_objects, path):
         if signal_class.reads_from_sensor:
             root_sensor[name] = instances[name].sensor
             unit_by_name[name] = instances[name].unit
-            mode_by_name[name] = instances[name].mode
+            mode_by_name[name] = instances[name].read_mode
         else:
             root_sensor[name] = root_sensor[source_name]
             unit_by_name[name] = unit_by_name[source_name]
