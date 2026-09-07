@@ -80,7 +80,6 @@ class A02YYUWSensor(Sensor):
         ser,
         mode_controller,
         power_controller,
-        on_reading,
         poll_interval_s=DEFAULT_POLL_INTERVAL_S,
         stale_threshold_s=STALE_READING_THRESHOLD_S,
         mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
@@ -91,7 +90,6 @@ class A02YYUWSensor(Sensor):
         self._ser = ser
         self._mode_controller = mode_controller
         self._power_controller = power_controller
-        self._on_reading = on_reading
         self._poll_interval_s = poll_interval_s
         self._stale_threshold_s = stale_threshold_s
         self._mode_cycle_interval_s = mode_cycle_interval_s
@@ -173,8 +171,8 @@ class A02YYUWSensor(Sensor):
         exit *before* calling `super().reset()` (which power-cycles the
         hardware and clears reading/reset bookkeeping), then starts a
         fresh thread -- so there's never a moment where the old thread
-        could still call `read()`/`_on_reading()` against state that's
-        mid-reset."""
+        could still call `read()`/`_record_reading()` against state
+        that's mid-reset."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         super().reset()
@@ -189,9 +187,7 @@ class A02YYUWSensor(Sensor):
         while not self._stop_event.is_set():
             readings = self.read()
             if readings:
-                self._record_reading()
-            for reading_key, distance_mm in readings.items():
-                self._on_reading(reading_key, distance_mm)
+                self._record_reading(readings)
             time.sleep(self._poll_interval_s)
 
     def _begin_polling(self):
@@ -200,7 +196,7 @@ class A02YYUWSensor(Sensor):
         self._thread.start()
 
 
-def create(params, simulate, on_reading):
+def create(params, simulate):
     """Builds an A02YYUWSensor from a sensor config entry's `params`
     dict -- see discover_sensor_types() for why driver types need a
     factory function rather than being constructed directly.
@@ -234,6 +230,4 @@ def create(params, simulate, on_reading):
 
     poll_interval_s = params.get("poll_interval_ms", DEFAULT_POLL_INTERVAL_S * 1000) / 1000
 
-    return A02YYUWSensor(
-        ser, mode_controller, power_controller, on_reading, poll_interval_s=poll_interval_s, read_mode=read_mode
-    )
+    return A02YYUWSensor(ser, mode_controller, power_controller, poll_interval_s=poll_interval_s, read_mode=read_mode)

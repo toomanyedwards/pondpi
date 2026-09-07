@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 from pondpi.signals.base import Signal
 from pondpi.signals.utils.rolling_average import RollingAverage
@@ -7,10 +8,10 @@ from pondpi.signals.utils.rolling_average import RollingAverage
 
 class RollingAverageSignal(Signal):
     """Averages its `source:` signal's output over a rolling window --
-    but instead of being pushed a new value on every one of the
-    sensor's own reads, this signal owns its own background thread
-    that pulls its input's current cached value (via that signal's own
-    `current()`) on its own pace.
+    but instead of recomputing on demand every time something calls
+    `read()`, this signal owns its own background thread that pulls its
+    source's current value (via that signal's own `read()`) on its own
+    pace and writes the result directly.
 
     `poll_interval_ms` paces the loop itself: each iteration sleeps
     this long between samples, so `window_size * poll_interval_ms` is a
@@ -21,16 +22,16 @@ class RollingAverageSignal(Signal):
     Its background thread starts the moment it's constructed -- there's
     no public `start()`/loop-control method; `reset()` is the only way
     to make it stop and start a fresh one (see `reset()` below).
-    `current()` (inherited from `Signal`) is the thread-safe read
-    side, polled by HTTP handlers.
+    `read()` (inherited from `Signal`, `owns_read_loop = True` skips its
+    usual pull-and-recompute logic for this type) is a pure getter of
+    whatever this thread last wrote, polled by HTTP handlers.
     """
 
     owns_read_loop = True
 
-    def __init__(self, window_size, poll_interval_ms, get_raw_value):
-        super().__init__()
+    def __init__(self, window_size, poll_interval_ms, source_signal):
+        super().__init__(source_signal)
         self._poll_interval_ms = poll_interval_ms
-        self._get_raw_value = get_raw_value
         self._rolling_avg = RollingAverage(window_size)
         self._begin_polling()
 
@@ -49,9 +50,9 @@ class RollingAverageSignal(Signal):
 
     def _poll_loop(self):
         while not self._stop_event.is_set():
-            value = self._get_raw_value()
-            if value is not None:
-                self.feed(value)
+            source = self._source_signal.read()
+            if source is not None:
+                self._write(self.add(source["value"]), datetime.now(timezone.utc).isoformat())
             time.sleep(self._poll_interval_ms / 1000)
 
     def _begin_polling(self):
@@ -64,8 +65,8 @@ class RollingAverageSignal(Signal):
         *before* clearing the accumulated window (via the base class's
         `reset()` -> `_reset_state()`) and starting a fresh one -- so
         there's never a moment where the old thread could still call
-        `_get_raw_value()`/`feed()` against state we're in the middle
-        of resetting."""
+        `source_signal.read()`/`_write()` against state we're in the
+        middle of resetting."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_ms / 1000 + 1)
         super().reset()

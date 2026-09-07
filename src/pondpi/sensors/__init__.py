@@ -30,17 +30,16 @@ def discover_sensor_types(package=None):
     Each such module must define exactly one Sensor subclass --
     directly, for a flat module, or in one of its own submodules and
     re-exported from its __init__.py, for a directory package -- and a
-    module-level `create(params, simulate, on_reading)` function that
-    builds and returns an instance of it. Unlike signals (whose
-    constructors take simple scalar params directly), most sensor
-    drivers need real hardware objects -- a serial connection, GPIO
-    controllers -- assembled around those params, and build entirely
-    different (simulated) objects under `--simulate`; `create()` is
-    where a driver does that assembly, so callers never need to know a
-    given type's own construction details. `on_reading` is forwarded
-    straight into the driver's `Sensor.__init__()` -- see there for
-    what it does and why construction alone is enough to start the
-    driver's own background read thread.
+    module-level `create(params, simulate)` function that builds and
+    returns an instance of it. Unlike signals (whose constructors take
+    simple scalar params directly), most sensor drivers need real
+    hardware objects -- a serial connection, GPIO controllers --
+    assembled around those params, and build entirely different
+    (simulated) objects under `--simulate`; `create()` is where a driver
+    does that assembly, so callers never need to know a given type's own
+    construction details. Construction alone is enough to start the
+    driver's own background read thread, if it has one -- see
+    `Sensor.__init__()`.
     """
     if package is None:
         package = sys.modules[__name__]
@@ -65,7 +64,7 @@ def discover_sensor_types(package=None):
 
         create = getattr(module, "create", None)
         if create is None or not callable(create):
-            raise ValueError(f"{module.__name__}: must define a module-level create(params, simulate, on_reading) function")
+            raise ValueError(f"{module.__name__}: must define a module-level create(params, simulate) function")
 
         type_name = name.removesuffix(_TYPE_SUFFIX)
         registry[type_name] = create

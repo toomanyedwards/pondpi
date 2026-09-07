@@ -65,45 +65,38 @@ def _wait_until(predicate, timeout_s=1):
         time.sleep(0.002)
 
 
-def _no_op(reading_key, distance_mm):
-    pass
-
-
 # Every A02YYUWSensor now starts its own background read thread the
 # moment it's constructed (see Sensor.__init__()) -- these tests
-# construct with a recording (or no-op) on_reading and observe what
-# arrives, rather than calling read() directly and racing that thread.
-# poll_interval_s is set small (a few ms) so tests don't wait long, or
-# very large (parking the thread asleep after its one initial call) for
-# tests that only care about a single deterministic read().
+# construct it and poll last_reading()/last_reading_monotonic() for
+# what arrives, rather than calling read() directly and racing that
+# thread. poll_interval_s is set small (a few ms) so tests don't wait
+# long, or very large (parking the thread asleep after its one initial
+# call) for tests that only care about a single deterministic read().
 
 
 def test_reports_raw_reading_for_valid_frame():
-    readings = []
-    A02YYUWSensor(
+    sensor = A02YYUWSensor(
         FakeSerial(_frame(0x01, 0x2C)),
         FakeModeController(),
         FakePowerController(),
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.001,
     )
 
-    _wait_until(lambda: readings)
-    assert readings == [("raw", 0x012C)]
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    assert sensor.last_reading("raw")["value"] == 0x012C
 
 
 def test_reports_nothing_when_no_frame_available():
-    readings = []
-    A02YYUWSensor(
+    sensor = A02YYUWSensor(
         FakeSerial(b""),
         FakeModeController(),
         FakePowerController(),
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.001,
     )
 
     time.sleep(0.05)
-    assert readings == []
+    assert sensor.last_reading("raw") is None
+    assert sensor.last_reading("processed") is None
 
 
 def test_flushes_buffer_after_prolonged_no_valid_frame():
@@ -112,7 +105,6 @@ def test_flushes_buffer_after_prolonged_no_valid_frame():
         ser,
         FakeModeController(),
         FakePowerController(),
-        on_reading=_no_op,
         poll_interval_s=0.001,
         stale_threshold_s=0.05,
     )
@@ -124,33 +116,29 @@ def test_flushes_buffer_after_prolonged_no_valid_frame():
 def test_cycles_into_processed_mode():
     ser = read_sensor.SimulatedSerial()
     mode_controller = FakeModeController()
-    readings = []
-    A02YYUWSensor(
+    sensor = A02YYUWSensor(
         ser,
         mode_controller,
         FakePowerController(),
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.001,
         mode_cycle_interval_s=0.1,
         processed_mode_duration_s=0.05,
         mode_settle_s=0.01,
     )
 
-    _wait_until(lambda: any(key == "processed" for key, _ in readings), timeout_s=1.0)
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
 
-    assert any(key == "processed" for key, _ in readings)
+    assert sensor.last_reading("processed") is not None
     assert sensor_mode.PROCESSED in mode_controller.calls
 
 
 def test_read_mode_raw_never_switches_to_processed():
     ser = read_sensor.SimulatedSerial()
     mode_controller = FakeModeController()
-    readings = []
-    A02YYUWSensor(
+    sensor = A02YYUWSensor(
         ser,
         mode_controller,
         FakePowerController(),
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.001,
         mode_cycle_interval_s=0.05,
         processed_mode_duration_s=0.02,
@@ -160,19 +148,17 @@ def test_read_mode_raw_never_switches_to_processed():
 
     time.sleep(0.3)
 
-    assert all(key != "processed" for key, _ in readings)
+    assert sensor.last_reading("processed") is None
     assert mode_controller.calls == [sensor_mode.RAW]
 
 
 def test_read_mode_processed_never_switches_to_raw():
     ser = read_sensor.SimulatedSerial()
     mode_controller = FakeModeController()
-    readings = []
-    A02YYUWSensor(
+    sensor = A02YYUWSensor(
         ser,
         mode_controller,
         FakePowerController(),
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.001,
         mode_cycle_interval_s=0.05,
         processed_mode_duration_s=0.02,
@@ -182,25 +168,23 @@ def test_read_mode_processed_never_switches_to_raw():
 
     time.sleep(0.3)
 
-    assert all(key != "raw" for key, _ in readings)
+    assert sensor.last_reading("raw") is None
     assert mode_controller.calls == [sensor_mode.PROCESSED]
 
 
 def test_create_accepts_valid_read_mode():
-    sensor = create({"read_mode": "processed"}, simulate=True, on_reading=_no_op)
+    sensor = create({"read_mode": "processed"}, simulate=True)
     assert isinstance(sensor, A02YYUWSensor)
 
 
 def test_create_rejects_invalid_read_mode():
     with pytest.raises(ValueError, match="invalid read_mode"):
-        create({"read_mode": "bogus"}, simulate=True, on_reading=_no_op)
+        create({"read_mode": "bogus"}, simulate=True)
 
 
 def test_reset_delegates_to_power_controller():
     power_controller = FakePowerController()
-    sensor = A02YYUWSensor(
-        FakeSerial(), FakeModeController(), power_controller, on_reading=_no_op, poll_interval_s=0.01
-    )
+    sensor = A02YYUWSensor(FakeSerial(), FakeModeController(), power_controller, poll_interval_s=0.01)
 
     sensor.reset()
     assert power_controller.reset_calls == 1
@@ -208,15 +192,13 @@ def test_reset_delegates_to_power_controller():
 
 def test_reset_restarts_polling_with_a_fresh_thread():
     power_controller = FakePowerController()
-    readings = []
     sensor = A02YYUWSensor(
         read_sensor.SimulatedSerial(),
         FakeModeController(),
         power_controller,
-        on_reading=lambda k, v: readings.append((k, v)),
         poll_interval_s=0.005,
     )
-    _wait_until(lambda: readings)
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
     assert sensor.last_reset_at() is None
 
     sensor.reset()
@@ -228,9 +210,8 @@ def test_reset_restarts_polling_with_a_fresh_thread():
 
     # A fresh reading arrives after reset() -- proves the read thread
     # actually restarted, not just that the hardware was power-cycled.
-    readings.clear()
-    _wait_until(lambda: readings)
-    assert readings
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    assert sensor.last_reading("raw") is not None
 
 
 def test_read_and_reset_hardware_are_serialized_against_each_other():
@@ -254,7 +235,6 @@ def test_read_and_reset_hardware_are_serialized_against_each_other():
         FakeSerial(_frame(0x01, 0x2C)),
         FakeModeController(),
         SlowPowerController(),
-        on_reading=_no_op,
         poll_interval_s=1000,
     )
 
@@ -274,14 +254,12 @@ def test_read_and_reset_hardware_are_serialized_against_each_other():
 
 
 def test_supports_reset_is_true():
-    sensor = A02YYUWSensor(
-        FakeSerial(), FakeModeController(), FakePowerController(), on_reading=_no_op, poll_interval_s=1000
-    )
+    sensor = A02YYUWSensor(FakeSerial(), FakeModeController(), FakePowerController(), poll_interval_s=1000)
     assert sensor.supports_reset is True
 
 
 def test_create_under_simulate_builds_a_working_sensor():
-    sensor = create({}, simulate=True, on_reading=_no_op)
+    sensor = create({}, simulate=True)
     assert isinstance(sensor, A02YYUWSensor)
 
 
@@ -289,7 +267,7 @@ def test_close_closes_serial_mode_and_power_controllers():
     ser = FakeSerial()
     mode_controller = FakeModeController()
     power_controller = FakePowerController()
-    sensor = A02YYUWSensor(ser, mode_controller, power_controller, on_reading=_no_op, poll_interval_s=1000)
+    sensor = A02YYUWSensor(ser, mode_controller, power_controller, poll_interval_s=1000)
 
     closed = []
     ser.close = lambda: closed.append("ser")

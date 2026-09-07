@@ -30,8 +30,8 @@ def _new_sensor_state():
 
 def _signal_result(signal_name):
     """A signal's current {"value", "at", ...} result (see
-    Signal.current()), or None if there's no reading yet."""
-    return _signal_objects[signal_name].current()
+    Signal.read()), or None if there's no reading yet."""
+    return _signal_objects[signal_name].read()
 
 
 def _signal_output(result, unit):

@@ -1,6 +1,8 @@
+import time
+
 import pytest
 
-from pondpi.sensor_config import _build_on_reading, load_sensors
+from pondpi.sensor_config import load_sensors
 from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor
 
 
@@ -10,33 +12,10 @@ def write_yaml(tmp_path, content):
     return path
 
 
-class _FakeSignal:
-    owns_read_loop = False
-
-    def __init__(self, transform=lambda value: value, reads_from_sensor=True):
-        self._transform = transform
-        self.reads_from_sensor = reads_from_sensor
-        self.fed_values = []
-
-    def feed(self, value):
-        result = self._transform(value)
-        self.fed_values.append(result)
-        return result
-
-
-class _FakePollingSignal:
-    """Stand-in for an owns_read_loop signal -- _build_on_reading()
-    must never call feed() on this kind; it's fed by its own thread
-    instead (see Signal)."""
-
-    owns_read_loop = True
-    reads_from_sensor = False
-
-    def __init__(self):
-        self.fed_values = []
-
-    def feed(self, value):
-        self.fed_values.append(value)
+def _wait_until(predicate, timeout_s=2):
+    deadline = time.monotonic() + timeout_s
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.005)
 
 
 def test_loads_valid_config(tmp_path):
@@ -254,53 +233,45 @@ def test_missing_file_raises(tmp_path):
         load_sensors(tmp_path / "does_not_exist.yaml", simulate=True)
 
 
-def test_build_on_reading_feeds_matching_signals():
-    signals = {"instantaneous_raw": _FakeSignal()}
-    configs = {"instantaneous_raw": {"mode": "raw"}}
-    on_reading = _build_on_reading(signals, configs)
+def test_full_pull_chain_populates_without_any_push_wiring(tmp_path):
+    # End to end: sensor -> raw sensor signal -> rolling_median ->
+    # rolling_average, all via read()/last_reading() pulls -- nothing in
+    # this graph is ever pushed a value from outside.
+    path = write_yaml(
+        tmp_path,
+        """
+        sensors:
+          - name: pond_main
+            type: a02yyuw
+            settings: {}
+        signals:
+          - name: raw
+            type: sensor
+            source: pond_main
+            settings:
+              unit: cm
+          - name: median
+            type: rolling_median
+            source: raw
+            settings:
+              window_size: 3
+          - name: avg
+            type: rolling_average
+            source: median
+            settings:
+              window_size: 3
+              poll_interval_ms: 10
+        """,
+    )
 
-    on_reading("raw", 100)
+    sensors = load_sensors(path, simulate=True)
+    signals = sensors["pond_main"]["signals"]
 
-    assert signals["instantaneous_raw"].fed_values == [100]
+    _wait_until(lambda: signals["raw"].read() is not None)
+    assert signals["raw"].read()["value"] is not None
 
+    _wait_until(lambda: signals["median"].read() is not None)
+    assert signals["median"].read()["value"] is not None
 
-def test_build_on_reading_downstream_signal_receives_upstream_signals_output():
-    # "downstream" doubles whatever it's fed. If it wrongly received the
-    # raw sensor reading directly instead of "root"'s own (already
-    # doubled) output, it'd land on 200 instead of 400.
-    signals = {
-        "root": _FakeSignal(transform=lambda v: v * 2),
-        "downstream": _FakeSignal(transform=lambda v: v * 2, reads_from_sensor=False),
-    }
-    configs = {"root": {"mode": "raw"}, "downstream": {"mode": "raw", "source": "root"}}
-    on_reading = _build_on_reading(signals, configs)
-
-    on_reading("raw", 100)
-
-    assert signals["downstream"].fed_values == [400]
-
-
-def test_build_on_reading_skips_signals_that_own_their_own_read_loop():
-    signals = {"instantaneous_raw": _FakeSignal(), "avg": _FakePollingSignal()}
-    configs = {"instantaneous_raw": {"mode": "raw"}, "avg": {"mode": "raw", "source": "instantaneous_raw"}}
-    on_reading = _build_on_reading(signals, configs)
-
-    on_reading("raw", 100)
-
-    assert signals["instantaneous_raw"].fed_values == [100]
-    assert signals["avg"].fed_values == []
-
-
-def test_build_on_reading_routes_each_reading_to_signals_rooted_at_its_own_mode():
-    # A raw-rooted and a processed-rooted signal on the same sensor:
-    # each should only be fed when its own reading key shows up,
-    # independent of the other.
-    signals = {"raw_sig": _FakeSignal(), "proc_sig": _FakeSignal()}
-    configs = {"raw_sig": {"mode": "raw"}, "proc_sig": {"mode": "processed"}}
-    on_reading = _build_on_reading(signals, configs)
-
-    on_reading("raw", 100)
-    on_reading("processed", 50)
-
-    assert signals["raw_sig"].fed_values == [100]
-    assert signals["proc_sig"].fed_values == [50]
+    _wait_until(lambda: signals["avg"].read() is not None)
+    assert signals["avg"].read()["value"] is not None

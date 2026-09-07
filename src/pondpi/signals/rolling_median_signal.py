@@ -5,8 +5,8 @@ from pondpi.signals.utils.rolling_median_filter import RollingMedianFilter
 class RollingMedianSignal(Signal):
     """Median-filters the raw reading over a rolling window."""
 
-    def __init__(self, window_size):
-        super().__init__()
+    def __init__(self, window_size, source_signal=None):
+        super().__init__(source_signal)
         self._rolling_median = RollingMedianFilter(window_size)
 
     def add(self, raw_value):

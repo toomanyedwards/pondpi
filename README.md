@@ -7,57 +7,56 @@ sensor's current reading over a small HTTP API.
 
 ## How it works
 
-Every `Sensor` driver instance and `Signal` instance (see
-[Sensor drivers](#sensor-drivers) and [Signal
-processing](#signal-processing) below) owns whatever background thread it
-needs entirely by itself, starting the moment it's constructed -- there's
-no external "start polling" call anywhere, and the Flask server (`server.py`)
-has no notion of threads or read loops at all. Neither do the `Sensor`/
-`Signal` *base classes* -- `A02YYUWSensor` and `RollingAverageSignal`
-each implement their own loop because they specifically need one, not
-because the base class hands them one; a future driver or signal type
-with no need to poll wouldn't have to fight any inherited thread machinery
-to avoid it. `sensor_config.py` is the
-wiring layer that makes this possible: it builds the full signal graph for
-a sensor *first*, then constructs that sensor's driver with a small
-`on_reading` callback already bound to it (`_build_on_reading()`) -- so by
-the time a driver is constructed and its own read thread starts, the
-callback it calls on every reading is already fully wired up. A `Signal`
-that owns its own background thread (`owns_read_loop = True`, currently
-just `type: rolling_average`) works the same way one level up: it's
-constructed with a `get_raw_value` callable already bound to its `source:`
-signal's live `current()` output. `server.py` just holds onto the fully-built
-sensors and signals `load_sensors()` hands it and exposes their current
-state over HTTP (`GET /signals/<name>`, plus per-sensor diagnostic and
-control routes: `GET /diag`, `POST /reset`).
+Nothing is ever pushed. Every `Sensor` and `Signal` (see [Sensor
+drivers](#sensor-drivers) and [Signal processing](#signal-processing)
+below) keeps a cache of its own last known value, and anything
+downstream reads it *on demand* -- a `Signal`'s `read()` pulls
+recursively from whatever it names as its `source:` (another signal's
+own `read()`, or, for a `sensor`-type signal, its sensor's
+`last_reading()`), computing lazily the moment something actually asks
+and caching the result so a repeat `read()` with no new upstream data
+is cheap and doesn't recompute. The one exception, `owns_read_loop`
+(currently just `type: rolling_average`), owns a background thread that
+proactively samples its `source:` on its own schedule and writes the
+cache directly instead of waiting to be asked -- everything else is
+lazy. Most `Sensor` drivers (e.g. `A02YYUWSensor`) also own a background
+thread, for the more fundamental reason that *something* has to
+actually poll the hardware -- but that thread only ever writes its own
+cache (`_record_reading()`), it never reaches into any signal. Either
+way, a background thread is each type's own choice, not something the
+base class hands it -- a future driver or signal type with no need to
+poll wouldn't have to fight any inherited thread machinery to avoid it.
+`server.py` just holds onto the fully-built sensors and signals
+`load_sensors()` hands it and calls `read()` on whichever one an
+incoming HTTP request asks about (`GET /signals/<name>`, plus
+per-sensor diagnostic and control routes: `GET /diag`, `POST /reset`).
 
 ```
 sensor_config.py's load_sensors():
-  1. build every signal for a sensor first (signal_config.py) --
-     an owns_read_loop signal (e.g. rolling_average) is constructed
-     with get_raw_value already bound to its source: signal's current()
-  2. build _build_on_reading(signals, configs) -- a closure over the
-     signal graph just built
-  3. construct the sensor driver, passing on_reading in --
-     construction alone starts its own background read thread
+  1. construct every sensor first (a reads_from_sensor signal needs a
+     live Sensor object to pull from) -- construction alone starts
+     each driver's own background read thread, writing straight into
+     its own last_reading() cache as frames arrive
+  2. build every signal for those sensors (signal_config.py), each one
+     holding either the sensor object or the source signal object it
+     reads from -- an owns_read_loop signal (e.g. rolling_average)
+     additionally starts its own background thread right away, pulling
+     its source's read() on its own schedule
 
-  ┌────────────────────┐  on_reading(reading_key, distance_mm)  ┌──────────────────────┐
-  │ Sensor driver   │ ───────────────────────────────────>  │ signal.feed(value)     │
-  │ -- read thread starts│                                        │ for every signal        │
-  │ the moment it's       │                                        │ rooted at that mode      │
-  │ constructed            │                                        └───────────┬────────────┘
-  └────────────────────┘                                                        │
-                                                                                  v
-                                                        ┌─────────────────────────────┐
-                                                        │ owns_read_loop signal's own    │
-                                                        │ background thread samples       │
-                                                        │ source_signal.current() on its   │
-                                                        │ own timer, calls its own feed()   │
-                                                        └─────────────────────────────┘
+  ┌───────────────────────┐          ┌──────────────────────────┐          ┌───────────────────────────┐
+  │ Sensor driver           │          │ sensor-type Signal          │          │ chain Signal (median,        │
+  │ own read thread writes    │ <────── │ last_reading(mode), lazily     │ <────── │ average, EMA...) pulls          │
+  │ last_reading() as frames     │ read() │ on demand -- or, for rolling_ │ read() │ source.read() lazily, on demand,   │
+  │ arrive                          │          │ average, on its own timer      │          │ unless it owns its own read loop      │
+  └───────────────────────┘          └──────────────────────────┘          └───────────────────────────┘
+                                                                                    ^
+                                                                                    │ read()
+                                                                              server.py / another chain Signal
 
-Flask app (server.py) -- no threads, just reads current() off already-
-running sensors/signals: GET /sensors, GET /health, GET /diag, POST /reset,
-GET /signals, GET /signals/<name>, GET /signals/<name>/diag
+Flask app (server.py) -- no threads, just calls read()/last_reading()
+on already-running sensors/signals: GET /sensors, GET /health, GET
+/diag, POST /reset, GET /signals, GET /signals/<name>, GET
+/signals/<name>/diag
 ```
 
 ### Project layout
@@ -101,8 +100,8 @@ pondpi/
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
-| `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Builds each sensor's signal graph *before* its driver (`_build_on_reading()` wires a sensor's readings into its signals, and has to exist before the driver's construction starts its own read thread). |
-| `signals/` | `Signal` base class (`base.py`) — owns the thread-safe `feed()`/`current()` cache every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
+| `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Constructs each sensor's driver *before* its signals, since a `reads_from_sensor` signal needs a live `Sensor` object to pull from. |
+| `signals/` | `Signal` base class (`base.py`) — owns the thread-safe pull-and-cache `read()` every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `Signal` classes. Not signals themselves (they don't implement the `Signal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `Signal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `source:` chains back to a `sensor` signal's own `source`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
@@ -237,13 +236,14 @@ unit-specific math of its own. `unit` genuinely describes what `value`
 already is, not just a label server.py's own conversion happens to
 match.
 
-`output` also includes `at` — an ISO 8601 UTC timestamp of when that
-signal's `value` was last computed. `pond_main_sensor_raw` and
-`pond_main_sensor_processed` above have visibly different `at` values
-because they're rooted at different `mode`s (see [Signal
-processing](#signal-processing)) and update on independent cadences —
-`at` is how to tell a signal's value apart from stale, without needing
-to separately poll `/health`.
+`output` also includes `at` — an ISO 8601 UTC timestamp of the freshest
+underlying sensor reading this `value` reflects (see [Signal
+processing](#signal-processing) for exactly how that's tracked through
+a chain of signals). `pond_main_sensor_raw` and `pond_main_sensor_processed`
+above have visibly different `at` values because they're rooted at
+different `mode`s and update on independent cadences — `at` is how to
+tell a signal's value apart from stale, without needing to separately
+poll `/health`.
 
 ### `GET /signals`
 
@@ -282,11 +282,11 @@ subtract it from the sensor's fixed mounting height:
 
 `sensor` is which configured sensor this signal is ultimately rooted at
 (traced through any `source:` chain back to a `sensor`-type signal's own
-`source`). `unit` is this signal's own configured/derived unit,
-and `at` is when this `value` was last computed (see [Signal
-processing](#signal-processing) for both) — every field past that is
-this signal's own `extra_state()` alongside its value, varying by
-signal type, same as `/diag`'s `output`.
+`source`). `unit` is this signal's own configured/derived unit, and
+`at` is the freshest underlying sensor reading's own timestamp (see
+[Signal processing](#signal-processing) for both) — every field past
+that is this signal's own `extra_state()` alongside its value, varying
+by signal type, same as `/diag`'s `output`.
 
 `/signals/<name>/diag` returns this signal's effective `config` (as
 `/diag` would show it) alongside that same `output`, instead of just
@@ -464,20 +464,21 @@ a UART), so it implements its own `_poll_loop()`/`_begin_polling()` and
 starts that thread itself, as the *last* line of its own `__init__` (once
 all of its own state -- serial connection, mode controller, whatever it
 needs -- is fully set up); that loop just calls `self.read()` repeatedly
-(every `poll_interval_s`) and passes each `(reading_key, distance_mm)`
-pair to `on_reading`, same as before. A future driver that's push-driven
-instead (reacting to an async callback, never looping at all) is just as
-valid -- it simply wouldn't implement a poll loop, since the base class
-never assumed one. `on_reading` comes from `sensor_config.py`'s
-`_build_on_reading()` -- built from the sensor's already-constructed
-signal graph *before* the driver itself is constructed, since a driver
-that needs it immediately (like `A02YYUWSensor`) requires it up front
-(see [How it works](#how-it-works)).
+(every `poll_interval_s`) and, for each `(reading_key, distance_mm)` pair
+it gets back, caches it via `self._record_reading()`. Nothing is ever
+pushed onward from there -- a `reads_from_sensor` signal pulls a given
+reading key's last cached value on its own schedule instead, via
+`last_reading()` (see [Signal processing](#signal-processing)). A future
+driver that's push-driven instead (reacting to an async callback, never
+looping at all) is just as valid -- it simply wouldn't implement a poll
+loop, since the base class never assumed one; it would just call
+`_record_reading()` whenever its callback fires.
 
 Whatever mechanism a driver uses to obtain readings, it calls
-`self._record_reading()` (concrete on `Sensor`) each time it gets
-one, to participate in health tracking (below) -- that's the one thing
-the base class asks of every driver. `reset()` is also concrete on the
+`self._record_reading(readings)` (concrete on `Sensor`) each time it
+gets one or more, to participate in health tracking (below) *and* to
+populate `last_reading()`'s cache -- that's the one thing the base
+class asks of every driver. `reset()` is also concrete on the
 base class, but only handles the generic part: calling the driver's own
 `reset_hardware()` and recording when. A driver that owns a background
 loop (like `A02YYUWSensor`) overrides `reset()` to stop that loop, wait
@@ -493,7 +494,9 @@ any driver type free to override) plus `is_healthy()`'s comparison
 against it live entirely on `Sensor`, so server.py holds no
 threshold and makes no staleness judgment of its own; it just calls
 `sensor.is_healthy()` and trusts the answer. `reset()` also records its
-own `last_reset_at()` timestamp as part of the same call.
+own `last_reset_at()` timestamp as part of the same call, and clears
+`last_reading()`'s cache -- otherwise a signal pulling from this sensor
+would immediately re-read the stale pre-reset value.
 
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw
@@ -506,18 +509,18 @@ produced a given value.
 Sensor types are discovered dynamically at startup, the same way
 [signal types](#signal-processing) are: each entry in `sensors/` whose
 name ends in `_sensor` must define exactly one `Sensor` subclass
-*and* a module-level `create(params, simulate, on_reading)` function, and
-that entry's name with the suffix stripped becomes the `type:` string
-used in `config/sensors.yaml`. Unlike signals (whose constructors take
+*and* a module-level `create(params, simulate)` function, and that
+entry's name with the suffix stripped becomes the `type:` string used
+in `config/sensors.yaml`. Unlike signals (whose constructors take
 simple scalar params directly), most sensor drivers need real hardware
 objects — a serial connection, GPIO controllers — assembled around
 those params, and build entirely different (simulated) objects under
-`--simulate`; `create()` is where a driver type does that assembly (and
-forwards `on_reading` into the driver's own constructor -- what it does
-with it from there, e.g. `A02YYUWSensor` starting its own poll loop, is
-entirely that driver's business, not `Sensor`'s), so
+`--simulate`; `create()` is where a driver type does that assembly, so
 `sensor_config.py` never needs to know a given type's own construction
-details.
+details. Construction alone starts a driver's own background read
+thread, if it has one -- what it does from there (e.g. `A02YYUWSensor`
+starting its own poll loop) is entirely that driver's own business, not
+`Sensor`'s.
 
 An entry can be either a single `<name>_sensor.py` file (the class and
 `create()` defined directly in it) or a `<name>_sensor/` directory
@@ -605,13 +608,14 @@ instead — no cycling, no settling windows after the first frame, and
 override, distinct from (but easy to confuse with) a `sensor` signal's
 own `mode` (see [Signal processing](#signal-processing)) —
 `read_mode` controls which reading the driver ever *produces*;
-`mode` controls which reading a given *signal* consumes. Pinning
+`mode` controls which reading a given *signal* pulls. Pinning
 `read_mode` to `"processed"` means only signals rooted at `mode:
-processed` (e.g. `pond_main_sensor_processed`) ever get fed — the
-default `raw`-rooted pipeline (`pond_main_sensor_raw`, `rolling_avg`)
-never receives data, since the driver never reports a `raw` reading at
-all. Pinning to `"raw"` is the inverse: only `raw`-rooted signals get
-fed, and `pond_main_sensor_processed` never does.
+processed` (e.g. `pond_main_sensor_processed`) ever have anything to
+read — the default `raw`-rooted pipeline (`pond_main_sensor_raw`,
+`rolling_avg`) never gets data, since `last_reading("raw")` never
+populates: the driver never reports a `raw` reading at all. Pinning to
+`"raw"` is the inverse: only `raw`-rooted signals get data, and
+`pond_main_sensor_processed` never does.
 
 One consequence worth knowing: because the `raw` pipeline (the one
 feeding this sensor's `rolling_avg` etc.) only actually gets
@@ -623,11 +627,10 @@ wall-clock time (9s of `raw` per 10s cycle, minus `MODE_SETTLE_S` lost
 right after switching back into it). `rolling_avg` (`type:
 rolling_average`) sidesteps this: it owns its own background
 thread (see [Signal processing](#signal-processing)) that samples its
-`source:` signal's current cached value once every `poll_interval_ms` on
-its own timer, rather than being pushed a new one on every one of the
-sensor's much faster reads, so `window_size: 60` at
-`poll_interval_ms: 1000` stays a genuine ~60s window regardless of how
-the raw pipeline's duty cycle drifts.
+`source:` signal's `read()` once every `poll_interval_ms` on its own
+timer, rather than recomputing on every one of the sensor's much faster
+reads, so `window_size: 60` at `poll_interval_ms: 1000` stays a genuine
+~60s window regardless of how the raw pipeline's duty cycle drifts.
 
 ### Power pin: software-triggered reset
 
@@ -698,12 +701,19 @@ server.py itself, ever needs to think about millimeters again.
 
 `add()` is the pure-computation hook every signal type implements
 (median, average, EMA, unit conversion); nothing calls it directly except
-`Signal.feed()` (concrete, shared by every type), which wraps it
-with thread-safe caching -- computes the new value via `add()`, stores
-it alongside a fresh `at` timestamp, and that's what `current()` reads
-back. This is what lets `rolling_average` sample its `source:` signal
-directly (`source_signal.current()`) rather than needing anything in
-server.py to mediate between them -- see [How it works](#how-it-works).
+`Signal.read()` (concrete, shared by every type), which pulls this
+signal's `source:` (its own `read()`, or, for `sensor`-type signals, the
+sensor's `last_reading()`) and, if that's newer than what this signal
+already incorporated, computes a fresh value via `add()` and
+thread-safely caches it alongside that source's own `at`. Calling
+`read()` any number of times with no new upstream data is safe and
+cheap -- `add()` only reruns when there's genuinely something new, so a
+stateful accumulator (a rolling window, an EMA) is never double-fed by
+two callers reading in quick succession. This pull-and-cache mechanism
+is what lets `rolling_average` sample its `source:` signal directly
+(`source_signal.read()`, from its own background thread) rather than
+needing anything in server.py to mediate between them -- see [How it
+works](#how-it-works).
 
 Every signal entry has four generic top-level fields -- `name`, `type`,
 `source`, and (optionally) `emit` -- that `signal_config.py` itself
@@ -717,7 +727,7 @@ kwargs. Built-in `Signal` types (`type:` in the YAML) and their
 |---|---|---|
 | `sensor` | `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type whose `source:` names a sensor directly -- everything else names another signal. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `source:` signal's current cached value once every `poll_interval_ms`, on its own timer (`Signal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
+| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of computing lazily the moment something calls `read()`, it owns its own dedicated background thread that samples its `source:` signal's `read()` once every `poll_interval_ms`, on its own timer, and writes the result directly (`Signal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every entry requires a top-level `source: <name>` -- for `sensor` it
@@ -765,9 +775,20 @@ marker needed, and any number of a sensor's signals (zero, one, or
 more) may do it.
 
 Every signal's `/diag`/`/signals/<name>` output also includes `at` — an
-ISO 8601 UTC timestamp of when that signal's `value` was last computed,
-letting a caller tell a signal's freshness apart from another's without
-a separate `/health` request.
+ISO 8601 UTC timestamp letting a caller tell a signal's freshness apart
+from another's without a separate `/health` request. For most signal
+types `at` is **propagated from `source:`**, not stamped fresh at
+`read()` time -- ultimately tracing back to whichever `sensor`-type
+signal's `SensorSignal.read()` pulled it from `Sensor.last_reading()`,
+i.e. when the underlying physical reading actually arrived. Stamping
+"now" at `read()` time instead would be actively misleading under a
+pull model: a signal nobody has queried in 30s would otherwise claim
+its value is fresh the instant someone finally asks, masking real
+staleness. `owns_read_loop` types (`rolling_average`) are the one
+exception -- they stamp their *own* sampling time instead, since they
+deliberately sample their `source:` on their own schedule, independent
+of its cadence; "when did I last sample" is the meaningful timestamp
+for them specifically.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `poll_interval_ms`, default 150ms -- see [Sensor drivers](#sensor-drivers))
