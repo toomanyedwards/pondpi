@@ -18,8 +18,9 @@ class RollingAverageSignal(LevelSignal):
     faster poll rate (`--polling-interval-ms`) -- no need to retain a
     sample for every single one of those ticks to cover a real minute.
 
-    Call `run_loop()` in a dedicated thread (see server.py's `main()`);
-    `current()` is the thread-safe read side, polled by HTTP handlers.
+    `start()` spawns `run_loop()` in its own dedicated background
+    thread; `current()` is the thread-safe read side, polled by HTTP
+    handlers.
     """
 
     owns_read_loop = True
@@ -31,6 +32,9 @@ class RollingAverageSignal(LevelSignal):
         self._value = None
         self._at = None
         self._last_reading_monotonic = None
+
+    def start(self, stop_event, get_raw_value):
+        threading.Thread(target=self.run_loop, args=(stop_event, get_raw_value), daemon=True).start()
 
     def run_loop(self, stop_event, get_raw_value):
         """`get_raw_value` is a zero-arg callable returning this
