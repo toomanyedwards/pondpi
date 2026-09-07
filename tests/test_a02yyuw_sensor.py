@@ -91,6 +91,93 @@ def test_read_returns_none_before_any_reading():
     assert sensor.read() is None
 
 
+def test_check_health_false_before_any_reading():
+    sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController(), poll_interval_s=1000)
+    assert sensor.check_health() is False
+    assert sensor.is_healthy() is False
+
+
+def test_check_health_false_when_only_raw_has_arrived():
+    # A fixed-mode fake frame source only ever populates "raw" (this
+    # driver's cycling logic still starts in raw mode regardless of the
+    # frame data itself) -- "processed" never arrives, so check_health()
+    # must stay False even though raw is fine.
+    sensor = A02YYUWSensor(
+        FakeSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+    )
+
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+
+    assert sensor.last_reading("processed") is None
+    assert sensor.check_health() is False
+
+
+def test_check_health_true_once_both_readings_arrive():
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+    )
+
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
+
+    assert sensor.check_health() is True
+    assert sensor.is_healthy() is True
+
+
+def test_check_health_false_when_last_reading_is_older_than_health_threshold():
+    # Both readings have arrived (satisfying the presence check), but
+    # last_reading_monotonic() is stale beyond health_stale_threshold_s
+    # -- e.g. the background thread has since died -- so check_health()
+    # must catch that even though a pure presence check wouldn't.
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+        health_stale_threshold_s=0.05,
+    )
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
+    sensor._stop_event.set()  # freeze the poll loop -- no further readings will arrive
+    sensor._thread.join(timeout=1)
+
+    with sensor._lock:
+        sensor._last_reading_monotonic = time.monotonic() - 1000
+
+    assert sensor.check_health() is False
+
+
+def test_check_health_true_within_health_threshold_even_with_a_custom_value():
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+        health_stale_threshold_s=10,
+    )
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
+    sensor._stop_event.set()  # freeze the poll loop -- no further readings will arrive
+    sensor._thread.join(timeout=1)
+
+    with sensor._lock:
+        sensor._last_reading_monotonic = time.monotonic() - 5  # stale, but within this sensor's own 10s threshold
+
+    assert sensor.check_health() is True
+
+
 def test_read_defaults_to_raw_mode_when_no_options_given():
     sensor = A02YYUWSensor(
         FakeSerial(_frame(0x01, 0x2C)),
