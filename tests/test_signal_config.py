@@ -478,7 +478,7 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
               unit: cm
               mode: processed
           - name: c
-            type: rolling_average
+            type: rolling_median
             input: b
             params:
               window_size: 2

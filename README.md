@@ -78,7 +78,7 @@ pondpi/
 | `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. |
-| `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
+| `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `polling_rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `params.sensor`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
@@ -645,8 +645,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 |---|---|---|
 | `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
-| `polling_rolling_average` | `window_size`, `poll_interval_s` | Like `rolling_average`, but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_s`, on its own timer. `window_size * poll_interval_s` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. Exactly one signal per sensor -- the `primary` one -- must be this type, since `/health` and `/level`'s default view are built around its own background-sampling cadence (see `LevelSignal.owns_read_loop`). |
+| `polling_rolling_average` | `window_size`, `poll_interval_s` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_s`, on its own timer. `window_size * poll_interval_s` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. Exactly one signal per sensor -- the `primary` one -- must be this type, since `/health` and `/level`'s default view are built around its own background-sampling cadence (see `LevelSignal.owns_read_loop`). |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,
@@ -826,7 +825,7 @@ under `src/pondpi/` take effect immediately — no reinstall needed. It
 also puts the `pondpi-server` command on your `PATH` (equivalently, run
 `python -m pondpi.server` directly).
 
-Useful while developing: a small `window_size` on a `rolling_average`/
+Useful while developing: a small `window_size` on a `polling_rolling_average`/
 `rolling_median` signal in `config/sensors.yaml`'s `signals:` list (see
 the average react faster) and `--polling-interval-ms 200` (slow the
 stream down to read it by eye). Pass `--sensors-config` to point at an
