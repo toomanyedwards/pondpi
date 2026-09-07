@@ -2,9 +2,9 @@ import time
 
 import serial
 
-from pondpi import read_sensor
-from pondpi.sensors import sensor_mode, sensor_power
 from pondpi.sensors.base import LevelSensor
+
+from . import read_sensor, sensor_mode, sensor_power
 
 # Comfortably above the sensor's ~100ms response time -- if this long
 # passes with no valid frame, read_frame() has likely lost byte

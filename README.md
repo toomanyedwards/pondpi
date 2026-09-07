@@ -41,13 +41,14 @@ pondpi/
 │   └── sensors.yaml         # sensor + signal-processing config, see below
 ├── src/pondpi/              # the installable package — production code only
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
-│   ├── sensors/              # one LevelSensor subclass per <type>_sensor.py file
+│   ├── sensors/              # one LevelSensor subclass per <type>_sensor.py file or <type>_sensor/ dir
 │   │   ├── base.py            # LevelSensor interface
-│   │   ├── a02yyuw_sensor.py  # A02YYUW driver -- wraps read_sensor.py + sensor_mode.py + sensor_power.py
-│   │   ├── sensor_mode.py     # A02YYUW-specific: drives its mode-select pin
-│   │   └── sensor_power.py    # A02YYUW-specific: drives its power supply pin
+│   │   └── a02yyuw_sensor/    # A02YYUW driver -- multi-file, so it's a package, not a single file
+│   │       ├── __init__.py      # A02YYUWSensor + create() -- the discovered entry point
+│   │       ├── read_sensor.py   # protocol/hardware layer: checksum, frame parsing, SimulatedSerial
+│   │       ├── sensor_mode.py   # drives the mode-select pin
+│   │       └── sensor_power.py  # drives the power supply pin
 │   ├── sensor_config.py
-│   ├── read_sensor.py
 │   ├── signals/               # one LevelSignal subclass per <type>_signal.py file
 │   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
 │   │                           # not signals themselves, see below
@@ -62,11 +63,12 @@ pondpi/
 | File | Responsibility |
 |---|---|
 | `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). `supports_reset`/`reset()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
-| `sensors/a02yyuw_sensor.py` | `A02YYUWSensor` — the A02YYUW driver. Consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. Discovered dynamically like signals — see [Sensor drivers](#sensor-drivers). |
-| `sensors/sensor_mode.py` | A02YYUW-specific: drives its RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). Lives under `sensors/` (not scanned by driver discovery — its name doesn't end in `_sensor`) since it's specific to the A02YYUW driver. |
-| `sensors/sensor_power.py` | A02YYUW-specific: drives its power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
+| `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
+| `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `LevelSensor` subclass + `create()`. |
+| `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
+| `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
+| `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. |
-| `read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `signals/` | `LevelSignal` base class (`base.py`) and its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `params.sensor`). |
@@ -456,19 +458,35 @@ millimeters-to-surface unit before returning it — nothing downstream
 produced a given value.
 
 Sensor types are discovered dynamically at startup, the same way
-[signal types](#signal-processing) are: each file in `sensors/` whose
+[signal types](#signal-processing) are: each entry in `sensors/` whose
 name ends in `_sensor` must define exactly one `LevelSensor` subclass
-*and* a module-level `create(params, simulate)` function, and the
-filename with that suffix stripped becomes the `type:` string used in
-`config/sensors.yaml`. Unlike signals (whose constructors take simple
-scalar params directly), most sensor drivers need real hardware
+*and* a module-level `create(params, simulate)` function, and that
+entry's name with the suffix stripped becomes the `type:` string used
+in `config/sensors.yaml`. Unlike signals (whose constructors take
+simple scalar params directly), most sensor drivers need real hardware
 objects — a serial connection, GPIO controllers — assembled around
 those params, and build entirely different (simulated) objects under
 `--simulate`; `create()` is where a driver type does that assembly, so
 `sensor_config.py` never needs to know a given type's own construction
-details. Adding a new sensor type
-means writing `sensors/<name>_sensor.py` and referencing `type: <name>`
-in `config/sensors.yaml` — nothing else to edit or register.
+details.
+
+An entry can be either a single `<name>_sensor.py` file (the class and
+`create()` defined directly in it) or a `<name>_sensor/` directory
+package, for a driver whose logic is naturally split across several
+source files that belong grouped together rather than scattered as
+top-level `pondpi` modules (`sensors/a02yyuw_sensor/`'s
+`read_sensor.py`/`sensor_mode.py`/`sensor_power.py` are a real
+example — all A02YYUW-specific, none used by any other driver). For a
+directory package, the class and `create()` can either be defined
+directly in its `__init__.py` or defined in one of its own submodules
+and re-exported from `__init__.py` — that's the module dynamic
+discovery imports and scans either way. A helper submodule inside a
+driver's own package (`sensor_mode.py`, say) is never itself mistaken
+for a separate driver, the same way `sensors/base.py` isn't — neither
+name ends in `_sensor`. Adding a new single-file sensor type means
+writing `sensors/<name>_sensor.py` and referencing `type: <name>` in
+`config/sensors.yaml`; a multi-file one means a `sensors/<name>_sensor/`
+directory instead — nothing else to edit or register either way.
 
 ## Sensor notes
 

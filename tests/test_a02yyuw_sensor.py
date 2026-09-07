@@ -2,8 +2,7 @@ import time
 
 import pytest
 
-from pondpi.sensors import sensor_mode
-from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor, create
+from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor, create, sensor_mode
 
 
 class FakeSerial:
