@@ -63,7 +63,7 @@ signals:
     emit: false
     params:
       window_size: 5
-  - name: polling_rolling_avg
+  - name: rolling_avg
     type: rolling_average
     input: rolling_median5
     primary: true
