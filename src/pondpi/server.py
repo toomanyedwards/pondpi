@@ -37,15 +37,19 @@ def _signal_result(sensor_name, signal_name):
 
 
 def _signal_output(result, unit):
-    """Converts one signal's cached result ({"value": mm, "at": ...,
+    """Converts one signal's cached result ({"value": ..., "at": ...,
     **extra_state}) into its /diag and /signals/<name> output shape
-    ({"value": cm, "unit": ..., "at": ..., **extra_state}). `unit` is
-    that signal's own configured/derived unit (see signal_config.py's
+    ({"value": ..., "unit": ..., "at": ..., **extra_state}). `result["value"]`
+    is already in the signal's own unit -- SensorSignal converts a
+    sensor's canonical millimeter reading into it once, at the boundary
+    (see signals/sensor_signal.py) -- so server.py only rounds for
+    display, it does no unit-specific math of its own. `unit` is that
+    signal's own configured/derived unit (see signal_config.py's
     `_config_summary()`) -- static per-signal metadata, not something
     recomputed every cycle, so it's passed in rather than read off
     `result`."""
     extra_state = {k: v for k, v in result.items() if k not in ("value", "at")}
-    return {"value": round(result["value"] / 10.0, 1), "unit": unit, "at": result["at"], **extra_state}
+    return {"value": round(result["value"], 1), "unit": unit, "at": result["at"], **extra_state}
 
 
 @app.route("/health")

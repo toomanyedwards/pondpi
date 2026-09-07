@@ -291,10 +291,10 @@ def _populate_pond_main_diag_state():
     with two signals, both already holding a cached current() result."""
     server._signal_objects = {
         "rolling_median5": FakeSignal(
-            {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5}
+            {"value": 50.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5}
         ),
         "rolling_avg": FakeSignal(
-            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 200, "samples_in_window": 200}
+            {"value": 85.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 200, "samples_in_window": 200}
         ),
     }
     server._state["pond_main"].update(
@@ -404,7 +404,7 @@ def test_signal_detail_returns_value_and_extra_state():
     server._signal_owner = {"rolling_avg": "pond_main"}
     server._signal_objects = {
         "rolling_avg": FakeSignal(
-            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
+            {"value": 85.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
         )
     }
     server._state["pond_main"].update(configs={"rolling_avg": {"unit": "cm"}})
@@ -449,7 +449,7 @@ def test_signal_diag_returns_config_and_output():
     server._signal_owner = {"rolling_avg": "pond_main"}
     server._signal_objects = {
         "rolling_avg": FakeSignal(
-            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
+            {"value": 85.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400}
         )
     }
     server._state["pond_main"].update(
