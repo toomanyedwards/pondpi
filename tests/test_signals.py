@@ -12,25 +12,25 @@ from pondpi.signals.sensor_signal import SensorSignal
 class _FakeSensor:
     """Stand-in for a Sensor instance -- exposes just the pull surface
     (`read()`) a `reads_from_sensor` signal actually uses. `read_calls`
-    records each `settings` a caller passed in, for tests that check
+    records each `options` a caller passed in, for tests that check
     what a Signal forwards."""
 
     def __init__(self, readings=None):
         self._readings = readings or {}
         self.read_calls = []
 
-    def read(self, settings=None):
-        self.read_calls.append(settings)
-        mode = (settings or {}).get("mode", "raw")
-        return self._readings.get(mode)
+    def read(self, options=None):
+        self.read_calls.append(options)
+        read_mode = (options or {}).get("read_mode", "raw")
+        return self._readings.get(read_mode)
 
 
 class _FakeSourceSignal:
     """Stand-in for a live source Signal -- `.set()` controls what the
     next `.read()` returns, mirroring how a real signal's cache changes
-    over time. `read_calls` records each `settings` a caller passed in,
+    over time. `read_calls` records each `options` a caller passed in,
     for tests that check whether a Signal forwards its own caller's
-    settings on to its source."""
+    options on to its source."""
 
     def __init__(self, result=None):
         self._result = result
@@ -39,8 +39,8 @@ class _FakeSourceSignal:
     def set(self, value, at):
         self._result = {"value": value, "at": at}
 
-    def read(self, settings=None):
-        self.read_calls.append(settings)
+    def read(self, options=None):
+        self.read_calls.append(options)
         return self._result
 
 
@@ -117,11 +117,11 @@ def test_sensor_signal_read_is_none_before_the_sensor_has_a_reading():
     assert signal.read() is None
 
 
-def test_sensor_signal_passes_its_own_read_mode_as_the_sensors_read_settings():
-    # The sensor doesn't know or care about "read_mode" as a signal-
-    # config concept -- it's purely the caller's (this signal's)
-    # settings, passed to Sensor.read() under the key its own contract
-    # expects ("mode"), independent of what this signal's YAML calls it.
+def test_sensor_signal_passes_its_own_source_options_to_the_sensors_read():
+    # The sensor gets exactly this signal's own validated source.options
+    # (self._source_options, set from sensor_options at construction),
+    # passed straight through unmodified -- not the caller's own options
+    # to *this* signal's read(), and not some translated dict.
     sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
     signal = SensorSignal(
         sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", sensor_options={"read_mode": "processed"}
@@ -129,22 +129,21 @@ def test_sensor_signal_passes_its_own_read_mode_as_the_sensors_read_settings():
 
     signal.read()
 
-    assert sensor.read_calls == [{"mode": "processed"}]
+    assert sensor.read_calls == [{"read_mode": "processed"}]
 
 
-def test_sensor_signal_ignores_its_own_callers_settings_when_pulling_its_sensor():
-    # Whatever settings this signal's own caller passes into its read()
-    # are irrelevant to what it hands its sensor -- it always builds its
-    # own {"mode": ...} from its own configured read_mode, never
-    # forwarding what it was given.
+def test_sensor_signal_ignores_its_own_callers_options_when_pulling_its_sensor():
+    # Whatever options this signal's own caller passes into its read()
+    # are irrelevant to what it hands its sensor -- it always passes its
+    # own source_options, never forwarding what it was given.
     sensor = _FakeSensor({"processed": {"value": 202, "at": "t2"}})
     signal = SensorSignal(
         sensor_objects={"pond_main": sensor}, sensor="pond_main", unit="cm", sensor_options={"read_mode": "processed"}
     )
 
-    signal.read({"mode": "raw", "unrelated": "value"})
+    signal.read({"read_mode": "raw", "unrelated": "value"})
 
-    assert sensor.read_calls == [{"mode": "processed"}]
+    assert sensor.read_calls == [{"read_mode": "processed"}]
 
 
 def test_rolling_median_signal_delegates_to_rolling_median_filter():
@@ -177,16 +176,18 @@ def test_signal_read_returns_none_before_source_has_any_value():
     assert signal.read() is None
 
 
-def test_signal_read_does_not_forward_caller_settings_to_its_own_source():
-    # A caller's settings are scoped to this one signal -- blindly
+def test_signal_read_does_not_forward_caller_options_to_its_own_source():
+    # A caller's options are scoped to this one signal -- blindly
     # relaying them further up the chain risks a signal there
     # misreading a key that happened to mean something else to it.
+    # What actually reaches the source is this signal's own (empty,
+    # for a chain type -- only SensorSignal may set any) source_options.
     source = _FakeSourceSignal()
     signal = RollingMedianSignal(window_size=3, source_signal=source)
 
     signal.read({"window_size": 999})
 
-    assert source.read_calls == [None]
+    assert source.read_calls == [{}]
 
 
 def test_signal_read_pulls_and_computes_from_its_source():
@@ -265,7 +266,7 @@ def _queue_source(values):
     queue = list(values)
 
     class _Source:
-        def read(self):
+        def read(self, options=None):
             value = queue.pop(0) if queue else None
             return None if value is None else {"value": value, "at": "at"}
 

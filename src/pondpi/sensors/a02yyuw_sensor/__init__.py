@@ -58,11 +58,11 @@ class A02YYUWSensor(Sensor):
 
     `read()` overrides `Sensor.read()` as a thin cache lookup --
     `{"value": distance_mm, "at": ...}` for whichever mode the caller's
-    own `settings` selects (via a `mode` key, defaulting to `"raw"`), or
-    None if nothing's arrived for that mode yet -- so it's always
-    instant and never touches the UART. `_read_hardware()` (below) is
-    the method
-    that actually talks to the sensor: it does at most one serial read
+    own `options` selects (via a `read_mode` key, defaulting to
+    `"raw"`), or None if nothing's arrived for that mode yet -- so it's
+    always instant and never touches the UART. `_read_hardware()`
+    (below) is the method that actually talks to the sensor: it does at
+    most one serial read
     per call and never blocks waiting for a frame, so this driver polls
     it repeatedly from its own background thread (started automatically
     at construction; see `_begin_polling()` below -- `Sensor` itself has
@@ -121,18 +121,19 @@ class A02YYUWSensor(Sensor):
         # must already be set.
         self._begin_polling()
 
-    def read(self, settings=None):
+    def read(self, options=None):
         """A thin cache lookup -- `{"value": distance_mm, "at": ...}`
-        for whichever mode `settings` (the caller's own settings, e.g. a
-        `sensor`-type Signal's -- see sensors/base.py's `Sensor.read()`)
-        selects via a `mode` key, or None if nothing's arrived for that
-        mode yet. Defaults to `"raw"` when `settings` is None or doesn't
-        set `mode` -- the same default a `sensor`-type Signal's own
-        `mode` setting uses (see signals/sensor_signal.py). This never
-        touches the UART itself; `_read_hardware()` (below) is what
-        actually keeps `last_reading()`'s cache warm."""
-        mode = (settings or {}).get("mode", sensor_mode.RAW)
-        return self.last_reading(mode)
+        for whichever mode `options` (the caller's own `source.options`,
+        e.g. a `sensor`-type Signal's -- see sensors/base.py's
+        `Sensor.read()`) selects via a `read_mode` key, or None if
+        nothing's arrived for that mode yet. Defaults to `"raw"` when
+        `options` is None or doesn't set `read_mode` -- the same default
+        a `sensor`-type Signal's own `read_mode` setting uses (see
+        signals/sensor_signal.py). This never touches the UART itself;
+        `_read_hardware()` (below) is what actually keeps
+        `last_reading()`'s cache warm."""
+        read_mode = (options or {}).get("read_mode", sensor_mode.RAW)
+        return self.last_reading(read_mode)
 
     def _read_hardware(self):
         with self._hardware_lock:

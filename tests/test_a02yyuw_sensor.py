@@ -91,7 +91,7 @@ def test_read_returns_none_before_any_reading():
     assert sensor.read() is None
 
 
-def test_read_defaults_to_raw_mode_when_no_settings_given():
+def test_read_defaults_to_raw_mode_when_no_options_given():
     sensor = A02YYUWSensor(
         FakeSerial(_frame(0x01, 0x2C)),
         FakeModeController(),
@@ -103,7 +103,7 @@ def test_read_defaults_to_raw_mode_when_no_settings_given():
     assert sensor.read()["value"] == 0x012C
 
 
-def test_read_returns_the_reading_for_the_mode_settings_selects():
+def test_read_returns_the_reading_for_the_mode_options_selects():
     sensor = A02YYUWSensor(
         read_sensor.SimulatedSerial(),
         FakeModeController(),
@@ -116,8 +116,8 @@ def test_read_returns_the_reading_for_the_mode_settings_selects():
 
     _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
 
-    raw_reading = sensor.read({"mode": "raw"})
-    processed_reading = sensor.read({"mode": "processed"})
+    raw_reading = sensor.read({"read_mode": "raw"})
+    processed_reading = sensor.read({"read_mode": "processed"})
     assert raw_reading == sensor.last_reading("raw")
     assert processed_reading == sensor.last_reading("processed")
     assert raw_reading != processed_reading
