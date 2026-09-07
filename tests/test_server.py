@@ -1,16 +1,7 @@
-import threading
 import time
 from datetime import datetime, timezone
 
 from pondpi import server
-
-
-class DummyThread:
-    def __init__(self, alive):
-        self._alive = alive
-
-    def is_alive(self):
-        return self._alive
 
 
 class FakeSignal:
@@ -63,23 +54,6 @@ class _DoublingSignal:
         return {}
 
 
-class FakeSensorDriver:
-    """A LevelSensor test double: `read()` returns each entry of a
-    pre-scripted sequence in turn, then an empty dict forever once
-    exhausted (matching a real driver's "nothing new this call")."""
-
-    def __init__(self, readings_sequence):
-        self._readings_sequence = list(readings_sequence)
-        self._index = 0
-
-    def read(self):
-        if self._index < len(self._readings_sequence):
-            result = self._readings_sequence[self._index]
-            self._index += 1
-            return result
-        return {}
-
-
 class FakeResetSensor:
     def __init__(self, supports_reset=True):
         self.supports_reset = supports_reset
@@ -94,7 +68,6 @@ def _reset_globals(names):
     state for the given sensor names, so each test starts from a known
     baseline regardless of what an earlier test left behind."""
     server._sensors = {}
-    server._poll_threads = {}
     server._state = {}
     server._signal_owner = {}
     server._signal_objects = {}
@@ -102,10 +75,11 @@ def _reset_globals(names):
         server._state[name] = server._new_sensor_state()
 
 
-def test_health_ok_when_poller_alive():
+def test_health_ok_before_first_reading():
+    # No reading yet is expected right after startup -- shouldn't read
+    # as degraded on its own, only actual staleness should.
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["signal_names"] = ["rolling_avg", "instantaneous_raw"]
     server._commit_sha = "abc123"
     client = server.app.test_client()
@@ -120,40 +94,13 @@ def test_health_ok_when_poller_alive():
     assert data["uptime_seconds"] >= 0
     assert data["uptime_human"] == f"{int(data['uptime_seconds'])}s"
     assert data["commit_sha"] == "abc123"
-    assert data["sensors"]["pond_main"]["poller_alive"] is True
     assert data["sensors"]["pond_main"]["last_reading_age_s"] is None
     assert data["sensors"]["pond_main"]["signals"] == ["rolling_avg", "instantaneous_raw"]
-
-
-def test_health_degraded_when_poller_dead():
-    _reset_globals(["pond_main"])
-    server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=False)}
-    client = server.app.test_client()
-
-    resp = client.get("/health")
-
-    assert resp.status_code == 503
-    data = resp.get_json()
-    assert data["status"] == "degraded"
-    assert data["sensors"]["pond_main"]["poller_alive"] is False
-
-
-def test_health_degraded_when_poller_never_started():
-    _reset_globals(["pond_main"])
-    server._sensors = {"pond_main": object()}
-    server._poll_threads = {}
-    client = server.app.test_client()
-
-    resp = client.get("/health")
-
-    assert resp.status_code == 503
 
 
 def test_health_ok_when_reading_recent():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["last_reading_monotonic"] = time.monotonic()
     client = server.app.test_client()
 
@@ -168,7 +115,6 @@ def test_health_ok_when_reading_recent():
 def test_health_degraded_when_reading_stale():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=True)}
     server._state["pond_main"]["last_reading_monotonic"] = time.monotonic() - (server.STALE_READING_THRESHOLD_S + 1)
     client = server.app.test_client()
 
@@ -177,16 +123,12 @@ def test_health_degraded_when_reading_stale():
     assert resp.status_code == 503
     data = resp.get_json()
     assert data["status"] == "degraded"
-    # poller thread is alive -- it's specifically the stale reading that
-    # should drive degraded status here, not thread liveness.
-    assert data["sensors"]["pond_main"]["poller_alive"] is True
     assert data["sensors"]["pond_main"]["last_reading_age_s"] > server.STALE_READING_THRESHOLD_S
 
 
 def test_health_last_reset_at_null_before_any_reset():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=True)}
     client = server.app.test_client()
 
     resp = client.get("/health")
@@ -197,7 +139,6 @@ def test_health_last_reset_at_null_before_any_reset():
 def test_health_reflects_last_reset_at():
     _reset_globals(["pond_main"])
     server._sensors = {"pond_main": object()}
-    server._poll_threads = {"pond_main": DummyThread(alive=True)}
     reset_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     server._state["pond_main"]["last_reset_at"] = reset_at
     client = server.app.test_client()
@@ -210,20 +151,17 @@ def test_health_reflects_last_reset_at():
 def test_health_reports_multiple_sensors_independently():
     _reset_globals(["pond_main", "rain_barrel"])
     server._sensors = {"pond_main": object(), "rain_barrel": object()}
-    server._poll_threads = {
-        "pond_main": DummyThread(alive=True),
-        "rain_barrel": DummyThread(alive=False),
-    }
+    server._state["rain_barrel"]["last_reading_monotonic"] = time.monotonic() - (server.STALE_READING_THRESHOLD_S + 1)
     client = server.app.test_client()
 
     resp = client.get("/health")
 
-    # One sensor degraded is enough to make the overall status degraded.
+    # One sensor stale is enough to make the overall status degraded.
     assert resp.status_code == 503
     data = resp.get_json()
     assert data["status"] == "degraded"
-    assert data["sensors"]["pond_main"]["poller_alive"] is True
-    assert data["sensors"]["rain_barrel"]["poller_alive"] is False
+    assert data["sensors"]["pond_main"]["status"] == "ok"
+    assert data["sensors"]["rain_barrel"]["status"] == "degraded"
 
 
 def test_reset_powercycles_a_single_configured_sensor_and_records_last_reset_at():
@@ -314,100 +252,48 @@ def test_sensor_reset_targets_named_sensor_independently():
     assert fake_main.reset_calls == 0
 
 
-def test_poll_sensor_routes_raw_readings_through_signals():
+def test_route_reading_feeds_matching_signals():
     _reset_globals(["pond_main"])
     signals = {"instantaneous_raw": _PassthroughSignal()}
     configs = {"instantaneous_raw": {"mode": "raw"}}
-    sensor = FakeSensorDriver([{"raw": 100}])
-    stop_event = threading.Event()
 
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
-    )
-    thread.start()
-    for _ in range(200):
-        with server._state_lock:
-            if "instantaneous_raw" in server._state["pond_main"]["signals"]:
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread.join(timeout=1)
+    server._route_reading("pond_main", signals, configs, "raw", 100)
 
     assert server._state["pond_main"]["signals"]["instantaneous_raw"]["value"] == 100
     assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
 
-def test_poll_sensor_downstream_signal_receives_upstream_signals_output():
+def test_route_reading_downstream_signal_receives_upstream_signals_output():
     # "downstream" doubles whatever it's fed. If it wrongly received the
     # raw sensor reading directly instead of "root"'s own (already
     # doubled) output, it'd land on 200 instead of 400.
     _reset_globals(["pond_main"])
     signals = {"root": _DoublingSignal(), "downstream": _DoublingSignal()}
     configs = {"root": {"mode": "raw"}, "downstream": {"mode": "raw", "input": "root"}}
-    sensor = FakeSensorDriver([{"raw": 100}])
-    stop_event = threading.Event()
 
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
-    )
-    thread.start()
-    for _ in range(200):
-        with server._state_lock:
-            if "downstream" in server._state["pond_main"]["signals"]:
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread.join(timeout=1)
+    server._route_reading("pond_main", signals, configs, "raw", 100)
 
     assert server._state["pond_main"]["signals"]["downstream"]["value"] == 400
 
 
-def test_poll_sensor_skips_signals_that_own_their_own_read_loop():
+def test_route_reading_skips_signals_that_own_their_own_read_loop():
     _reset_globals(["pond_main"])
     polling_signal = FakePollingSignal()
     signals = {"instantaneous_raw": _PassthroughSignal(), "avg": polling_signal}
     configs = {"instantaneous_raw": {"mode": "raw"}, "avg": {"mode": "raw", "input": "instantaneous_raw"}}
-    sensor = FakeSensorDriver([{"raw": 100}])
-    stop_event = threading.Event()
 
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
-    )
-    thread.start()
-    for _ in range(200):
-        with server._state_lock:
-            if "instantaneous_raw" in server._state["pond_main"]["signals"]:
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread.join(timeout=1)
+    server._route_reading("pond_main", signals, configs, "raw", 100)
 
     assert "instantaneous_raw" in server._state["pond_main"]["signals"]
     assert "avg" not in server._state["pond_main"]["signals"]
 
 
-def test_poll_sensor_caches_processed_signals_independently_of_raw():
+def test_route_reading_caches_processed_signals_independently_of_raw():
     _reset_globals(["pond_main"])
     signals = {"proc_sig": _PassthroughSignal()}
     configs = {"proc_sig": {"mode": "processed"}}
-    sensor = FakeSensorDriver([{"processed": 123}])
-    stop_event = threading.Event()
 
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
-    )
-    thread.start()
-    for _ in range(200):
-        with server._state_lock:
-            if "proc_sig" in server._state["pond_main"]["signals"]:
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread.join(timeout=1)
+    server._route_reading("pond_main", signals, configs, "processed", 123)
 
     assert server._state["pond_main"]["signals"]["proc_sig"]["value"] == 123
     # A "processed" reading must never touch last_reading_monotonic --
@@ -415,29 +301,16 @@ def test_poll_sensor_caches_processed_signals_independently_of_raw():
     assert server._state["pond_main"]["last_reading_monotonic"] is None
 
 
-def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
+def test_route_reading_routes_each_reading_to_signals_rooted_at_its_own_mode():
     # A raw-rooted and a processed-rooted signal on the same sensor:
     # each should only be fed (and only get a fresh "at" timestamp)
     # when its own reading key shows up, independent of the other.
     _reset_globals(["pond_main"])
     signals = {"raw_sig": _PassthroughSignal(), "proc_sig": _PassthroughSignal()}
     configs = {"raw_sig": {"mode": "raw"}, "proc_sig": {"mode": "processed"}}
-    sensor = FakeSensorDriver([{"raw": 100}, {"processed": 50}])
-    stop_event = threading.Event()
 
-    thread = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
-    )
-    thread.start()
-    for _ in range(200):
-        with server._state_lock:
-            sigs = server._state["pond_main"]["signals"]
-            if "raw_sig" in sigs and "proc_sig" in sigs:
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread.join(timeout=1)
+    server._route_reading("pond_main", signals, configs, "raw", 100)
+    server._route_reading("pond_main", signals, configs, "processed", 50)
 
     sigs = server._state["pond_main"]["signals"]
     assert sigs["raw_sig"]["value"] == 100
@@ -447,33 +320,11 @@ def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
     assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
 
-def test_poll_sensor_keeps_multiple_sensors_state_independent():
+def test_route_reading_keeps_multiple_sensors_state_independent():
     _reset_globals(["pond_main", "rain_barrel"])
-    sensor_main = FakeSensorDriver([{"raw": 100}])
-    sensor_barrel = FakeSensorDriver([{"raw": 200}])
-    stop_event = threading.Event()
 
-    thread_main = threading.Thread(
-        target=server.poll_sensor,
-        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, stop_event, 0.001),
-    )
-    thread_barrel = threading.Thread(
-        target=server.poll_sensor,
-        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, stop_event, 0.001),
-    )
-    thread_main.start()
-    thread_barrel.start()
-    for _ in range(200):
-        with server._state_lock:
-            if (
-                "raw" in server._state["pond_main"]["signals"]
-                and "raw" in server._state["rain_barrel"]["signals"]
-            ):
-                break
-        time.sleep(0.005)
-    stop_event.set()
-    thread_main.join(timeout=1)
-    thread_barrel.join(timeout=1)
+    server._route_reading("pond_main", {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", 100)
+    server._route_reading("rain_barrel", {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", 200)
 
     assert server._state["pond_main"]["signals"]["raw"]["value"] == 100
     assert server._state["rain_barrel"]["signals"]["raw"]["value"] == 200

@@ -8,30 +8,34 @@ sensor's current reading over a small HTTP API.
 ## How it works
 
 Each configured sensor is driven by its own `LevelSensor` driver instance
-(see [Sensor drivers](#sensor-drivers) below) polled on its own background
-thread, `poll_sensor()`. A driver's readings are pushed through that
-sensor's own configured `LevelSignal` instances (see [Signal
-processing](#signal-processing)) as they arrive -- except any signal with
+(see [Sensor drivers](#sensor-drivers) below), which owns its own
+background read thread (`start()`/`poll_loop()`, concrete on the base
+class -- every driver type gets it for free). Each reading it produces is
+routed, via server.py's `_route_reading()`, into that sensor's own
+configured `LevelSignal` instances (see [Signal
+processing](#signal-processing)) as it arrives -- except any signal with
 `owns_read_loop = True` (currently just `type: rolling_average`), which
-instead owns a *second* dedicated background thread that samples its own
-`input:` signal's cached output on its own independent schedule, rather
-than being pushed a value on every one of `poll_sensor()`'s much faster
-ticks (see [Signal processing](#signal-processing) for why). A Flask
+instead owns a *second*, completely independent background thread that
+samples its own `input:` signal's cached output on its own schedule,
+rather than being pushed a value on every one of the sensor's much faster
+reads (see [Signal processing](#signal-processing) for why). A Flask
 server exposes every signal's current value directly at `GET
 /signals/<name>`, plus per-sensor diagnostic and control routes (`GET
 /diag`, `POST /reset`).
 
 ```
-┌────────────────┐  read()  ┌──────────────────┐  add()  ┌────────────────────────────┐
-│ LevelSensor      │ ───────>│ poll_sensor()      │───────> │ every other configured       │
-│ driver (sensors/)│         │ (one thread/sensor)│         │ LevelSignal instance         │
-└────────────────┘         └──────────┬─────────┘         └──────────────┬─────────────┘
-        ▲ one instance per                │ writes that sensor's own state              │
-        │ config/sensors.yaml entry       v                                            v
-        │                     ┌──────────────────────┐  current()                       │
-        │                     │ owns_read_loop signal's│ ────────────────────────────────>│
-        │                     │ 2nd background thread │  (samples its input: signal's     │
-        │                     └──────────────────────┘   cached value on its own timer)  │
+┌───────────────────────────┐  on_reading()  ┌────────────────────────────┐
+│ LevelSensor driver           │ ─────────────>│ server.py's _route_reading() │
+│ (sensors/) -- owns its own   │  (reading_key, │ writes into every other      │
+│ read thread (start())        │   distance_mm) │ configured LevelSignal       │
+└─────────────┬───────────────┘                └──────────────┬─────────────┘
+        ▲ one instance per                                                     │
+        │ config/sensors.yaml entry                                           v
+        │                     ┌──────────────────────┐  current()             │
+        │                     │ owns_read_loop signal's│ ──────────────────────>│
+        │                     │ 2nd background thread │  (samples its input:   │
+        │                     └──────────────────────┘   signal's cached value │
+        │                                                  on its own timer)  │
         └──────────────────────  Flask app: GET /sensors, GET /health, GET /diag,
                                   POST /reset, GET /signals, GET /signals/<name>,
                                   GET /signals/<name>/diag
@@ -84,7 +88,7 @@ pondpi/
 | `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `params.sensor`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
-| `server.py` | Service entrypoint (`pondpi-server`). Starts one background polling thread per configured sensor and the Flask app. Owns all CLI configuration. |
+| `server.py` | Service entrypoint (`pondpi-server`). Starts each configured sensor's own background read thread (via `LevelSensor.start()`) plus the Flask app. Owns all CLI configuration. |
 
 ## API
 
@@ -291,8 +295,8 @@ before the sensor's first settled processed-mode reading arrives).
 
 Power-cycles a sensor to force a hardware reset — for when it appears
 wedged/stuck (e.g. a stale, unchanging reading) and the automatic
-serial buffer flush in `poll_sensor()` (see `/health` below) hasn't
-resolved it on its own. For the A02YYUW, this drives its power pin
+serial buffer flush each driver does internally (see `/health` below)
+hasn't resolved it on its own. For the A02YYUW, this drives its power pin
 (`power_pin` param, default `24`) low for
 `sensor_power.RESET_OFF_DURATION_S` (1s) and back high, so the request
 blocks for about that long per sensor reset.
@@ -348,7 +352,6 @@ service info:
   "sensors": {
     "pond_main": {
       "status": "ok",
-      "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
       "signals": ["rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
@@ -359,28 +362,24 @@ service info:
 
 The top-level `status` is `"degraded"` (HTTP 503) if **any** configured
 sensor's own `status` is degraded. Each sensor's `status` is degraded
-under either of two independent conditions, both of which would
-otherwise silently leave that sensor's raw-rooted signals (e.g.
-`pond_main_sensor_raw`, `rolling_avg`) serving stale data forever with
-no signal anything was wrong:
-
-- that sensor's background polling thread has died (`poller_alive: false`)
-  — e.g. an unhandled exception in `poll_sensor()`.
-- no valid "raw" reading has landed in over `STALE_READING_THRESHOLD_S`
-  (3s, `server.py`) — the thread can be alive and still not be producing
-  fresh readings, e.g. if a wiring disturbance knocks the A02YYUW
-  driver's byte alignment out of sync in just the wrong way and its
-  incremental header-hunting resync never lands on a fresh header. The
-  driver itself watches for this same condition and forces a
-  `reset_input_buffer()` once it's crossed, so in practice a stale
-  reading should self-resolve within a few seconds — `last_reading_age_s`
-  climbing past the threshold and staying there is the signal that
-  didn't happen.
+when no valid "raw" reading has landed in over `STALE_READING_THRESHOLD_S`
+(3s, `server.py`) — which would otherwise silently leave that sensor's
+raw-rooted signals (e.g. `pond_main_sensor_raw`, `rolling_avg`) serving
+stale data forever with no signal anything was wrong. This also catches
+a driver's read thread dying outright (an unhandled exception in
+`poll_loop()`, say) within a few seconds of it happening, same as it
+catches genuinely stale hardware -- e.g. a wiring disturbance knocking
+the A02YYUW driver's byte alignment out of sync in just the wrong way,
+so its incremental header-hunting resync never lands on a fresh header.
+The driver itself watches for this same condition and forces a
+`reset_input_buffer()` once it's crossed, so in practice a stale
+reading should self-resolve within a few seconds — `last_reading_age_s`
+climbing past the threshold and staying there is the signal that
+didn't happen.
 
 `last_reading_age_s` is seconds since that sensor's last valid frame, or
 `null` before its first ever reading (not itself a degraded condition —
-a poller that's alive but just hasn't read anything yet, e.g. right
-after startup, is normal).
+right after startup, before anything has been read yet, is normal).
 
 `last_reset_at` is when `POST /reset` (or `/sensors/<name>/reset`) last
 power-cycled that sensor, or `null` if it's never been called since this
@@ -411,6 +410,20 @@ sometimes `"processed"`, see below) — and `close()`. `supports_reset`/
 `reset()` is an optional capability a driver can add if its hardware can
 actually be power-cycled or otherwise reset in software; `POST /reset`
 checks this flag rather than assuming every sensor has it.
+
+`start(stop_event, poll_interval_s, on_reading)` and `poll_loop()` are
+concrete on the base class, not abstract -- every driver type inherits
+them unchanged. `start()` spawns a background thread running
+`poll_loop()`, which just calls `read()` repeatedly (every
+`poll_interval_s`) and passes each `(reading_key, distance_mm)` pair it
+returns to `on_reading`. `read()`'s "non-blocking, call repeatedly"
+contract is identical for every driver type, so nothing about this loop
+is driver-specific; server.py's `main()` calls `start()` once per
+configured sensor, supplying `on_reading` as a small closure wrapping
+`_route_reading()` (which does the actual work of feeding that reading
+into the sensor's configured `LevelSignal` instances). A driver only
+needs to override `start()`/`poll_loop()` itself if some future type
+genuinely needs something other than a plain polling thread.
 
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw
@@ -537,8 +550,8 @@ right after switching back into it). `rolling_avg` (`type:
 rolling_average`) sidesteps this: it owns its own background
 thread (see [Signal processing](#signal-processing)) that samples its
 `input:` signal's current cached value once every `poll_interval_ms` on
-its own timer, rather than being pushed a new one on every one of
-`poll_sensor()`'s much faster ticks, so `window_size: 60` at
+its own timer, rather than being pushed a new one on every one of the
+sensor's much faster reads, so `window_size: 60` at
 `poll_interval_ms: 1000` stays a genuine ~60s window regardless of how
 the raw pipeline's duty cycle drifts.
 
@@ -608,7 +621,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 |---|---|---|
 | `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of `poll_sensor()`'s ticks, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
+| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,

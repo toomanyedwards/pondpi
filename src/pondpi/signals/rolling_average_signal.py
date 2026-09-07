@@ -8,9 +8,9 @@ from pondpi.signals.utils.rolling_average import RollingAverage
 
 class RollingAverageSignal(LevelSignal):
     """Averages its `input:` signal's output over a rolling window --
-    but instead of being pushed a new value on every poll_sensor()
-    tick, this signal owns its own background thread that pulls its
-    input's current cached value on its own pace.
+    but instead of being pushed a new value on every one of the
+    sensor's own reads, this signal owns its own background thread
+    that pulls its input's current cached value on its own pace.
 
     `poll_interval_ms` paces the loop itself: each iteration sleeps
     this long between samples, so `window_size * poll_interval_ms` is a
