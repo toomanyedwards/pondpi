@@ -15,11 +15,12 @@ recursively from whatever it names as its `source:` (another signal's
 own `read()`, or, for a `sensor`-type signal, its sensor's
 `last_reading()`), computing lazily the moment something actually asks
 and caching the result so a repeat `read()` with no new upstream data
-is cheap and doesn't recompute. The one exception, `owns_read_loop`
-(currently just `type: rolling_average`), owns a background thread that
-proactively samples its `source:` on its own schedule and writes the
-cache directly instead of waiting to be asked -- everything else is
-lazy. Most `Sensor` drivers (e.g. `A02YYUWSensor`) also own a background
+is cheap and doesn't recompute. The one exception, `rolling_average`,
+owns a background thread that proactively samples its `source:` on its
+own schedule and writes the cache directly instead of waiting to be
+asked, overriding `read()` itself to just return whatever that thread
+last wrote -- everything else is lazy. Most `Sensor` drivers (e.g.
+`A02YYUWSensor`) also own a background
 thread, for the more fundamental reason that *something* has to
 actually poll the hardware -- but that thread only ever writes its own
 cache (`_record_reading()`), it never reaches into any signal. Either
@@ -39,16 +40,18 @@ sensor_config.py's load_sensors():
      its own last_reading() cache as frames arrive
   2. build every signal for those sensors (signal_config.py), each one
      holding either the sensor object or the source signal object it
-     reads from -- an owns_read_loop signal (e.g. rolling_average)
-     additionally starts its own background thread right away, pulling
-     its source's read() on its own schedule
+     reads from -- rolling_average additionally starts its own
+     background thread right away, pulling its source's read() on its
+     own schedule (its own read() override just returns whatever that
+     thread last wrote)
 
   ┌───────────────────────┐          ┌──────────────────────────┐          ┌───────────────────────────┐
   │ Sensor driver           │          │ sensor-type Signal          │          │ chain Signal (median,        │
   │ own read thread writes    │ <────── │ last_reading(mode), lazily     │ <────── │ average, EMA...) pulls          │
   │ last_reading() as frames     │ read() │ on demand -- or, for rolling_ │ read() │ source.read() lazily, on demand,   │
-  │ arrive                          │          │ average, on its own timer      │          │ unless it owns its own read loop      │
-  └───────────────────────┘          └──────────────────────────┘          └───────────────────────────┘
+  │ arrive                          │          │ average, on its own timer      │          │ unless its own read() override        │
+  └───────────────────────┘          └──────────────────────────┘          │ says otherwise (rolling_average)          │
+                                                                              └───────────────────────────┘
                                                                                     ^
                                                                                     │ read()
                                                                               server.py / another chain Signal
@@ -727,7 +730,7 @@ kwargs. Built-in `Signal` types (`type:` in the YAML) and their
 |---|---|---|
 | `sensor` | `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type whose `source:` names a sensor directly -- everything else names another signal. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
-| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of computing lazily the moment something calls `read()`, it owns its own dedicated background thread that samples its `source:` signal's `read()` once every `poll_interval_ms`, on its own timer, and writes the result directly (`Signal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
+| `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of computing lazily the moment something calls `read()`, it owns its own dedicated background thread that samples its `source:` signal's `read()` once every `poll_interval_ms`, on its own timer, and writes the result directly, overriding `read()` itself to just return that (see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every entry requires a top-level `source: <name>` -- for `sensor` it
@@ -735,7 +738,7 @@ names a configured sensor; for every other type it names the signal
 (defined earlier in the file) whose output feeds it.
 
 `sensor` is the one signal type with `Signal.reads_from_sensor = True`
-(same capability-flag pattern as `owns_read_loop`, below) -- the only
+(same capability-flag pattern as `Sensor.supports_reset`) -- the only
 generic thing `signal_config.py` knows about it is that flag itself; it
 has no notion of `unit`/`mode` (its two `settings:` fields) or what
 values are valid for them, nor that `source:` names a sensor rather
@@ -768,11 +771,12 @@ directly either.
 Signals rooted at different modes update on genuinely independent
 cadences -- see each one's own `at` timestamp (below) rather than
 assuming two signals shown together on `/diag` were computed at the
-same moment. Any signal type may set `Signal.owns_read_loop = True`
-(currently just `rolling_average`) to get its own dedicated background
-thread automatically, as described in the table above -- no config
-marker needed, and any number of a sensor's signals (zero, one, or
-more) may do it.
+same moment. Any signal type may own its own dedicated background
+thread instead of computing lazily on `read()` (currently just
+`rolling_average`, as described in the table above) -- there's no
+config marker for this, it's purely a property of that type's own
+`read()` implementation, and any number of a sensor's signals (zero,
+one, or more) may do it.
 
 Every signal's `/diag`/`/signals/<name>` output also includes `at` — an
 ISO 8601 UTC timestamp letting a caller tell a signal's freshness apart
@@ -784,11 +788,11 @@ i.e. when the underlying physical reading actually arrived. Stamping
 "now" at `read()` time instead would be actively misleading under a
 pull model: a signal nobody has queried in 30s would otherwise claim
 its value is fresh the instant someone finally asks, masking real
-staleness. `owns_read_loop` types (`rolling_average`) are the one
-exception -- they stamp their *own* sampling time instead, since they
-deliberately sample their `source:` on their own schedule, independent
-of its cadence; "when did I last sample" is the meaningful timestamp
-for them specifically.
+staleness. A type with its own background thread (`rolling_average`)
+is the one exception -- it stamps its *own* sampling time instead,
+since it deliberately samples its `source:` on its own schedule,
+independent of its cadence; "when did I last sample" is the meaningful
+timestamp for it specifically.
 
 `exponential_smoothing`'s `alpha` gets applied once per sensor poll
 (every `poll_interval_ms`, default 150ms -- see [Sensor drivers](#sensor-drivers))

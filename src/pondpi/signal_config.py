@@ -37,15 +37,17 @@ def load_signals(path, sensor_objects):
     Returns dict[sensor_name -> {"signals", "emit_flags", "configs"}],
     one entry per name in `sensor_objects` (even if that sensor ends up
     with zero signals -- see build_signals, which raises for that case
-    rather than silently omitting it). Any signal type may set
-    `owns_read_loop = True` as a class attribute (see
-    Signal.owns_read_loop and RollingAverageSignal) -- such a type is
-    constructed with its already-built `source:` signal (like every
-    other non-`reads_from_sensor` type) and starts its own background
-    thread the moment it's constructed, whatever their number per
-    sensor's group (zero, one, or more), no config marker needed. Any
-    signal may set `emit: false` (default true) to keep it out of
-    /level's `signals` section while still showing up in full on /diag.
+    rather than silently omitting it). Every non-`reads_from_sensor`
+    type is constructed with its already-built `source:` signal, the
+    same way regardless of how it actually reads it -- a type that
+    maintains its own background thread instead of computing lazily
+    (see RollingAverageSignal) starts that thread the moment it's
+    constructed, whatever their number per sensor's group (zero, one,
+    or more), no config marker needed; this module has no notion of
+    that distinction at all, it's entirely between the signal and its
+    `source:`. Any signal may set `emit: false` (default true) to keep
+    it out of /level's `signals` section while still showing up in full
+    on /diag.
     """
     with open(path) as f:
         config = yaml.safe_load(f)
@@ -69,10 +71,10 @@ def build_signals(entries, sensor_objects, path):
     its own semantics (every entry must set `source:`; a non-
     `reads_from_sensor` type's `source:` must name an earlier-defined
     signal) and dispatches construction generically on the
-    `reads_from_sensor`/`owns_read_loop` capability flags. Every other
-    validation (is this unit/mode/sensor-name actually valid) is each
-    signal type's own responsibility, surfaced as a `ValueError` from its
-    own constructor and wrapped here with config-file context."""
+    `reads_from_sensor` capability flag. Every other validation (is
+    this unit/mode/sensor-name actually valid) is each signal type's
+    own responsibility, surfaced as a `ValueError` from its own
+    constructor and wrapped here with config-file context."""
     signal_types = discover_signal_types()
 
     instances = {}

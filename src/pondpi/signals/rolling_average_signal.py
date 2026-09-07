@@ -11,7 +11,11 @@ class RollingAverageSignal(Signal):
     but instead of recomputing on demand every time something calls
     `read()`, this signal owns its own background thread that pulls its
     source's current value (via that signal's own `read()`) on its own
-    pace and writes the result directly.
+    pace and writes the result directly. `read()` (overridden below) is
+    a pure getter of whatever this thread last wrote -- there's no
+    capability flag marking this type as special; it's simply the one
+    type whose own `read()` skips the base class's usual pull-and-
+    compute logic.
 
     `poll_interval_ms` paces the loop itself: each iteration sleeps
     this long between samples, so `window_size * poll_interval_ms` is a
@@ -22,18 +26,21 @@ class RollingAverageSignal(Signal):
     Its background thread starts the moment it's constructed -- there's
     no public `start()`/loop-control method; `reset()` is the only way
     to make it stop and start a fresh one (see `reset()` below).
-    `read()` (inherited from `Signal`, `owns_read_loop = True` skips its
-    usual pull-and-recompute logic for this type) is a pure getter of
-    whatever this thread last wrote, polled by HTTP handlers.
     """
-
-    owns_read_loop = True
 
     def __init__(self, window_size, poll_interval_ms, source_signal):
         super().__init__(source_signal)
         self._poll_interval_ms = poll_interval_ms
         self._rolling_avg = RollingAverage(window_size)
         self._begin_polling()
+
+    def read(self):
+        """A pure getter -- this signal's own background thread
+        (`_poll_loop()`, below) writes the cache directly on its own
+        schedule, so `read()` here doesn't pull or compute anything
+        itself (contrast `Signal.read()`, the default every other type
+        uses)."""
+        return self._snapshot()
 
     def add(self, raw_value):
         return self._rolling_avg.add(raw_value)
