@@ -3,7 +3,7 @@ import time
 
 import serial
 
-from pondpi.sensors.base import LevelSensor
+from pondpi.sensors.base import Sensor
 
 from . import read_sensor, sensor_mode, sensor_power
 
@@ -11,7 +11,7 @@ from . import read_sensor, sensor_mode, sensor_power
 # passes with no valid frame, read_frame() has likely lost byte
 # alignment with the sensor's stream and isn't going to resync on its
 # own. A plain input-buffer flush is enough to force a fresh resync.
-# Conceptually distinct from LevelSensor.STALE_READING_THRESHOLD_S (used
+# Conceptually distinct from Sensor.STALE_READING_THRESHOLD_S (used
 # by is_healthy(), server.py's /health) even though they default to the
 # same value -- this one governs this driver's own internal resync,
 # nothing to do with what counts as healthy externally.
@@ -40,7 +40,7 @@ MODE_SETTLE_S = 0.4
 DEFAULT_POLL_INTERVAL_S = 0.15
 
 
-class A02YYUWSensor(LevelSensor):
+class A02YYUWSensor(Sensor):
     """Driver for the A02YYUW waterproof ultrasonic sensor (UART, 9600
     baud). See README's "Sensor notes" section for why the sensor has
     two hardware output modes and why this driver alternates between
@@ -59,7 +59,7 @@ class A02YYUWSensor(LevelSensor):
     `read()` does at most one serial read per call and never blocks
     waiting for a frame -- this driver polls it repeatedly from its own
     background thread (started automatically at construction; see
-    `_begin_polling()` below -- `LevelSensor` itself has no notion of
+    `_begin_polling()` below -- `Sensor` itself has no notion of
     polling, this is entirely this driver's own choice of how to obtain
     readings).
 

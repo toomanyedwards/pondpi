@@ -1,9 +1,9 @@
 from typing import ClassVar
 
-from pondpi.signals.base import LevelSignal
+from pondpi.signals.base import Signal
 
 
-class SensorSignal(LevelSignal):
+class SensorSignal(Signal):
     """Passes the named sensor's raw reading through, converted into its
     own declared `unit`. `sensor` is which configured sensor this signal
     reads from -- one of the two signal types that connect directly to a
@@ -14,17 +14,17 @@ class SensorSignal(LevelSignal):
     (another signal, or, for a `reads_from_sensor` type like this one, a
     sensor) and passes it into this constructor as `sensor`.
 
-    Every other `LevelSignal` type is genuinely unit-agnostic -- a pure
+    Every other `Signal` type is genuinely unit-agnostic -- a pure
     numeric transform that inherits its unit from `source:` and never
     looks at it. `SensorSignal` is the deliberate one exception: it's
     the boundary where a sensor's canonical reading (always millimeters
-    -- `LevelSensor.read()`'s fixed contract, see sensors/base.py) first
+    -- `Sensor.read()`'s fixed contract, see sensors/base.py) first
     enters the signal graph, so it's the one place that conversion needs
     to happen at all. Doing it here, once, is what lets everything
     downstream -- including every other signal type and server.py itself
     -- stay unaware that millimeters were ever involved.
 
-    `reads_from_sensor = True` (see LevelSignal) -- signal_config.py
+    `reads_from_sensor = True` (see Signal) -- signal_config.py
     constructs this type with a `sensor_names` kwarg (the full set of
     configured sensor names) purely so `__init__` can validate `sensor`
     against it; it's not stored. Every other param (`sensor`, `unit`,
@@ -34,7 +34,7 @@ class SensorSignal(LevelSignal):
 
     `mode` selects which of that sensor's named readings this signal is
     fed -- "raw" (default) or "processed", matching the reading keys a
-    LevelSensor driver's `read()` can report (see sensors/base.py).
+    Sensor driver's `read()` can report (see sensors/base.py).
     Most drivers report both on their own schedule; a sensor signal
     only updates when its own `mode`'s reading arrives, independent of
     signals rooted at the other mode -- see sensor_config.py's

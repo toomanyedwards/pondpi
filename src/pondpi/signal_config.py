@@ -4,7 +4,7 @@ from pondpi.signals import discover_signal_types
 
 
 def load_signals(path, sensor_names):
-    """Loads named LevelSignal instances from a YAML file's top-level
+    """Loads named Signal instances from a YAML file's top-level
     `signals:` list and groups them by which sensor each one is
     ultimately rooted at.
 
@@ -12,7 +12,7 @@ def load_signals(path, sensor_names):
     sensor_config.py). Every signal entry sets a top-level `source:`,
     naming where its data comes from -- what that name refers to depends
     on the signal type's `reads_from_sensor` flag (see
-    LevelSignal.reads_from_sensor): a `reads_from_sensor` type (currently
+    Signal.reads_from_sensor): a `reads_from_sensor` type (currently
     just `SensorSignal`) has `source:` name a configured sensor directly
     (validating that name, `sensor_names` included, is entirely that
     type's own responsibility, not something this module knows or
@@ -37,7 +37,7 @@ def load_signals(path, sensor_names):
     with zero signals -- see build_signals, which raises for that case
     rather than silently omitting it). Any signal type may set
     `owns_read_loop = True` as a class attribute (see
-    LevelSignal.owns_read_loop and RollingAverageSignal) -- such a type
+    Signal.owns_read_loop and RollingAverageSignal) -- such a type
     is constructed with a `get_raw_value` callable (built here, closing
     over its already-constructed `source:` signal) and starts its own
     background thread the moment it's constructed, whatever their
@@ -57,7 +57,7 @@ def load_signals(path, sensor_names):
 
 
 def build_signals(entries, sensor_names, path):
-    """Builds named LevelSignal instances from an already-parsed list of
+    """Builds named Signal instances from an already-parsed list of
     signal entries and groups them by root sensor -- the shared core
     `load_signals` also uses after reading its own top-level `signals:`
     key. `path` is used only for error messages.

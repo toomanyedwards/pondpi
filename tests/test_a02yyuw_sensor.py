@@ -70,7 +70,7 @@ def _no_op(reading_key, distance_mm):
 
 
 # Every A02YYUWSensor now starts its own background read thread the
-# moment it's constructed (see LevelSensor.__init__()) -- these tests
+# moment it's constructed (see Sensor.__init__()) -- these tests
 # construct with a recording (or no-op) on_reading and observe what
 # arrives, rather than calling read() directly and racing that thread.
 # poll_interval_s is set small (a few ms) so tests don't wait long, or
@@ -221,7 +221,7 @@ def test_reset_restarts_polling_with_a_fresh_thread():
 
     sensor.reset()
     assert power_controller.reset_calls == 1
-    # last_reset_at() is inherited unchanged from LevelSensor -- proving
+    # last_reset_at() is inherited unchanged from Sensor -- proving
     # it's actually wired up through this concrete driver, not just the
     # abstract base (see test_sensors.py for the base-class behavior itself).
     assert sensor.last_reset_at() is not None

@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timezone
 
 
-class LevelSensor:
+class Sensor:
     """Base class every sensor driver implements, one file per sensor
     type (e.g. `a02yyuw_sensor.py`), mirroring how `signals/` is
     structured.

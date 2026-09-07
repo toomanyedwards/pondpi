@@ -3,9 +3,9 @@ import inspect
 import pkgutil
 import sys
 
-from pondpi.signals.base import LevelSignal
+from pondpi.signals.base import Signal
 
-__all__ = ["LevelSignal", "discover_signal_types"]
+__all__ = ["Signal", "discover_signal_types"]
 
 _TYPE_SUFFIX = "_signal"
 
@@ -16,7 +16,7 @@ def discover_signal_types(package=None):
 
     type_name is the module's filename with that suffix stripped (e.g.
     signals/rolling_median_signal.py -> type "rolling_median"). Each such
-    module must define exactly one LevelSignal subclass -- zero or
+    module must define exactly one Signal subclass -- zero or
     multiple is an error, not silently ignored. Files that don't end in
     "_signal" (base.py, the utils/ subpackage, or any future non-signal
     helper module) are ignored automatically, with no hardcoded
@@ -37,11 +37,11 @@ def discover_signal_types(package=None):
         found = [
             obj
             for _, obj in inspect.getmembers(module, inspect.isclass)
-            if issubclass(obj, LevelSignal) and obj is not LevelSignal and obj.__module__ == module.__name__
+            if issubclass(obj, Signal) and obj is not Signal and obj.__module__ == module.__name__
         ]
 
         if len(found) != 1:
-            raise ValueError(f"{module.__name__}: expected exactly one LevelSignal subclass, found {len(found)}")
+            raise ValueError(f"{module.__name__}: expected exactly one Signal subclass, found {len(found)}")
 
         type_name = name.removesuffix(_TYPE_SUFFIX)
         registry[type_name] = found[0]

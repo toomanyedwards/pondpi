@@ -17,7 +17,7 @@ def load_sensors(path, simulate=False):
 
     Signals are built *before* any sensor driver is constructed (the
     reverse of the natural YAML order) -- a driver's background read
-    thread starts the moment it's constructed (see LevelSensor.__init__()),
+    thread starts the moment it's constructed (see Sensor.__init__()),
     so the callback that routes its readings into signals
     (`_build_on_reading()`, below) has to exist first, which in turn
     needs the fully-built signal graph.
@@ -73,7 +73,7 @@ def _build_on_reading(signals, configs):
     sensor's thread now starts at construction time, before server.py
     ever sees it.
 
-    Each reading key (e.g. "raw", "processed" -- see LevelSensor.read())
+    Each reading key (e.g. "raw", "processed" -- see Sensor.read())
     only feeds the signals rooted at that same `mode`
     (`configs[sname]["mode"]`) -- a signal either reads that reading
     directly (`signal.reads_from_sensor` -- a `sensor`-type signal) or
@@ -81,7 +81,7 @@ def _build_on_reading(signals, configs):
     call (`configs[sname]["source"]`, already resolved into `results`
     since `signals`' iteration order is a valid dependency order). A
     signal with `owns_read_loop = True` is skipped here entirely -- it's
-    fed by its own dedicated thread instead (see LevelSignal), sampling
+    fed by its own dedicated thread instead (see Signal), sampling
     its `source:` signal's `current()` on its own pace rather than being
     pushed a value on every one of the sensor's own readings."""
 

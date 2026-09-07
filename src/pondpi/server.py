@@ -13,8 +13,8 @@ app = Flask(__name__)
 
 _state = {}  # dict[sensor_name -> per-sensor state, see _new_sensor_state()]
 
-_sensors = {}  # dict[sensor_name -> LevelSensor driver instance]
-_signal_objects = {}  # dict[signal_name -> LevelSignal instance], global since signal names are unique file-wide
+_sensors = {}  # dict[sensor_name -> Sensor driver instance]
+_signal_objects = {}  # dict[signal_name -> Signal instance], global since signal names are unique file-wide
 _signal_owner = {}  # dict[signal_name -> sensor_name], global since signal names are unique file-wide
 _commit_sha = read_commit_sha(Path.cwd())
 _started_at = datetime.now(timezone.utc)
@@ -30,7 +30,7 @@ def _new_sensor_state():
 
 def _signal_result(signal_name):
     """A signal's current {"value", "at", ...} result (see
-    LevelSignal.current()), or None if there's no reading yet."""
+    Signal.current()), or None if there's no reading yet."""
     return _signal_objects[signal_name].current()
 
 

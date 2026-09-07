@@ -2,11 +2,13 @@ import threading
 from datetime import datetime, timezone
 
 
-class LevelSignal:
-    """Base class for a level signal.
+class Signal:
+    """Base class for a signal -- a named, composable processing step
+    over a stream of numeric readings, with no notion of what those
+    readings physically represent.
 
     Most subclasses take raw sensor readings one at a time via `add()`
-    (pure computation, no caching) -- composable via `input:` in
+    (pure computation, no caching) -- composable via `source:` in
     config/sensors.yaml, fed by the sensor-to-signal wiring built in
     sensor_config.py, which calls `feed()` (not `add()` directly) as
     each reading arrives. Every signal type except `sensor` is
@@ -21,15 +23,15 @@ class LevelSignal:
     `add()`) and thread-safely caches this signal's new output;
     `current()` reads that cache back as `{"value", "at",
     **extra_state()}`, or None before the first `feed()`. This is what
-    lets a signal like RollingAverageSignal read its `input:` signal's
-    live value directly (`input_signal.current()`), with no shared
+    lets a signal like RollingAverageSignal read its `source:` signal's
+    live value directly (`source_signal.current()`), with no shared
     state in server.py mediating it.
 
     `owns_read_loop` is a capability flag, same pattern as
-    `LevelSensor.supports_reset`: override it to True only for a signal
+    `Sensor.supports_reset`: override it to True only for a signal
     type that maintains its own background thread instead of being fed
     via `feed()` from the sensor's own read loop (see
-    RollingAverageSignal, which samples its `input:` signal's `current()`
+    RollingAverageSignal, which samples its `source:` signal's `current()`
     on its own schedule rather than being pushed a new one every poll
     tick). Such a type constructs and starts its own thread the moment
     it's initialized -- there's no separate `start()` to call, and no
@@ -37,13 +39,13 @@ class LevelSignal:
     it runs itself.
 
     `reads_from_sensor` is a second, independent capability flag, same
-    pattern again: override it to True only for a signal type that
-    connects directly to a sensor (via its own `sensor`-naming param)
-    rather than reading another signal via `input:` (see SensorSignal,
-    the only type that sets it). signal_config.py dispatches on this
-    generically -- it has no notion of what params a `reads_from_sensor`
-    type actually needs beyond that; that type validates its own params
-    entirely and raises `ValueError` if something's wrong.
+    pattern again: override it to True only for a signal type whose
+    `source:` names a sensor directly (see SensorSignal, the only type
+    that sets it) rather than another signal. signal_config.py
+    dispatches on this generically -- it has no notion of what settings
+    a `reads_from_sensor` type actually needs beyond that; that type
+    validates its own settings entirely and raises `ValueError` if
+    something's wrong.
     """
 
     owns_read_loop = False
@@ -66,7 +68,7 @@ class LevelSignal:
         anything driving this signal calls, whether that's the sensor's
         own read loop (via sensor_config.py's wiring) or, for an
         `owns_read_loop` signal, its own background thread. Returns the
-        raw computed value, so a downstream `input:`-chained signal can
+        raw computed value, so a downstream `source:`-chained signal can
         be fed the same call's result without an extra `current()`
         round trip."""
         value = self.add(raw_value)

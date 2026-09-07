@@ -1,12 +1,12 @@
 import threading
 import time
 
-from pondpi.signals.base import LevelSignal
+from pondpi.signals.base import Signal
 from pondpi.signals.utils.rolling_average import RollingAverage
 
 
-class RollingAverageSignal(LevelSignal):
-    """Averages its `input:` signal's output over a rolling window --
+class RollingAverageSignal(Signal):
+    """Averages its `source:` signal's output over a rolling window --
     but instead of being pushed a new value on every one of the
     sensor's own reads, this signal owns its own background thread
     that pulls its input's current cached value (via that signal's own
@@ -21,7 +21,7 @@ class RollingAverageSignal(LevelSignal):
     Its background thread starts the moment it's constructed -- there's
     no public `start()`/loop-control method; `reset()` is the only way
     to make it stop and start a fresh one (see `reset()` below).
-    `current()` (inherited from `LevelSignal`) is the thread-safe read
+    `current()` (inherited from `Signal`) is the thread-safe read
     side, polled by HTTP handlers.
     """
 
