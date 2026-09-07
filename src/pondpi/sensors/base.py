@@ -52,15 +52,20 @@ class Sensor:
     judgment call of their own about what counts as stale for a given
     sensor type.
 
-    `read()` and `reset_hardware()` must be safe to call concurrently
-    from different threads if a driver polls in its own background
-    thread -- e.g. `A02YYUWSensor`'s own thread calls `read()`
-    continuously while `POST /reset` calls `reset()` (which calls
-    `reset_hardware()`) from a request-handling thread, with no
-    synchronization at that layer. It's each driver's own responsibility
-    to serialize its hardware access internally (e.g. a lock around
-    whatever touches the physical connection) if a concurrent reset
-    could otherwise corrupt or wedge an in-flight read.
+    `read()` itself is not required to touch hardware at all -- it just
+    has to return this driver's canonical reading(s), however it gets
+    them. `A02YYUWSensor`, for instance, implements `read()` as a plain
+    cache lookup and does the actual UART polling in its own private
+    `_read_hardware()` instead, called from its own background thread.
+    Whatever internal method *does* touch hardware must be safe to call
+    concurrently with `reset_hardware()` if it runs on its own
+    background thread -- e.g. `A02YYUWSensor`'s thread calls
+    `_read_hardware()` continuously while `POST /reset` calls `reset()`
+    (which calls `reset_hardware()`) from a request-handling thread,
+    with no synchronization at that layer. It's each driver's own
+    responsibility to serialize its hardware access internally (e.g. a
+    lock around whatever touches the physical connection) if a
+    concurrent reset could otherwise corrupt or wedge an in-flight read.
     """
 
     supports_reset = False
@@ -73,11 +78,13 @@ class Sensor:
         self._last_readings = {}
 
     def read(self):
-        """Returns a dict of {signal_name: distance_mm} for whichever
-        signals produced a fresh valid reading since the last call, or
-        an empty dict if nothing new is available this call. Must not
-        block waiting for a frame -- called repeatedly from this
-        driver's own background thread, if it has one."""
+        """Returns a dict of {signal_name: distance_mm} for this
+        driver's canonical reading(s), or an empty dict if nothing's
+        available yet. Must never block. This base class has no opinion
+        on *how* a concrete driver gets there -- it might poll hardware
+        directly on every call, or (like `A02YYUWSensor`) be a plain
+        lookup against a cache some other, driver-private mechanism
+        keeps warm (see the class docstring above)."""
         raise NotImplementedError
 
     def reset_hardware(self):

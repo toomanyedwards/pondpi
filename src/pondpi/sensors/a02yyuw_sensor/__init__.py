@@ -33,10 +33,10 @@ PROCESSED_MODE_DURATION_S = 1.0
 # one.
 MODE_SETTLE_S = 0.4
 
-# How often this driver's own background thread calls read() -- see
-# _poll_loop() below. Comfortably above the sensor's ~100ms response
-# time, so every poll is an independent look at the water surface rather
-# than re-reading the same frame multiple times in a row.
+# How often this driver's own background thread calls _read_hardware()
+# -- see _poll_loop() below. Comfortably above the sensor's ~100ms
+# response time, so every poll is an independent look at the water
+# surface rather than re-reading the same frame multiple times in a row.
 DEFAULT_POLL_INTERVAL_S = 0.15
 
 
@@ -46,31 +46,36 @@ class A02YYUWSensor(Sensor):
     two hardware output modes and why this driver alternates between
     them on a single physical unit rather than reading both at once.
 
-    Reports named signals from `read()`:
+    Keeps two named readings warm in `last_reading()`'s cache:
     - "raw": the sensor's real-time hardware mode.
     - "processed": the sensor's own internally-smoothed hardware mode.
 
     By default alternates between both (mostly raw, briefly dipping
     into processed once per `mode_cycle_interval_s`) so both stay
     fresh. Pass `read_mode=sensor_mode.RAW` or `sensor_mode.PROCESSED`
-    to pin it permanently in one mode instead -- no cycling, and
-    `read()` then only ever reports that one key.
+    to pin it permanently in one mode instead -- no cycling, and this
+    driver then only ever reports that one key.
 
-    `read()` does at most one serial read per call and never blocks
-    waiting for a frame -- this driver polls it repeatedly from its own
-    background thread (started automatically at construction; see
-    `_begin_polling()` below -- `Sensor` itself has no notion of
-    polling, this is entirely this driver's own choice of how to obtain
-    readings).
+    `read()` overrides `Sensor.read()` as a thin cache lookup -- `{mode:
+    distance_mm}` for whichever mode this driver is currently in, or
+    `{}` if nothing's arrived for it yet -- so it's always instant and
+    never touches the UART. `_read_hardware()` (below) is the method
+    that actually talks to the sensor: it does at most one serial read
+    per call and never blocks waiting for a frame, so this driver polls
+    it repeatedly from its own background thread (started automatically
+    at construction; see `_begin_polling()` below -- `Sensor` itself has
+    no notion of polling, this is entirely this driver's own choice of
+    how to obtain readings) and caches whatever it gets via
+    `_record_reading()`.
 
-    `read()` and `reset_hardware()` are safe to call concurrently from
-    different threads (this driver's own background thread calls
-    `read()` continuously while `POST /reset` calls `reset()`, which
-    calls `reset_hardware()`, from a request-handling thread) --
-    internally serialized via `_hardware_lock`, since power-cycling
-    mid-read could otherwise wedge the UART. Callers never need to know
-    about this; it's this driver's own responsibility to be safe under
-    that usage pattern.
+    `_read_hardware()` and `reset_hardware()` are safe to call
+    concurrently from different threads (this driver's own background
+    thread calls `_read_hardware()` continuously while `POST /reset`
+    calls `reset()`, which calls `reset_hardware()`, from a
+    request-handling thread) -- internally serialized via
+    `_hardware_lock`, since power-cycling mid-read could otherwise wedge
+    the UART. Callers never need to know about this; it's this driver's
+    own responsibility to be safe under that usage pattern.
     """
 
     supports_reset = True
@@ -110,11 +115,19 @@ class A02YYUWSensor(Sensor):
 
         super().__init__()
         # Must be last: this starts a background thread that immediately
-        # begins calling self.read(), so every attribute above must
-        # already be set.
+        # begins calling self._read_hardware(), so every attribute above
+        # must already be set.
         self._begin_polling()
 
     def read(self):
+        """A thin cache lookup -- `{mode: distance_mm}` for whichever
+        mode this driver is currently in, or `{}` if nothing's arrived
+        for it yet. This never touches the UART itself; `_read_hardware()`
+        (below) is what actually keeps `last_reading()`'s cache warm."""
+        cached = self.last_reading(self._current_mode)
+        return {} if cached is None else {self._current_mode: cached["value"]}
+
+    def _read_hardware(self):
         with self._hardware_lock:
             now = time.monotonic()
 
@@ -171,8 +184,8 @@ class A02YYUWSensor(Sensor):
         exit *before* calling `super().reset()` (which power-cycles the
         hardware and clears reading/reset bookkeeping), then starts a
         fresh thread -- so there's never a moment where the old thread
-        could still call `read()`/`_record_reading()` against state
-        that's mid-reset."""
+        could still call `_read_hardware()`/`_record_reading()` against
+        state that's mid-reset."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         super().reset()
@@ -185,7 +198,7 @@ class A02YYUWSensor(Sensor):
 
     def _poll_loop(self):
         while not self._stop_event.is_set():
-            readings = self.read()
+            readings = self._read_hardware()
             if readings:
                 self._record_reading(readings)
             time.sleep(self._poll_interval_s)
@@ -210,7 +223,7 @@ def create(params, simulate):
       logic rather than hardware wiring, so it still applies under
       `simulate` too.
       poll_interval_ms (default 150) -- how often this driver's own
-      background thread calls read().
+      background thread calls _read_hardware().
     """
     read_mode = params.get("read_mode")
     if read_mode is not None and read_mode not in (sensor_mode.RAW, sensor_mode.PROCESSED):

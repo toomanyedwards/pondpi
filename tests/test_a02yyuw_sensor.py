@@ -86,6 +86,46 @@ def test_reports_raw_reading_for_valid_frame():
     assert sensor.last_reading("raw")["value"] == 0x012C
 
 
+def test_read_returns_empty_before_any_reading():
+    sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController(), poll_interval_s=1000)
+    assert sensor.read() == {}
+
+
+def test_read_returns_the_cached_value_for_the_current_mode():
+    sensor = A02YYUWSensor(
+        FakeSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+    )
+
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    assert sensor.read() == {"raw": 0x012C}
+
+
+def test_read_does_not_block_while_read_hardware_holds_the_lock():
+    # read() is now a plain cache lookup -- it must never contend with
+    # _hardware_lock, unlike the old read() that did the UART work
+    # itself and could block behind a concurrent reset_hardware().
+    class SlowSerial(FakeSerial):
+        def read(self, n):
+            time.sleep(0.2)
+            return super().read(n)
+
+    sensor = A02YYUWSensor(SlowSerial(_frame(0x01, 0x2C)), FakeModeController(), FakePowerController(), poll_interval_s=1000)
+
+    hardware_thread = threading.Thread(target=sensor._read_hardware)
+    hardware_thread.start()
+    time.sleep(0.02)  # let _read_hardware() acquire the lock and start its slow "hardware" read
+
+    start = time.monotonic()
+    sensor.read()
+    elapsed = time.monotonic() - start
+
+    hardware_thread.join()
+    assert elapsed < 0.1
+
+
 def test_reports_nothing_when_no_frame_available():
     sensor = A02YYUWSensor(
         FakeSerial(b""),
@@ -242,11 +282,13 @@ def test_read_and_reset_hardware_are_serialized_against_each_other():
     reset_thread.start()
     time.sleep(0.01)  # let reset_hardware() acquire the lock and start its "hardware" delay first
 
-    # This read() call is invoked while reset_hardware() is still
-    # mid-flight (well within its 0.05s critical section) -- if the two
-    # aren't serialized, it would return immediately; if they are, it
-    # can't complete until reset_hardware() has released the lock.
-    sensor.read()
+    # This _read_hardware() call is invoked while reset_hardware() is
+    # still mid-flight (well within its 0.05s critical section) -- if
+    # the two aren't serialized, it would return immediately; if they
+    # are, it can't complete until reset_hardware() has released the
+    # lock. (Not sensor.read() -- that's now a plain cache lookup that
+    # never touches _hardware_lock at all.)
+    sensor._read_hardware()
     read_end = time.monotonic()
 
     reset_thread.join()

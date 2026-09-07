@@ -462,20 +462,25 @@ hardware can actually be power-cycled or otherwise reset in software;
 
 `Sensor` has no notion of *how* a driver actually obtains a reading
 -- no polling loop, no thread, nothing background-shaped on the base
-class at all. `A02YYUWSensor` happens to need one (it has to keep polling
-a UART), so it implements its own `_poll_loop()`/`_begin_polling()` and
+class at all, and `read()` itself isn't even required to touch hardware.
+`A02YYUWSensor` happens to need a poll loop (it has to keep polling a
+UART), so it implements its own `_poll_loop()`/`_begin_polling()` and
 starts that thread itself, as the *last* line of its own `__init__` (once
 all of its own state -- serial connection, mode controller, whatever it
-needs -- is fully set up); that loop just calls `self.read()` repeatedly
-(every `poll_interval_s`) and, for each `(reading_key, distance_mm)` pair
-it gets back, caches it via `self._record_reading()`. Nothing is ever
-pushed onward from there -- a `reads_from_sensor` signal pulls a given
-reading key's last cached value on its own schedule instead, via
-`last_reading()` (see [Signal processing](#signal-processing)). A future
-driver that's push-driven instead (reacting to an async callback, never
-looping at all) is just as valid -- it simply wouldn't implement a poll
-loop, since the base class never assumed one; it would just call
-`_record_reading()` whenever its callback fires.
+needs -- is fully set up); that loop calls a driver-private method
+(`_read_hardware()`, not `read()`) repeatedly (every `poll_interval_s`)
+and, for each `(reading_key, distance_mm)` pair it gets back, caches it
+via `self._record_reading()`. `read()` itself is then just a lookup
+against that same cache for whichever mode the driver currently happens
+to be in -- always instant, never touching the UART or the hardware
+lock. Nothing is ever pushed onward from there -- a `reads_from_sensor`
+signal pulls a given reading key's last cached value on its own
+schedule instead, via `last_reading()` (see [Signal
+processing](#signal-processing)). A future driver that's push-driven
+instead (reacting to an async callback, never looping at all) is just
+as valid -- it simply wouldn't implement a poll loop, since the base
+class never assumed one; it would just call `_record_reading()`
+whenever its callback fires.
 
 Whatever mechanism a driver uses to obtain readings, it calls
 `self._record_reading(readings)` (concrete on `Sensor`) each time it
@@ -486,9 +491,9 @@ base class, but only handles the generic part: calling the driver's own
 `reset_hardware()` and recording when. A driver that owns a background
 loop (like `A02YYUWSensor`) overrides `reset()` to stop that loop, wait
 for it to actually exit, call `super().reset()`, then start a fresh
-loop -- so there's never a moment where two threads could both be calling
-`read()`, and a reset always leaves the driver's own loop in a genuinely
-fresh state, not just the hardware.
+loop -- so there's never a moment where two threads could both be
+touching hardware, and a reset always leaves the driver's own loop in a
+genuinely fresh state, not just the hardware.
 
 `last_reading_monotonic()`/`last_reset_at()`/`is_healthy()` are also
 concrete, and are how `GET /health` (below) gets its per-sensor status --
@@ -607,7 +612,10 @@ time means a reading right after a switch can still reflect the
 An optional `read_mode` param (`"raw"` or `"processed"`; omitted keeps
 the alternating cycle above) pins the driver permanently in one mode
 instead — no cycling, no settling windows after the first frame, and
-`read()` only ever reports that one key. This is a driver-level
+`_read_hardware()` only ever reports that one key (so `last_reading()`
+for the other one never populates, and `read()` -- and any signal
+rooted at that other mode -- never has anything to return). This is a
+driver-level
 override, distinct from (but easy to confuse with) a `sensor` signal's
 own `mode` (see [Signal processing](#signal-processing)) —
 `read_mode` controls which reading the driver ever *produces*;
@@ -649,16 +657,18 @@ sensor already has power before this service starts — `sensor_power.py`'s
 doesn't itself glitch the sensor's power).
 
 `POST /reset` runs on a request-handling thread, entirely independent of
-the background thread continuously calling `read()` -- without
+the background thread continuously calling `_read_hardware()` -- without
 synchronization, a reset landing mid-read can wedge the driver (seen in
 practice: an hourly `POST /reset` automation left the sensor stuck for
 ~53 minutes until the next unrelated service restart happened to clear
 it). `A02YYUWSensor` serializes the two internally via a lock around
-both `read()` and `reset()` (see `sensors/base.py`'s `Sensor`
-docstring for why this is each driver's own responsibility, not
-something server.py coordinates) -- a concurrent `read()` simply blocks
-for the ~1s power-cycle rather than running against the sensor while
-it's powered off.
+both `_read_hardware()` and `reset_hardware()` (see `sensors/base.py`'s
+`Sensor` docstring for why this is each driver's own responsibility, not
+something server.py coordinates) -- a concurrent `_read_hardware()`
+simply blocks for the ~1s power-cycle rather than running against the
+sensor while it's powered off. The public `read()` (a plain
+`last_reading()` cache lookup -- see [Signal processing](#signal-processing))
+never contends for this lock at all.
 
 ## Signal processing
 
