@@ -12,10 +12,22 @@ from . import read_sensor, sensor_mode, sensor_power
 # passes with no valid frame, read_frame() has likely lost byte
 # alignment with the sensor's stream and isn't going to resync on its
 # own. A plain input-buffer flush is enough to force a fresh resync.
-# Conceptually distinct from check_health() (below) even though they
-# default to the same value -- this one governs this driver's own
-# internal resync, nothing to do with what counts as healthy externally.
+# Conceptually distinct from HEALTH_STALE_THRESHOLD_S (below) even
+# though they default to the same value -- this one governs this
+# driver's own internal resync, nothing to do with what counts as
+# healthy externally.
 STALE_READING_THRESHOLD_S = 3.0
+
+# How long last_reading_monotonic() may go without a fresh reading
+# (raw or processed -- whichever arrives, it counts) before
+# check_health() reports unhealthy, on top of its raw/processed
+# presence check. Comfortably above the sensor's ~100ms response time
+# and default poll_interval_s, so it only trips if this driver's own
+# background thread has genuinely stopped getting readings (died, or
+# the hardware went stale) -- not a per-key threshold, since "raw"
+# refreshes far more often than "processed" ever will under the default
+# cycle (see MODE_CYCLE_INTERVAL_S).
+HEALTH_STALE_THRESHOLD_S = 3.0
 
 # This driver spends most of its time with the sensor in "raw" mode (so
 # downstream signals -- tuned assuming a near-continuous feed -- keep
@@ -72,17 +84,17 @@ class A02YYUWSensor(Sensor):
     whatever it gets in `_last_readings`, and calls `_record_reading()`
     (concrete on `Sensor`) to keep `last_reading_monotonic()` current.
 
-    `check_health()` (required by `Sensor`, see there) is a presence
-    check, not a staleness one: healthy once *both* its "raw" and
-    "processed" readings have ever arrived (assumes the default
-    alternating cycle -- a driver permanently pinned to one mode never
-    populates the other, so it reports unhealthy forever). This is
-    deliberately simpler than comparing `last_reading_monotonic()`'s age
-    against a threshold -- it won't notice this driver's own background
-    thread having died after both readings have arrived at least once
-    (unlike a staleness check would); `GET /health`'s
-    `last_reading_age_s` is still there for a caller that wants to
-    notice that itself.
+    `check_health()` (required by `Sensor`, see there) combines two
+    checks: a presence check (both "raw" and "processed" must have
+    arrived at least once -- assumes the default alternating cycle, so
+    briefly unhealthy right after startup/reset until the first
+    processed-mode dip completes a cycle; a driver permanently pinned to
+    one mode never populates the other, so it reports unhealthy forever)
+    and a staleness check on top (`last_reading_monotonic()`'s age
+    against `HEALTH_STALE_THRESHOLD_S`, regardless of which reading key
+    last updated it -- so it flips back to unhealthy if this driver's
+    background thread dies or the hardware goes stale, unlike a pure
+    presence check would).
 
     `_read_hardware()` and `reset_hardware()` are safe to call
     concurrently from different threads (this driver's own background
@@ -103,6 +115,7 @@ class A02YYUWSensor(Sensor):
         power_controller,
         poll_interval_s=DEFAULT_POLL_INTERVAL_S,
         stale_threshold_s=STALE_READING_THRESHOLD_S,
+        health_stale_threshold_s=HEALTH_STALE_THRESHOLD_S,
         mode_cycle_interval_s=MODE_CYCLE_INTERVAL_S,
         processed_mode_duration_s=PROCESSED_MODE_DURATION_S,
         mode_settle_s=MODE_SETTLE_S,
@@ -113,6 +126,7 @@ class A02YYUWSensor(Sensor):
         self._power_controller = power_controller
         self._poll_interval_s = poll_interval_s
         self._stale_threshold_s = stale_threshold_s
+        self._health_stale_threshold_s = health_stale_threshold_s
         self._mode_cycle_interval_s = mode_cycle_interval_s
         self._processed_mode_duration_s = processed_mode_duration_s
         self._mode_settle_s = mode_settle_s
@@ -162,13 +176,13 @@ class A02YYUWSensor(Sensor):
             return self._last_readings.get(key)
 
     def check_health(self):
-        """Healthy once both the "raw" and "processed" readings have
-        ever arrived -- see the class docstring for why this is a
-        presence check, not a staleness one. A driver permanently
-        pinned to one mode (`read_mode` at construction) never
-        populates the other, so it reports unhealthy forever -- this
-        check assumes the default alternating cycle."""
-        return self.read({"read_mode": "raw"}) is not None and self.read({"read_mode": "processed"}) is not None
+        """Healthy only if both the "raw" and "processed" readings have
+        ever arrived *and* `last_reading_monotonic()` is no older than
+        `_health_stale_threshold_s` -- see the class docstring for what
+        each half of this catches (and doesn't)."""
+        if self.read({"read_mode": "raw"}) is None or self.read({"read_mode": "processed"}) is None:
+            return False
+        return (time.monotonic() - self.last_reading_monotonic()) <= self._health_stale_threshold_s
 
     def _read_hardware(self):
         with self._hardware_lock:

@@ -428,25 +428,28 @@ from that sensor's own `is_healthy()`/`check_health()` (see [Sensor
 drivers](#sensor-drivers)) -- server.py holds no health policy of its
 own and makes no judgment call itself, it just asks. This base class
 has no shared definition of "healthy" at all -- each driver decides for
-itself. `A02YYUWSensor.check_health()` is a **presence check, not a
-staleness one**: healthy once *both* its "raw" and "processed" readings
-have ever arrived (so briefly degraded right after startup/reset until
-the first processed-mode dip completes a cycle -- see [RX
-pin](#rx-pin-raw-vs-processed-hardware-mode)), and stays that way even
-if its background thread later dies or the hardware goes stale --
-unlike an age-based check, it won't flip back to degraded on its own.
-A driver permanently pinned to one mode (`settings.read_mode` in
-`config/sensors.yaml`) never populates the other, so it reports
-unhealthy forever. `last_reading_age_s` (below) is still there for a
-caller (or a future driver's own `check_health()`) that wants to notice
-staleness itself; `GET /health`'s top-level `status` currently doesn't.
+itself. `A02YYUWSensor.check_health()` combines **a presence check and
+a staleness check**: healthy only if *both* its "raw" and "processed"
+readings have ever arrived (so briefly degraded right after
+startup/reset until the first processed-mode dip completes a cycle --
+see [RX pin](#rx-pin-raw-vs-processed-hardware-mode); a driver
+permanently pinned to one mode never populates the other, so it reports
+unhealthy forever) *and* `last_reading_age_s` (below) is within its own
+`health_stale_threshold_s` (3s by default, a constructor param this
+driver alone defines and defaults -- `Sensor` holds no threshold of its
+own). The staleness half is what actually catches this driver's
+background thread dying, or the hardware going stale, after both
+readings have already arrived once -- the presence check alone
+wouldn't.
 
 `last_reading_age_s` is seconds since that sensor's last valid frame, or
 `null` before its first ever reading (not itself a degraded condition —
 right after startup, before anything has been read yet, is normal). This
 is generic (`last_reading_monotonic()`, concrete on `Sensor`) and
-independent of `check_health()` -- every driver gets it the same way,
-regardless of how it defines "healthy".
+reported independently of `check_health()` -- every driver gets it the
+same way, regardless of how it defines "healthy" -- but for
+`A02YYUWSensor` specifically, it's also the same number `check_health()`
+itself compares against its threshold.
 
 `last_reset_at` is when `POST /reset` (or `/sensors/<name>/reset`) last
 reset that sensor, or `null` if it's never been called since this
@@ -542,9 +545,10 @@ class to guess at a shared default. `GET /health` (below) relies
 entirely on `is_healthy()` for its per-sensor status -- server.py holds
 no threshold and makes no judgment call of its own; it just calls
 `sensor.is_healthy()` and trusts the answer. `A02YYUWSensor.check_health()`
-is a presence check: healthy once both its "raw" and "processed"
-readings have ever arrived -- see `GET /health` below for what that
-does and doesn't catch.
+combines a presence check (both "raw" and "processed" must have ever
+arrived) with a staleness check on top (`last_reading_monotonic()`'s
+age against its own `health_stale_threshold_s`, 3s by default) -- see
+`GET /health` below for what each half catches.
 
 Different sensor technologies measure fundamentally different native
 quantities with different sign conventions (an ultrasonic sensor's raw

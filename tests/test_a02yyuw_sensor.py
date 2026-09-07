@@ -132,10 +132,11 @@ def test_check_health_true_once_both_readings_arrive():
     assert sensor.is_healthy() is True
 
 
-def test_check_health_is_a_presence_check_not_a_staleness_one():
-    # Unlike the old threshold-based is_healthy(), readings that arrived
-    # long ago still count as healthy -- check_health() only asks
-    # whether both have ever arrived, not how recently.
+def test_check_health_false_when_last_reading_is_older_than_health_threshold():
+    # Both readings have arrived (satisfying the presence check), but
+    # last_reading_monotonic() is stale beyond health_stale_threshold_s
+    # -- e.g. the background thread has since died -- so check_health()
+    # must catch that even though a pure presence check wouldn't.
     sensor = A02YYUWSensor(
         read_sensor.SimulatedSerial(),
         FakeModeController(),
@@ -144,6 +145,7 @@ def test_check_health_is_a_presence_check_not_a_staleness_one():
         mode_cycle_interval_s=0.1,
         processed_mode_duration_s=0.05,
         mode_settle_s=0.01,
+        health_stale_threshold_s=0.05,
     )
     _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
     sensor._stop_event.set()  # freeze the poll loop -- no further readings will arrive
@@ -151,6 +153,27 @@ def test_check_health_is_a_presence_check_not_a_staleness_one():
 
     with sensor._lock:
         sensor._last_reading_monotonic = time.monotonic() - 1000
+
+    assert sensor.check_health() is False
+
+
+def test_check_health_true_within_health_threshold_even_with_a_custom_value():
+    sensor = A02YYUWSensor(
+        read_sensor.SimulatedSerial(),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        mode_cycle_interval_s=0.1,
+        processed_mode_duration_s=0.05,
+        mode_settle_s=0.01,
+        health_stale_threshold_s=10,
+    )
+    _wait_until(lambda: sensor.last_reading("processed") is not None, timeout_s=1.0)
+    sensor._stop_event.set()  # freeze the poll loop -- no further readings will arrive
+    sensor._thread.join(timeout=1)
+
+    with sensor._lock:
+        sensor._last_reading_monotonic = time.monotonic() - 5  # stale, but within this sensor's own 10s threshold
 
     assert sensor.check_health() is True
 
