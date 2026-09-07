@@ -11,15 +11,9 @@ def load_sensors(path, simulate=False):
     ultimately rooted (via `input:` chains, see signal_config.py) at a
     `sensor` signal naming this sensor.
 
-    Returns dict[name -> {"driver", "signals", "primary_name",
-    "emit_flags", "configs"}] -- the last four fields are exactly what
-    `signal_config.load_signals()` returns for that sensor's group.
-
-    Exactly one sensor must be marked `default: true` -- server.py's
-    bare (not sensor-named) routes operate on that one, so existing
-    integrations (e.g. Home Assistant's REST sensors) that were built
-    against a single-sensor deployment keep working unchanged after
-    adding more sensors.
+    Returns dict[name -> {"driver", "signals", "emit_flags", "configs"}]
+    -- the last three fields are exactly what `signal_config.
+    load_signals()` returns for that sensor's group.
 
     If `simulate` is True, every sensor is constructed in simulated mode
     regardless of its configured `type`/`params` -- see each driver
@@ -35,7 +29,6 @@ def load_sensors(path, simulate=False):
         raise ValueError(f"{path}: 'sensors' must be a non-empty list")
 
     sensors = {}
-    default_name = None
 
     for entry in entries:
         name = entry.get("name")
@@ -53,16 +46,8 @@ def load_sensors(path, simulate=False):
         driver = sensor_types[sensor_type](entry.get("params") or {}, simulate)
         sensors[name] = {"driver": driver}
 
-        if entry.get("default", False):
-            if default_name is not None:
-                raise ValueError(f"{path}: multiple sensors marked default ('{default_name}' and '{name}')")
-            default_name = name
-
-    if default_name is None:
-        raise ValueError(f"{path}: exactly one sensor must be marked 'default: true'")
-
     signal_groups = load_signals(path, set(sensors))
     for name, sensor_entry in sensors.items():
         sensor_entry.update(signal_groups[name])
 
-    return sensors, default_name
+    return sensors

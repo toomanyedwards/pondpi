@@ -5,17 +5,12 @@
 # startup -- adding a new sensor type means writing
 # sensors/<name>_sensor.py, not editing anything here or in code.
 #
-# Exactly one sensor must be marked `default: true`. server.py's bare
-# routes (/level, /diag, POST /reset -- i.e. not under /sensors/<name>/)
-# operate on that one, so a single-sensor deployment's existing
-# integrations (e.g. Home Assistant's REST sensors, configured against
-# these exact bare routes) keep working unchanged as more sensors are
-# added. Every sensor, default or not, is also reachable at
-# /sensors/<name>/level and /sensors/<name>/diag.
+# GET /diag and POST /reset (bare, not under /sensors/<name>/) span every
+# sensor configured here at once. Every sensor is also reachable
+# individually at /sensors/<name>/diag and /sensors/<name>/reset.
 sensors:
   - name: pond_main
     type: a02yyuw
-    default: true
     params:
       serial_port: /dev/serial0
       mode_select_pin: 25
@@ -24,7 +19,7 @@ sensors:
 # Named, parameterized instances of the LevelSignal classes in
 # src/pondpi/signals/. See README.md's "Signal processing" section for
 # this schema in full (params.sensor, params.unit, params.mode, input:,
-# emit: false, primary: true).
+# emit: false).
 #
 # Only a `type: sensor` signal reads directly from a sensor, via
 # params.sensor naming it -- it must also declare params.unit (the
@@ -43,8 +38,9 @@ sensors:
 # its own poll_interval_ms cadence, rather than being pushed a new one
 # on every one of the sensor's own (much faster) poll ticks -- that's
 # what lets window_size * poll_interval_ms be a genuine real-world time
-# span. Exactly one signal per sensor -- this one -- must be marked
-# primary; see LevelSignal.owns_read_loop.
+# span. Any signal type may set LevelSignal.owns_read_loop = True (as
+# this one does) to get its own dedicated background thread
+# automatically -- no marker needed in this file.
 signals:
   - name: pond_main_sensor_raw
     type: sensor
@@ -66,13 +62,12 @@ signals:
   - name: rolling_avg
     type: rolling_average
     input: rolling_median5
-    primary: true
     params:
       # Its own dedicated thread admits one sample per poll_interval_ms
       # regardless of how often the sensor itself is actually polled,
       # so window_size * poll_interval_ms (60 * 1000ms = 60s) is the
       # real time span this averages over -- matched to Home
-      # Assistant's scan_interval so primary_signal represents a full
+      # Assistant's scan_interval so rolling_avg represents a full
       # averaged interval per HA poll rather than a ~6s slice of it.
       window_size: 60
       poll_interval_ms: 1000

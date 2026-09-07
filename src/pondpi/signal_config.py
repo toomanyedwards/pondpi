@@ -34,17 +34,17 @@ def load_signals(path, sensor_names):
     derives its `mode` from `input`, same as `unit`, and must not set
     `params.mode` itself.
 
-    Returns dict[sensor_name -> {"signals", "primary_name",
-    "emit_flags", "configs"}], one entry per name in `sensor_names`
-    (even if that sensor ends up with zero signals -- see build_signals,
-    which raises for that case rather than silently omitting it).
-    Within each group: exactly one signal must be marked `primary:
-    true`, and it must be a type that owns its own read loop (see
-    LevelSignal.owns_read_loop and RollingAverageSignal) --
-    /health's staleness check and /level's default view are both built
-    around that signal's own background-sampling cadence. Any signal
-    may set `emit: false` (default true) to keep it out of /level's
-    `signals` section while still showing up in full on /diag.
+    Returns dict[sensor_name -> {"signals", "emit_flags", "configs"}],
+    one entry per name in `sensor_names` (even if that sensor ends up
+    with zero signals -- see build_signals, which raises for that case
+    rather than silently omitting it). Any signal type may set
+    `owns_read_loop = True` as a class attribute (see
+    LevelSignal.owns_read_loop and RollingAverageSignal) -- server.py's
+    `main()` spawns one dedicated background thread per such signal in
+    a sensor's group, whatever their number (zero, one, or more), no
+    config marker needed. Any signal may set `emit: false` (default
+    true) to keep it out of /level's `signals` section while still
+    showing up in full on /diag.
     """
     with open(path) as f:
         config = yaml.safe_load(f)
@@ -134,7 +134,7 @@ def build_signals(entries, sensor_names, path):
 
         entries_by_name[name] = entry
 
-    grouped = {sensor: {"signals": {}, "primary_name": None, "emit_flags": {}, "configs": {}} for sensor in sensor_names}
+    grouped = {sensor: {"signals": {}, "emit_flags": {}, "configs": {}} for sensor in sensor_names}
 
     for name, entry in entries_by_name.items():
         group = grouped[root_sensor[name]]
@@ -142,26 +142,9 @@ def build_signals(entries, sensor_names, path):
         group["emit_flags"][name] = entry.get("emit", True)
         group["configs"][name] = _config_summary(entry, unit_by_name[name], mode_by_name[name])
 
-        if entry.get("primary", False):
-            if group["primary_name"] is not None:
-                raise ValueError(
-                    f"{path}: sensor '{root_sensor[name]}': multiple signals marked primary "
-                    f"('{group['primary_name']}' and '{name}')"
-                )
-            group["primary_name"] = name
-
     for sensor, group in grouped.items():
         if not group["signals"]:
             raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with params.sensor: {sensor})")
-        if group["primary_name"] is None:
-            raise ValueError(f"{path}: sensor '{sensor}': exactly one signal must be marked 'primary: true'")
-        primary_signal = instances[group["primary_name"]]
-        if not primary_signal.owns_read_loop:
-            raise ValueError(
-                f"{path}: sensor '{sensor}': primary signal '{group['primary_name']}' must be a type that owns "
-                "its own read loop (e.g. 'rolling_average'), since /health and /level's default view "
-                "are built around its background-sampling cadence"
-            )
 
     return grouped
 
@@ -170,7 +153,6 @@ def _config_summary(entry, unit, mode):
     summary = {
         "type": entry.get("type"),
         "params": entry.get("params") or {},
-        "primary": bool(entry.get("primary", False)),
         "emit": entry.get("emit", True),
         "unit": unit,
         "mode": mode,
