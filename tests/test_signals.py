@@ -1,7 +1,10 @@
+import time
+
 import pytest
 
 from pondpi.signals import discover_signal_types
 from pondpi.signals.exponential_smoothing_signal import ExponentialSmoothingSignal
+from pondpi.signals.polling_rolling_average_signal import PollingRollingAverageSignal
 from pondpi.signals.rolling_average_signal import RollingAverageSignal
 from pondpi.signals.rolling_median_signal import RollingMedianSignal
 from pondpi.signals.sensor_signal import SensorSignal
@@ -48,6 +51,32 @@ def test_rolling_average_signal_extra_state():
     assert signal.extra_state() == {"window_size": 2, "samples_in_window": 1}
 
 
+def test_polling_rolling_average_signal_accepts_the_first_sample_immediately():
+    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
+    assert signal.add(10) == 10
+
+
+def test_polling_rolling_average_signal_ignores_samples_within_the_poll_interval():
+    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
+    signal.add(10)
+    # Still within poll_interval_s of the first accepted sample -- ignored,
+    # average returned unchanged rather than folded into the window.
+    assert signal.add(9999) == 10
+
+
+def test_polling_rolling_average_signal_accepts_a_sample_once_the_interval_elapses():
+    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=0.05)
+    signal.add(10)
+    time.sleep(0.06)
+    assert signal.add(20) == 15  # (10 + 20) / 2
+
+
+def test_polling_rolling_average_signal_extra_state():
+    signal = PollingRollingAverageSignal(window_size=2, poll_interval_s=100)
+    signal.add(10)
+    assert signal.extra_state() == {"window_size": 2, "samples_in_window": 1, "poll_interval_s": 100}
+
+
 def test_exponential_smoothing_signal_first_reading_passes_through():
     signal = ExponentialSmoothingSignal(alpha=0.5)
     assert signal.add(10) == 10
@@ -73,6 +102,7 @@ def test_discover_signal_types_finds_all_built_ins():
         "sensor": SensorSignal,
         "rolling_median": RollingMedianSignal,
         "rolling_average": RollingAverageSignal,
+        "polling_rolling_average": PollingRollingAverageSignal,
         "exponential_smoothing": ExponentialSmoothingSignal,
     }
 

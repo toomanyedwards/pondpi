@@ -119,10 +119,10 @@ default sensor, or the named one.
   "polling_interval_ms": 150,
   "primary_signal": {
     "value": 11.2,
-    "name": "rolling_avg"
+    "name": "polling_rolling_avg"
   },
   "signals": {
-    "rolling_avg": 11.2,
+    "polling_rolling_avg": 11.2,
     "pond_main_sensor_raw": 11.3,
     "pond_main_sensor_processed": 11.0
   }
@@ -140,7 +140,7 @@ default sensor, or the named one.
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
-`rolling_avg` via `input:`, not as a meaningful output on its own. Its
+`polling_rolling_avg` via `input:`, not as a meaningful output on its own. Its
 full state is still visible on `/diag`. `pond_main_sensor_processed`
 (rooted at `mode: processed`, unlike the other two) does appear here
 alongside them — `signals` isn't scoped to one mode, just to this
@@ -220,11 +220,11 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "samples_in_window": 5
       }
     },
-    "rolling_avg": {
+    "polling_rolling_avg": {
       "config": {
-        "type": "rolling_average",
+        "type": "polling_rolling_average",
         "input": "rolling_median5",
-        "params": {"window_size": 200},
+        "params": {"window_size": 60, "poll_interval_s": 1},
         "primary": true,
         "emit": true,
         "unit": "cm",
@@ -234,8 +234,9 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "value": 11.2,
         "unit": "cm",
         "at": "2026-09-07T00:28:23.470621+00:00",
-        "window_size": 200,
-        "samples_in_window": 200
+        "window_size": 60,
+        "samples_in_window": 60,
+        "poll_interval_s": 1
       }
     }
   }
@@ -279,7 +280,7 @@ bare-vs-sensor-named distinction here; this is the one flat list:
 
 ```json
 {
-  "signals": ["pond_main_sensor_raw", "pond_main_sensor_processed", "rolling_median5", "rolling_avg"]
+  "signals": ["pond_main_sensor_raw", "pond_main_sensor_processed", "rolling_median5", "polling_rolling_avg"]
 }
 ```
 
@@ -292,13 +293,14 @@ entries):
 
 ```json
 {
-  "name": "rolling_avg",
+  "name": "polling_rolling_avg",
   "sensor": "pond_main",
   "value": 11.2,
   "unit": "cm",
   "at": "2026-09-07T00:28:23.470621+00:00",
-  "window_size": 200,
-  "samples_in_window": 200
+  "window_size": 60,
+  "samples_in_window": 60,
+  "poll_interval_s": 1
 }
 ```
 
@@ -316,12 +318,12 @@ the flattened value:
 
 ```json
 {
-  "name": "rolling_avg",
+  "name": "polling_rolling_avg",
   "sensor": "pond_main",
   "config": {
-    "type": "rolling_average",
+    "type": "polling_rolling_average",
     "input": "rolling_median5",
-    "params": {"window_size": 200},
+    "params": {"window_size": 60, "poll_interval_s": 1},
     "primary": true,
     "emit": true,
     "unit": "cm",
@@ -331,8 +333,9 @@ the flattened value:
     "value": 11.2,
     "unit": "cm",
     "at": "2026-09-07T00:28:23.470621+00:00",
-    "window_size": 200,
-    "samples_in_window": 200
+    "window_size": 60,
+    "samples_in_window": 60,
+    "poll_interval_s": 1
   }
 }
 ```
@@ -389,7 +392,7 @@ service info:
       "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
-      "signals": ["rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
+      "signals": ["polling_rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
     }
   }
 }
@@ -557,23 +560,26 @@ own `params.mode` (see [Signal processing](#signal-processing)) —
 `params.mode` controls which reading a given *signal* consumes. Pinning
 `read_mode` to `"processed"` means only signals rooted at `mode:
 processed` (e.g. `pond_main_sensor_processed`) ever get fed — the
-default `raw`-rooted pipeline (`pond_main_sensor_raw`, `rolling_avg`,
-`/level`'s default view) never receives data, since the driver never
-reports a `raw` reading at all. Pinning to `"raw"` is the inverse: only
-`raw`-rooted signals get fed, and `pond_main_sensor_processed`/
-`?mode=processed` never do.
+default `raw`-rooted pipeline (`pond_main_sensor_raw`,
+`polling_rolling_avg`, `/level`'s default view) never receives data,
+since the driver never reports a `raw` reading at all. Pinning to
+`"raw"` is the inverse: only `raw`-rooted signals get fed, and
+`pond_main_sensor_processed`/`?mode=processed` never do.
 
 One consequence worth knowing: because the `raw` pipeline (the one
-feeding this sensor's `rolling_avg` etc.) only actually gets sensor data
-during its ~90% share of each cycle, a `rolling_avg` window sized in
-samples at the poll rate (see above) now represents a correspondingly
+feeding this sensor's `polling_rolling_avg` etc.) only actually gets
+sensor data during its ~90% share of each cycle, a plain sample-count
+window filled at a fixed poll rate would represent a correspondingly
 longer wall-clock span than it would with continuous polling -- at the
 defaults, the raw pipeline only gets fresh samples during ~86% of
 wall-clock time (9s of `raw` per 10s cycle, minus `MODE_SETTLE_S` lost
-right after switching back into it), so a "~60s window" (`rolling_avg`'s
-`window_size: 400` in `config/sensors.yaml`) is closer to ~70s in
-practice. Not large enough to bother retuning, but worth remembering if
-that math is ever redone.
+right after switching back into it). `polling_rolling_avg` (`type:
+polling_rolling_average`) sidesteps this: its `poll_interval_s` gates
+on real elapsed time between *accepted* samples rather than a raw
+sample count assumed to arrive at a fixed poll rate, so `window_size:
+60` at `poll_interval_s: 1` stays a genuine ~60s window regardless of
+how the raw pipeline's duty cycle drifts -- see [Signal
+processing](#signal-processing).
 
 ### Power pin: software-triggered reset
 
@@ -630,6 +636,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 | `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size` | Averages its input over a rolling window. `window_size` is a *sample* count, filled at the poll rate (`--polling-interval-ms`, default 150ms, shared by every configured sensor) — e.g. `window_size: 200` is a ~30s real-world window, not 200 downstream reads. Same reasoning as `exponential_smoothing` below: size it to the cadence something will actually observe `/level` at, not an arbitrary sample count. |
+| `polling_rolling_average` | `window_size`, `poll_interval_s` | Like `rolling_average`, but only admits a new sample into the window once `poll_interval_s` has elapsed since the last one it accepted -- calls in between just return the current average unchanged. `window_size * poll_interval_s` is the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
 
 Every type except `sensor` also requires a top-level `input: <name>`,
@@ -708,17 +715,18 @@ signals:
     emit: false
     params:
       window_size: 5
-  - name: rolling_avg
-    type: rolling_average
+  - name: polling_rolling_avg
+    type: polling_rolling_average
     input: rolling_median5
     primary: true
     params:
-      window_size: 200
+      window_size: 60
+      poll_interval_s: 1
 ```
 
-Here `rolling_avg` reads `rolling_median5`'s output, which in turn reads
-`pond_main_sensor_raw`'s output (the sensor's raw reading) — a
-median-then-average pipeline built entirely from `input:` references,
+Here `polling_rolling_avg` reads `rolling_median5`'s output, which in
+turn reads `pond_main_sensor_raw`'s output (the sensor's raw reading) —
+a median-then-average pipeline built entirely from `input:` references,
 with each stage its own independently named signal.
 `pond_main_sensor_processed` is unrelated to that pipeline: a second,
 independent `sensor` signal rooted at the same sensor's `processed`
@@ -727,16 +735,18 @@ raw/processed hardware-mode cycling in [Sensor
 notes](#sensor-notes)).
 
 Exactly one signal rooted at each sensor must be marked `primary: true`.
-Its output becomes `primary_signal` in that sensor's `/level` — **the
-deployed Home Assistant "Pond Level" sensor reads that field**
-(`sensor.pond_level`, a `rest` sensor in Home Assistant's
-`configuration.yaml` polling `http://pondpi.lan:8080/level` every 30s via
-`value_json.primary_signal.value`), so don't remove or repurpose the
-default sensor's `primary` signal without updating that HA sensor's
+Its output becomes `primary_signal` in that sensor's `/level`, and it's
+also reachable directly at `/signals/<name>` (see above) — **the
+deployed Home Assistant "Pond Level Rolling Avg" sensor reads it that
+way**, a `rest` sensor in Home Assistant's `configuration.yaml` polling
+`http://<pi-host>:8080/signals/polling_rolling_avg` every 60s via
+`value_json.value`, so renaming or repurposing the default sensor's
+`primary` signal means updating that HA sensor's `resource`/
 `value_template` too. `signals.pond_main_sensor_raw` is unaffected by
 other signals — it's always the raw last-valid reading — and is what
 `sensor.pond_level_sensor_raw` reads (via
-`value_json.signals.pond_main_sensor_raw`).
+`http://<pi-host>:8080/signals/pond_main_sensor_raw`'s own
+`value_json.value`).
 
 Any signal can also set `emit: false` (default `true`) to keep it out of
 `/level`'s `signals` section — the curated "final output values" view —
