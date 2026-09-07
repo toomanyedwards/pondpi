@@ -128,10 +128,10 @@ default sensor, or the named one.
   "polling_interval_ms": 150,
   "primary_signal": {
     "value": 11.2,
-    "name": "polling_rolling_avg"
+    "name": "rolling_avg"
   },
   "signals": {
-    "polling_rolling_avg": 11.2,
+    "rolling_avg": 11.2,
     "pond_main_sensor_raw": 11.3,
     "pond_main_sensor_processed": 11.0
   }
@@ -149,7 +149,7 @@ default sensor, or the named one.
 
 `rolling_median5` (see [Signal processing](#signal-processing)) doesn't
 appear here — it's marked `emit: false` since it only exists to feed
-`polling_rolling_avg` via `input:`, not as a meaningful output on its own. Its
+`rolling_avg` via `input:`, not as a meaningful output on its own. Its
 full state is still visible on `/diag`. `pond_main_sensor_processed`
 (rooted at `mode: processed`, unlike the other two) does appear here
 alongside them — `signals` isn't scoped to one mode, just to this
@@ -229,7 +229,7 @@ diagnostic view that `/level`'s `signals` deliberately leaves out.
         "samples_in_window": 5
       }
     },
-    "polling_rolling_avg": {
+    "rolling_avg": {
       "config": {
         "type": "rolling_average",
         "input": "rolling_median5",
@@ -289,7 +289,7 @@ bare-vs-sensor-named distinction here; this is the one flat list:
 
 ```json
 {
-  "signals": ["pond_main_sensor_raw", "pond_main_sensor_processed", "rolling_median5", "polling_rolling_avg"]
+  "signals": ["pond_main_sensor_raw", "pond_main_sensor_processed", "rolling_median5", "rolling_avg"]
 }
 ```
 
@@ -302,7 +302,7 @@ entries):
 
 ```json
 {
-  "name": "polling_rolling_avg",
+  "name": "rolling_avg",
   "sensor": "pond_main",
   "value": 11.2,
   "unit": "cm",
@@ -327,7 +327,7 @@ the flattened value:
 
 ```json
 {
-  "name": "polling_rolling_avg",
+  "name": "rolling_avg",
   "sensor": "pond_main",
   "config": {
     "type": "rolling_average",
@@ -401,7 +401,7 @@ service info:
       "poller_alive": true,
       "last_reading_age_s": 0.1,
       "last_reset_at": null,
-      "signals": ["polling_rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
+      "signals": ["rolling_avg", "pond_main_sensor_raw", "pond_main_sensor_processed"]
     }
   }
 }
@@ -570,19 +570,19 @@ own `params.mode` (see [Signal processing](#signal-processing)) —
 `read_mode` to `"processed"` means only signals rooted at `mode:
 processed` (e.g. `pond_main_sensor_processed`) ever get fed — the
 default `raw`-rooted pipeline (`pond_main_sensor_raw`,
-`polling_rolling_avg`, `/level`'s default view) never receives data,
+`rolling_avg`, `/level`'s default view) never receives data,
 since the driver never reports a `raw` reading at all. Pinning to
 `"raw"` is the inverse: only `raw`-rooted signals get fed, and
 `pond_main_sensor_processed`/`?mode=processed` never do.
 
 One consequence worth knowing: because the `raw` pipeline (the one
-feeding this sensor's `polling_rolling_avg` etc.) only actually gets
+feeding this sensor's `rolling_avg` etc.) only actually gets
 sensor data during its ~90% share of each cycle, a plain sample-count
 window filled at a fixed poll rate would represent a correspondingly
 longer wall-clock span than it would with continuous polling -- at the
 defaults, the raw pipeline only gets fresh samples during ~86% of
 wall-clock time (9s of `raw` per 10s cycle, minus `MODE_SETTLE_S` lost
-right after switching back into it). `polling_rolling_avg` (`type:
+right after switching back into it). `rolling_avg` (`type:
 rolling_average`) sidesteps this: it owns its own background
 thread (see [Signal processing](#signal-processing)) that samples its
 `input:` signal's current cached value once every `poll_interval_ms` on
@@ -725,7 +725,7 @@ signals:
     emit: false
     params:
       window_size: 5
-  - name: polling_rolling_avg
+  - name: rolling_avg
     type: rolling_average
     input: rolling_median5
     primary: true
@@ -734,7 +734,7 @@ signals:
       poll_interval_ms: 1000
 ```
 
-Here `polling_rolling_avg` reads `rolling_median5`'s output, which in
+Here `rolling_avg` reads `rolling_median5`'s output, which in
 turn reads `pond_main_sensor_raw`'s output (the sensor's raw reading) —
 a median-then-average pipeline built entirely from `input:` references,
 with each stage its own independently named signal.
