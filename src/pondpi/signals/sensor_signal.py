@@ -5,13 +5,17 @@ from pondpi.signals.base import LevelSignal
 
 class SensorSignal(LevelSignal):
     """Passes the named sensor's raw reading through, converted into its
-    own declared `unit`. `sensor` names which configured sensor this
-    signal reads from -- one of the two signal types that connect
-    directly to a sensor; every other signal type gets its input from
-    another named signal via `input:` instead (see signal_config.py).
+    own declared `unit`. `sensor` is which configured sensor this signal
+    reads from -- one of the two signal types that connect directly to a
+    sensor; every other signal type gets its input from another named
+    signal instead (see signal_config.py). In the YAML both kinds of
+    "where do I get data from" are spelled the same way, a top-level
+    `source:` -- signal_config.py resolves what it names generically
+    (another signal, or, for a `reads_from_sensor` type like this one, a
+    sensor) and passes it into this constructor as `sensor`.
 
     Every other `LevelSignal` type is genuinely unit-agnostic -- a pure
-    numeric transform that inherits its unit from `input:` and never
+    numeric transform that inherits its unit from `source:` and never
     looks at it. `SensorSignal` is the deliberate one exception: it's
     the boundary where a sensor's canonical reading (always millimeters
     -- `LevelSensor.read()`'s fixed contract, see sensors/base.py) first
@@ -44,7 +48,7 @@ class SensorSignal(LevelSignal):
     def __init__(self, sensor_names, sensor=None, unit=None, mode="raw"):
         super().__init__()
         if sensor not in sensor_names:
-            raise ValueError(f"invalid or missing 'sensor' '{sensor}' (expected one of {sorted(sensor_names)})")
+            raise ValueError(f"invalid or missing 'source' '{sensor}' (expected one of {sorted(sensor_names)})")
         if not unit:
             raise ValueError("missing required 'unit'")
         if unit not in self.UNIT_DIVISORS:

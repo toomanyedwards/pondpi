@@ -26,7 +26,7 @@ def test_sensor_signal_rejects_missing_unit():
 
 
 def test_sensor_signal_rejects_unknown_sensor():
-    with pytest.raises(ValueError, match="invalid or missing 'sensor' 'rain_barrel'"):
+    with pytest.raises(ValueError, match="invalid or missing 'source' 'rain_barrel'"):
         SensorSignal(sensor_names={"pond_main"}, sensor="rain_barrel", unit="cm")
 
 

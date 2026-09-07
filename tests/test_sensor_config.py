@@ -13,8 +13,9 @@ def write_yaml(tmp_path, content):
 class _FakeSignal:
     owns_read_loop = False
 
-    def __init__(self, transform=lambda value: value):
+    def __init__(self, transform=lambda value: value, reads_from_sensor=True):
         self._transform = transform
+        self.reads_from_sensor = reads_from_sensor
         self.fed_values = []
 
     def feed(self, value):
@@ -29,6 +30,7 @@ class _FakePollingSignal:
     instead (see LevelSignal)."""
 
     owns_read_loop = True
+    reads_from_sensor = False
 
     def __init__(self):
         self.fed_values = []
@@ -44,16 +46,17 @@ def test_loads_valid_config(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
         signals:
           - name: raw
             type: sensor
-            sensor: pond_main
-            unit: cm
+            source: pond_main
+            settings:
+              unit: cm
           - name: instantaneous_raw
             type: rolling_average
-            input: raw
-            params:
+            source: raw
+            settings:
               window_size: 5
               poll_interval_ms: 1000
         """,
@@ -73,29 +76,31 @@ def test_loads_multiple_sensors(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
           - name: rain_barrel
             type: a02yyuw
-            params: {}
+            settings: {}
         signals:
           - name: pond_raw_sensor
             type: sensor
-            sensor: pond_main
-            unit: cm
+            source: pond_main
+            settings:
+              unit: cm
           - name: pond_raw
             type: rolling_average
-            input: pond_raw_sensor
-            params:
+            source: pond_raw_sensor
+            settings:
               window_size: 5
               poll_interval_ms: 1000
           - name: barrel_raw_sensor
             type: sensor
-            sensor: rain_barrel
-            unit: cm
+            source: rain_barrel
+            settings:
+              unit: cm
           - name: barrel_raw
             type: rolling_average
-            input: barrel_raw_sensor
-            params:
+            source: barrel_raw_sensor
+            settings:
               window_size: 5
               poll_interval_ms: 1000
         """,
@@ -110,7 +115,7 @@ def test_loads_multiple_sensors(tmp_path):
     assert set(sensors["rain_barrel"]["signals"]) == {"barrel_raw_sensor", "barrel_raw"}
 
 
-def test_simulate_true_ignores_hardware_params(tmp_path):
+def test_simulate_true_ignores_hardware_settings(tmp_path):
     # mode_select_pin/power_pin would try to drive real GPIO if honored
     # under --simulate -- confirm construction succeeds regardless (no
     # GPIO hardware available in a test environment).
@@ -120,19 +125,20 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params:
+            settings:
               serial_port: /dev/does_not_exist
               mode_select_pin: 99
               power_pin: 98
         signals:
           - name: raw
             type: sensor
-            sensor: pond_main
-            unit: cm
+            source: pond_main
+            settings:
+              unit: cm
           - name: instantaneous_raw
             type: rolling_average
-            input: raw
-            params:
+            source: raw
+            settings:
               window_size: 5
               poll_interval_ms: 1000
         """,
@@ -150,7 +156,7 @@ def test_unknown_sensor_type_raises(tmp_path):
         sensors:
           - name: pond_main
             type: not_a_real_sensor
-            params: {}
+            settings: {}
         """,
     )
 
@@ -165,10 +171,10 @@ def test_duplicate_sensor_name_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
         """,
     )
 
@@ -182,7 +188,7 @@ def test_missing_name_raises(tmp_path):
         """
         sensors:
           - type: a02yyuw
-            params: {}
+            settings: {}
         """,
     )
 
@@ -197,7 +203,7 @@ def test_empty_signals_list_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
         signals: []
         """,
     )
@@ -213,19 +219,20 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
         sensors:
           - name: pond_main
             type: a02yyuw
-            params: {}
+            settings: {}
           - name: rain_barrel
             type: a02yyuw
-            params: {}
+            settings: {}
         signals:
           - name: pond_raw_sensor
             type: sensor
-            sensor: pond_main
-            unit: cm
+            source: pond_main
+            settings:
+              unit: cm
           - name: pond_raw
             type: rolling_average
-            input: pond_raw_sensor
-            params:
+            source: pond_raw_sensor
+            settings:
               window_size: 5
               poll_interval_ms: 1000
         """,
@@ -263,9 +270,9 @@ def test_build_on_reading_downstream_signal_receives_upstream_signals_output():
     # doubled) output, it'd land on 200 instead of 400.
     signals = {
         "root": _FakeSignal(transform=lambda v: v * 2),
-        "downstream": _FakeSignal(transform=lambda v: v * 2),
+        "downstream": _FakeSignal(transform=lambda v: v * 2, reads_from_sensor=False),
     }
-    configs = {"root": {"mode": "raw"}, "downstream": {"mode": "raw", "input": "root"}}
+    configs = {"root": {"mode": "raw"}, "downstream": {"mode": "raw", "source": "root"}}
     on_reading = _build_on_reading(signals, configs)
 
     on_reading("raw", 100)
@@ -275,7 +282,7 @@ def test_build_on_reading_downstream_signal_receives_upstream_signals_output():
 
 def test_build_on_reading_skips_signals_that_own_their_own_read_loop():
     signals = {"instantaneous_raw": _FakeSignal(), "avg": _FakePollingSignal()}
-    configs = {"instantaneous_raw": {"mode": "raw"}, "avg": {"mode": "raw", "input": "instantaneous_raw"}}
+    configs = {"instantaneous_raw": {"mode": "raw"}, "avg": {"mode": "raw", "source": "instantaneous_raw"}}
     on_reading = _build_on_reading(signals, configs)
 
     on_reading("raw", 100)
