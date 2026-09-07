@@ -6,7 +6,6 @@ import pytest
 from pondpi.signals import discover_signal_types
 from pondpi.signals.exponential_smoothing_signal import ExponentialSmoothingSignal
 from pondpi.signals.polling_rolling_average_signal import PollingRollingAverageSignal
-from pondpi.signals.rolling_average_signal import RollingAverageSignal
 from pondpi.signals.rolling_median_signal import RollingMedianSignal
 from pondpi.signals.sensor_signal import SensorSignal
 
@@ -38,18 +37,6 @@ def test_rolling_median_signal_extra_state():
     signal = RollingMedianSignal(window_size=3)
     signal.add(10)
     assert signal.extra_state() == {"window_size": 3, "samples_in_window": 1}
-
-
-def test_rolling_average_signal_delegates_to_rolling_average():
-    signal = RollingAverageSignal(window_size=2)
-    signal.add(10)
-    assert signal.add(20) == 15
-
-
-def test_rolling_average_signal_extra_state():
-    signal = RollingAverageSignal(window_size=2)
-    signal.add(10)
-    assert signal.extra_state() == {"window_size": 2, "samples_in_window": 1}
 
 
 def _run_briefly(signal, get_raw_value, timeout_s=1, until=None):
@@ -156,7 +143,6 @@ def test_discover_signal_types_finds_all_built_ins():
     assert signal_types == {
         "sensor": SensorSignal,
         "rolling_median": RollingMedianSignal,
-        "rolling_average": RollingAverageSignal,
         "polling_rolling_average": PollingRollingAverageSignal,
         "exponential_smoothing": ExponentialSmoothingSignal,
     }
