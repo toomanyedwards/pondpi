@@ -396,6 +396,23 @@ def test_sensor_mode_processed_is_respected(tmp_path):
     assert group["configs"]["b"]["mode"] == "processed"
 
 
+def test_unsupported_sensor_unit_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            params:
+              sensor: pond_main
+              unit: mm
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid params.unit 'mm'"):
+        load_signals(path, {"pond_main"})
+
+
 def test_invalid_mode_param_raises(tmp_path):
     path = write_yaml(
         tmp_path,

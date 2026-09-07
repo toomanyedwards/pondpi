@@ -9,19 +9,25 @@ from pondpi.signals.rolling_median_signal import RollingMedianSignal
 from pondpi.signals.sensor_signal import SensorSignal
 
 
-def test_sensor_signal_passes_through_unchanged():
-    signal = SensorSignal(sensor="pond_main")
-    assert signal.add(101) == 101
-    assert signal.add(999) == 999
+def test_sensor_signal_converts_mm_into_its_declared_unit():
+    signal = SensorSignal(sensor="pond_main", unit="cm")
+    assert signal.add(101) == 10.1
+    assert signal.add(999) == 99.9
+
+
+def test_sensor_signal_rejects_unsupported_unit():
+    signal = SensorSignal(sensor="pond_main", unit="mm")
+    with pytest.raises(KeyError):
+        signal.add(101)
 
 
 def test_sensor_signal_extra_state_reports_its_sensor_and_mode():
-    signal = SensorSignal(sensor="pond_main")
+    signal = SensorSignal(sensor="pond_main", unit="cm")
     assert signal.extra_state() == {"sensor": "pond_main", "mode": "raw"}
 
 
 def test_sensor_signal_extra_state_reports_explicit_mode():
-    signal = SensorSignal(sensor="pond_main", mode="processed")
+    signal = SensorSignal(sensor="pond_main", unit="cm", mode="processed")
     assert signal.extra_state() == {"sensor": "pond_main", "mode": "processed"}
 
 

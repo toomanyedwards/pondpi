@@ -212,14 +212,14 @@ instead of an all-or-nothing error:
 Every signal's `config`/`output` includes `unit` — the unit its own
 `value` is actually in (e.g. `"cm"`), as declared in `params.unit` for
 a `sensor`-type signal or derived automatically from `input` for every
-other type. See [Signal processing](#signal-processing). `value` itself
-is computed the same way regardless of `unit` (the signal's internal
-number divided by 10) -- for `pond_main_sensor_raw`, `params.unit: cm`
-is correct precisely because the A02YYUW's millimeter reading divided
-by 10 *is* centimeters. A future sensor type whose native reading isn't
-in millimeters would need `value`'s conversion itself to become
-unit-aware; today `unit` accurately describes every signal's `value`,
-but isn't yet wired into computing it.
+other type. See [Signal processing](#signal-processing). `value` is
+already in that unit by the time server.py sees it -- `SensorSignal`
+(the boundary where a sensor's canonical millimeter reading first enters
+the signal graph, see [Signal processing](#signal-processing)) converts
+it once, there; server.py only rounds for display and does no
+unit-specific math of its own. `unit` genuinely describes what `value`
+already is, not just a label server.py's own conversion happens to
+match.
 
 `output` also includes `at` — an ISO 8601 UTC timestamp of when that
 signal's `value` was last computed. `pond_main_sensor_raw` and
@@ -653,18 +653,23 @@ maintain. Adding a new signal type means writing
 `signals/<name>_signal.py` and referencing `type: <name>` in the
 `signals:` list — nothing else to edit or register.
 
-Signals are unit-agnostic: `add()` takes a value in and returns a
-processed value out, with no notion of mm/cm baked in anywhere. The
-A02YYUW's own raw readings are physically in millimeters, and the fixed
-conversion in `server.py`'s `_signal_output()` (dividing by 10) always
-assumes that -- not inside any signal. A signal's own `unit` (above) is
-what that division's *result* should be labeled, not what the sensor
-natively reports; `params.unit: cm` on `pond_main_sensor_raw` is
-correct precisely because dividing millimeters by 10 produces
-centimeters.
+Every signal type except `sensor` is genuinely unit-agnostic: `add()`
+takes a value in and returns a processed value out, with no notion of
+mm/cm baked in anywhere -- a rolling average of centimeters is still in
+centimeters, computed the same way regardless of what unit those
+centimeters happen to represent. `sensor` is the deliberate one
+exception: it's the boundary where a sensor's canonical reading (always
+millimeters -- `LevelSensor.read()`'s fixed contract, see [Sensor
+drivers](#sensor-drivers)) first enters the signal graph, so its own
+`add()` converts once, there, into its declared `params.unit`
+(`SensorSignal.UNIT_DIVISORS`, currently just `"cm"`) -- `params.unit: cm`
+on `pond_main_sensor_raw` is correct precisely because dividing
+millimeters by `UNIT_DIVISORS["cm"]` (10) produces centimeters. Nothing
+downstream of that one signal, including every other signal type and
+server.py itself, ever needs to think about millimeters again.
 
 `add()` is the pure-computation hook every signal type implements
-(median, average, EMA, passthrough); nothing calls it directly except
+(median, average, EMA, unit conversion); nothing calls it directly except
 `LevelSignal.feed()` (concrete, shared by every type), which wraps it
 with thread-safe caching -- computes the new value via `add()`, stores
 it alongside a fresh `at` timestamp, and that's what `current()` reads
@@ -676,7 +681,7 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 
 | Type | Params | Behavior |
 |---|---|---|
-| `sensor` | `sensor`, `unit`, `mode` | Passes the named sensor's reading through unchanged. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `sensor` | `sensor`, `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
@@ -684,15 +689,19 @@ Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
 Every type except `sensor` also requires a top-level `input: <name>`,
 naming the signal (defined earlier in the file) whose output feeds it.
 
-A `sensor` signal must also set `params.unit` (e.g. `"cm"`) -- the
-unit its readings are actually in, required since it's the boundary
-where a value enters the signal graph and nothing upstream can tell us
-that. Every other signal type derives its `unit` automatically from
-whichever signal its `input:` names, since none of them perform any
-unit conversion -- a rolling average of centimeters is still in
-centimeters -- and must not set `params.unit` itself (that raises a
-config error, since it would silently be ignored otherwise). This is
-reported on `/diag` and `/signals/<name>`; see those endpoints above.
+A `sensor` signal must also set `params.unit` (e.g. `"cm"`) -- the unit
+to convert its sensor's canonical millimeter reading into, required
+since it's the boundary where a value enters the signal graph and
+nothing upstream can tell us that. Validated against
+`SensorSignal.UNIT_DIVISORS` (currently just `{"cm": 10.0}`), not any
+arbitrary string -- an unsupported unit fails config loading outright
+rather than silently mislabeling a number. Every other signal type
+derives its `unit` automatically from whichever signal its `input:`
+names, since none of them perform any unit conversion -- a rolling
+average of centimeters is still in centimeters -- and must not set
+`params.unit` itself (that raises a config error, since it would
+silently be ignored otherwise). This is reported on `/diag` and
+`/signals/<name>`; see those endpoints above.
 
 A `sensor` signal may also set `params.mode` -- `"raw"` (the default)
 or `"processed"`, picking which of the sensor's own named readings

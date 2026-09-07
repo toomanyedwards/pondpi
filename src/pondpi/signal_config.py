@@ -23,10 +23,13 @@ def load_signals(path, sensor_names):
     Every `type: sensor` signal must also set `params.unit` (e.g.
     "cm") -- required, since it's the boundary where a physical
     reading enters the signal graph and nothing upstream can tell us
-    what unit it's in. Every other signal type derives its `unit`
-    automatically from whichever signal its `input:` names (they're
-    pure numeric transforms -- a rolling average of centimeters is
-    still in centimeters), and must not set `params.unit` itself.
+    what unit it's in. Validated against `SensorSignal.UNIT_DIVISORS`
+    (the signal's own declared set of units it knows how to convert a
+    sensor's canonical millimeter reading into), not just any non-empty
+    string. Every other signal type derives its `unit` automatically
+    from whichever signal its `input:` names (they're pure numeric
+    transforms -- a rolling average of centimeters is still in
+    centimeters), and must not set `params.unit` itself.
 
     A `type: sensor` signal may also set `params.mode` ("raw", the
     default, or "processed") -- which of that sensor's two hardware
@@ -98,9 +101,14 @@ def build_signals(entries, sensor_names, path):
                     f"{path}: signal '{name}' (type 'sensor') has invalid or missing params.sensor "
                     f"'{sensor}' (expected one of {sorted(sensor_names)})"
                 )
-            unit = params.pop("unit", None)
+            unit = params.get("unit")
             if not unit:
                 raise ValueError(f"{path}: signal '{name}' (type 'sensor') is missing required params.unit")
+            if unit not in signal_types[signal_type].UNIT_DIVISORS:
+                raise ValueError(
+                    f"{path}: signal '{name}' (type 'sensor') has invalid params.unit '{unit}' "
+                    f"(expected one of {sorted(signal_types[signal_type].UNIT_DIVISORS)})"
+                )
             mode = params.get("mode", "raw")
             if mode not in _VALID_MODES:
                 raise ValueError(f"{path}: signal '{name}' (type 'sensor') has invalid params.mode '{mode}' (expected one of {_VALID_MODES})")
