@@ -88,13 +88,15 @@ pondpi/
 ## API
 
 Two families of routes here. Sensor-scoped routes (`/diag`, `POST
-/reset`, and `GET /sensors`) come in two forms: a bare route (`/diag`,
-`POST /reset`) that operates on the *default* sensor — the one entry in
+/reset`, and `GET /sensors`) come in two forms: a bare route (`/diag`)
+that operates on the *default* sensor — the one entry in
 `config/sensors.yaml` marked `default: true` — and a sensor-named route
 (`/sensors/<name>/diag`, `POST /sensors/<name>/reset`) that operates on
 any configured sensor by name, default or not. A single-sensor
 deployment's existing integrations keep working unchanged as more
 sensors are added, as long as that original sensor stays marked default.
+Bare `POST /reset` is the one exception to "bare means default only" —
+see below.
 
 Signal-scoped routes (`GET /signals`, `GET /signals/<name>`, `GET
 /signals/<name>/diag`) have no such bare-vs-named split, since signals
@@ -279,16 +281,20 @@ before the sensor's first settled processed-mode reading arrives).
 
 ### `POST /reset` / `POST /sensors/<name>/reset`
 
-Power-cycles the default sensor, or the named one, to force a hardware
-reset — for when it appears wedged/stuck (e.g. a stale, unchanging
-reading) and the automatic serial buffer flush in `poll_sensor()` (see
-`/health` below) hasn't resolved it on its own. Not every sensor driver
-supports this — returns `501 {"error": "sensor does not support
-reset"}` if the target sensor doesn't (checked via its `supports_reset`
-capability flag; see [Sensor drivers](#sensor-drivers)). For the
-A02YYUW, this drives its power pin (`power_pin` param, default `24`) low
-for `sensor_power.RESET_OFF_DURATION_S` (1s) and back high, so the
-request blocks for about that long.
+Power-cycles a sensor to force a hardware reset — for when it appears
+wedged/stuck (e.g. a stale, unchanging reading) and the automatic
+serial buffer flush in `poll_sensor()` (see `/health` below) hasn't
+resolved it on its own. For the A02YYUW, this drives its power pin
+(`power_pin` param, default `24`) low for
+`sensor_power.RESET_OFF_DURATION_S` (1s) and back high, so the request
+blocks for about that long per sensor reset.
+
+`POST /sensors/<name>/reset` targets exactly one sensor. Not every
+sensor driver supports resetting — returns `501 {"error": "sensor does
+not support reset"}` if that one doesn't (checked via its
+`supports_reset` capability flag; see [Sensor drivers](#sensor-drivers)),
+or `404 {"error": "unknown sensor '<name>'"}` for a name not in
+`config/sensors.yaml`:
 
 ```json
 {
@@ -298,13 +304,26 @@ request blocks for about that long.
 }
 ```
 
-`reset_at` is also recorded as that sensor's entry in `/health`'s
-`sensors.<name>.last_reset_at` below. There's no readiness check
-afterward — the sensor typically resumes producing valid frames within
-its normal ~100-300ms response time, same as at startup.
+Bare `POST /reset` is the exception to this doc's usual "bare route
+means the default sensor" rule -- it resets **every** configured
+sensor that supports it, one at a time, reporting each one's outcome
+individually (`"reset"` or `"not_supported"`) rather than failing the
+whole request just because one sensor lacks the capability:
 
-Both the bare and sensor-named routes return `404
-{"error": "unknown sensor '<name>'"}` for a name not in `config/sensors.yaml`.
+```json
+{
+  "sensors": {
+    "pond_main": {"status": "reset", "reset_at": "2026-09-05T22:05:40.132812+00:00"},
+    "rain_barrel": {"status": "not_supported"}
+  }
+}
+```
+
+Each sensor's `reset_at` (from either route) is also recorded as that
+sensor's own entry in `/health`'s `sensors.<name>.last_reset_at` below.
+There's no readiness check afterward — a sensor typically resumes
+producing valid frames within its normal ~100-300ms response time, same
+as at startup.
 
 ### `GET /health`
 
