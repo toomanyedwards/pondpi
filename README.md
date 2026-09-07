@@ -604,6 +604,18 @@ sensor already has power before this service starts — `sensor_power.py`'s
 (initialized high, matching its already-high boot state, so acquiring it
 doesn't itself glitch the sensor's power).
 
+`POST /reset` runs on a request-handling thread, entirely independent of
+the background thread continuously calling `read()` -- without
+synchronization, a reset landing mid-read can wedge the driver (seen in
+practice: an hourly `POST /reset` automation left the sensor stuck for
+~53 minutes until the next unrelated service restart happened to clear
+it). `A02YYUWSensor` serializes the two internally via a lock around
+both `read()` and `reset()` (see `sensors/base.py`'s `LevelSensor`
+docstring for why this is each driver's own responsibility, not
+something server.py coordinates) -- a concurrent `read()` simply blocks
+for the ~1s power-cycle rather than running against the sensor while
+it's powered off.
+
 ## Signal processing
 
 Signals live in their own top-level `signals:` list in
