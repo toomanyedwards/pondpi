@@ -24,8 +24,8 @@ class FakeSignal:
 
 class FakePollingSignal:
     """Stand-in for a signal that owns its own read loop (like
-    PollingRollingAverageSignal) -- current() returns whatever result
-    it was constructed with, or was fed via run_loop()."""
+    RollingAverageSignal) -- current() returns whatever result it was
+    constructed with, or was fed via run_loop()."""
 
     owns_read_loop = True
 
@@ -473,7 +473,7 @@ def test_level_returns_current_reading():
     server._signal_objects = {
         "rolling_median5": FakeSignal(),
         "rolling_avg": FakePollingSignal(
-            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400, "poll_interval_s": 1}
+            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400, "poll_interval_ms": 1000}
         ),
         "instantaneous_raw": FakeSignal(),
     }
@@ -619,7 +619,7 @@ def test_diag_returns_config_and_output_for_every_signal():
                 "unit": "cm",
             },
             "rolling_avg": {
-                "type": "polling_rolling_average",
+                "type": "rolling_average",
                 "params": {"window_size": 200},
                 "primary": True,
                 "emit": True,
@@ -659,7 +659,7 @@ def test_diag_returns_config_and_output_for_every_signal():
             },
             "rolling_avg": {
                 "config": {
-                    "type": "polling_rolling_average",
+                    "type": "rolling_average",
                     "params": {"window_size": 200},
                     "primary": True,
                     "emit": True,
@@ -768,7 +768,7 @@ def test_signal_diag_returns_config_and_output():
     server._state["pond_main"].update(
         configs={
             "rolling_avg": {
-                "type": "polling_rolling_average",
+                "type": "rolling_average",
                 "params": {"window_size": 400},
                 "primary": True,
                 "emit": True,
@@ -786,7 +786,7 @@ def test_signal_diag_returns_config_and_output():
         "name": "rolling_avg",
         "sensor": "pond_main",
         "config": {
-            "type": "polling_rolling_average",
+            "type": "rolling_average",
             "params": {"window_size": 400},
             "primary": True,
             "emit": True,

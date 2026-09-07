@@ -26,12 +26,12 @@ def test_loads_valid_config(tmp_path):
             params:
               window_size: 5
           - name: rolling_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 40
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -79,12 +79,12 @@ def test_emit_false_is_respected(tmp_path):
             params:
               window_size: 5
           - name: rolling_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 40
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -105,24 +105,24 @@ def test_signals_grouped_independently_per_sensor(tmp_path):
               sensor: pond_main
               unit: cm
           - name: pond_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: pond_raw
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
           - name: barrel_raw
             type: sensor
             params:
               sensor: rain_barrel
               unit: cm
           - name: barrel_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: barrel_raw
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -150,12 +150,12 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
             params:
               window_size: 3
           - name: rolling_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -346,12 +346,12 @@ def test_downstream_signal_derives_unit_from_input(tmp_path):
             params:
               window_size: 3
           - name: rolling_avg
-            type: polling_rolling_average
+            type: rolling_average
             input: rolling_median5
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -375,12 +375,12 @@ def test_sensor_mode_defaults_to_raw(tmp_path):
               sensor: pond_main
               unit: cm
           - name: b
-            type: polling_rolling_average
+            type: rolling_average
             input: a
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -405,12 +405,12 @@ def test_sensor_mode_processed_is_respected(tmp_path):
               unit: cm
               mode: processed
           - name: c
-            type: polling_rolling_average
+            type: rolling_average
             input: a
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -483,12 +483,12 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
             params:
               window_size: 2
           - name: d
-            type: polling_rolling_average
+            type: rolling_average
             input: a
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -525,12 +525,12 @@ def test_sensor_with_no_signals_raises(tmp_path):
               sensor: pond_main
               unit: cm
           - name: b
-            type: polling_rolling_average
+            type: rolling_average
             input: a
             primary: true
             params:
               window_size: 2
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 

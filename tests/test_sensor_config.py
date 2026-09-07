@@ -26,12 +26,12 @@ def test_loads_valid_config_with_one_default_sensor(tmp_path):
               sensor: pond_main
               unit: cm
           - name: instantaneous_raw
-            type: polling_rolling_average
+            type: rolling_average
             input: raw
             primary: true
             params:
               window_size: 5
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -63,24 +63,24 @@ def test_loads_multiple_sensors(tmp_path):
               sensor: pond_main
               unit: cm
           - name: pond_raw
-            type: polling_rolling_average
+            type: rolling_average
             input: pond_raw_sensor
             primary: true
             params:
               window_size: 5
-              poll_interval_s: 1
+              poll_interval_ms: 1000
           - name: barrel_raw_sensor
             type: sensor
             params:
               sensor: rain_barrel
               unit: cm
           - name: barrel_raw
-            type: polling_rolling_average
+            type: rolling_average
             input: barrel_raw_sensor
             primary: true
             params:
               window_size: 5
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -116,12 +116,12 @@ def test_simulate_true_ignores_hardware_params(tmp_path):
               sensor: pond_main
               unit: cm
           - name: instantaneous_raw
-            type: polling_rolling_average
+            type: rolling_average
             input: raw
             primary: true
             params:
               window_size: 5
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
@@ -251,12 +251,12 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
               sensor: pond_main
               unit: cm
           - name: pond_raw
-            type: polling_rolling_average
+            type: rolling_average
             input: pond_raw_sensor
             primary: true
             params:
               window_size: 5
-              poll_interval_s: 1
+              poll_interval_ms: 1000
         """,
     )
 
