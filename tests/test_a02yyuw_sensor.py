@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -156,6 +157,36 @@ def test_reset_delegates_to_power_controller():
     sensor = A02YYUWSensor(FakeSerial(), FakeModeController(), power_controller)
     sensor.reset()
     assert power_controller.reset_calls == 1
+
+
+def test_read_and_reset_are_serialized_against_each_other():
+    # A slow reset() (real hardware holds the power pin low for
+    # RESET_OFF_DURATION_S) must never overlap with a concurrent
+    # read() on another thread -- power-cycling mid-read is what wedged
+    # the driver on real hardware (see sensors/base.py's docstring).
+    reset_end_time = []
+
+    class SlowPowerController(FakePowerController):
+        def reset(self):
+            time.sleep(0.05)
+            super().reset()
+            reset_end_time.append(time.monotonic())
+
+    sensor = A02YYUWSensor(FakeSerial(_frame(0x01, 0x2C)), FakeModeController(), SlowPowerController())
+
+    reset_thread = threading.Thread(target=sensor.reset)
+    reset_thread.start()
+    time.sleep(0.01)  # let reset() acquire the lock and start its "hardware" delay first
+
+    # This read() call is invoked while reset() is still mid-flight
+    # (well within its 0.05s critical section) -- if the two aren't
+    # serialized, it would return immediately; if they are, it can't
+    # complete until reset() has released the lock.
+    sensor.read()
+    read_end = time.monotonic()
+
+    reset_thread.join()
+    assert read_end >= reset_end_time[0]
 
 
 def test_supports_reset_is_true():

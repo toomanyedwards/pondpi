@@ -21,6 +21,15 @@ class LevelSensor:
     implement `reset()`) only if the underlying hardware can actually be
     power-cycled or otherwise reset in software. Callers must check it
     before calling `reset()`.
+
+    `read()` and `reset()` must be safe to call concurrently from
+    different threads -- server.py calls `read()` continuously from a
+    background polling thread while `POST /reset` calls `reset()` from
+    a request-handling thread, with no synchronization at that layer.
+    It's each driver's own responsibility to serialize its hardware
+    access internally (e.g. a lock around whatever touches the physical
+    connection) if a concurrent reset could otherwise corrupt or wedge
+    an in-flight read.
     """
 
     supports_reset = False

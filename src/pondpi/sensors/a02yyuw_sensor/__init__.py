@@ -1,3 +1,4 @@
+import threading
 import time
 
 import serial
@@ -48,6 +49,14 @@ class A02YYUWSensor(LevelSensor):
     `read()` does at most one serial read per call and never blocks
     waiting for a frame -- callers must call it repeatedly from their
     own polling loop.
+
+    `read()` and `reset()` are safe to call concurrently from different
+    threads (server.py does exactly that: a background thread calls
+    `read()` continuously while `POST /reset` calls `reset()` from a
+    request-handling thread) -- internally serialized via
+    `_hardware_lock`, since power-cycling mid-read could otherwise wedge
+    the UART. Callers never need to know about this; it's this driver's
+    own responsibility to be safe under that usage pattern.
     """
 
     supports_reset = True
@@ -71,6 +80,7 @@ class A02YYUWSensor(LevelSensor):
         self._processed_mode_duration_s = processed_mode_duration_s
         self._mode_settle_s = mode_settle_s
         self._read_mode = read_mode
+        self._hardware_lock = threading.Lock()
 
         self._last_valid_monotonic = time.monotonic()
         self._current_mode = self._read_mode if self._read_mode is not None else sensor_mode.RAW
@@ -83,54 +93,56 @@ class A02YYUWSensor(LevelSensor):
         self._cycle_start_monotonic = time.monotonic()
 
     def read(self):
-        now = time.monotonic()
+        with self._hardware_lock:
+            now = time.monotonic()
 
-        if self._read_mode is not None:
-            desired_mode = self._read_mode
-        else:
-            # Which mode we *should* be in right now, as a function of
-            # time elapsed since this driver was constructed (not
-            # wall-clock time -- that would make a freshly-started
-            # driver's initial mode depend on what moment it happened to
-            # start at). Always begins in "raw".
-            phase = (now - self._cycle_start_monotonic) % self._mode_cycle_interval_s
-            desired_mode = (
-                sensor_mode.PROCESSED
-                if phase >= (self._mode_cycle_interval_s - self._processed_mode_duration_s)
-                else sensor_mode.RAW
-            )
-        if desired_mode != self._current_mode:
-            self._current_mode = desired_mode
-            self._mode_controller.set_mode(self._current_mode)
-            self._last_mode_switch_monotonic = now
+            if self._read_mode is not None:
+                desired_mode = self._read_mode
+            else:
+                # Which mode we *should* be in right now, as a function of
+                # time elapsed since this driver was constructed (not
+                # wall-clock time -- that would make a freshly-started
+                # driver's initial mode depend on what moment it happened to
+                # start at). Always begins in "raw".
+                phase = (now - self._cycle_start_monotonic) % self._mode_cycle_interval_s
+                desired_mode = (
+                    sensor_mode.PROCESSED
+                    if phase >= (self._mode_cycle_interval_s - self._processed_mode_duration_s)
+                    else sensor_mode.RAW
+                )
+            if desired_mode != self._current_mode:
+                self._current_mode = desired_mode
+                self._mode_controller.set_mode(self._current_mode)
+                self._last_mode_switch_monotonic = now
 
-        distance_mm = read_sensor.read_frame(self._ser)
-        settling = (now - self._last_mode_switch_monotonic) < self._mode_settle_s
+            distance_mm = read_sensor.read_frame(self._ser)
+            settling = (now - self._last_mode_switch_monotonic) < self._mode_settle_s
 
-        if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
-            self._last_valid_monotonic = time.monotonic()
+            if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
+                self._last_valid_monotonic = time.monotonic()
 
-            if settling:
-                return {}
+                if settling:
+                    return {}
 
-            key = "raw" if self._current_mode == sensor_mode.RAW else "processed"
-            return {key: distance_mm}
+                key = "raw" if self._current_mode == sensor_mode.RAW else "processed"
+                return {key: distance_mm}
 
-        if time.monotonic() - self._last_valid_monotonic > self._stale_threshold_s:
-            # No valid frame in a while -- read_frame()'s incremental
-            # header-hunting resync can get permanently wedged if the
-            # byte stream is knocked out of alignment (e.g. by a wiring
-            # disturbance) in just the wrong way. A plain buffer flush
-            # is enough to force a fresh resync, so do that rather than
-            # wait forever. Reset the timer so we don't flush every loop
-            # iteration while genuinely disconnected.
-            self._ser.reset_input_buffer()
-            self._last_valid_monotonic = time.monotonic()
+            if time.monotonic() - self._last_valid_monotonic > self._stale_threshold_s:
+                # No valid frame in a while -- read_frame()'s incremental
+                # header-hunting resync can get permanently wedged if the
+                # byte stream is knocked out of alignment (e.g. by a wiring
+                # disturbance) in just the wrong way. A plain buffer flush
+                # is enough to force a fresh resync, so do that rather than
+                # wait forever. Reset the timer so we don't flush every loop
+                # iteration while genuinely disconnected.
+                self._ser.reset_input_buffer()
+                self._last_valid_monotonic = time.monotonic()
 
-        return {}
+            return {}
 
     def reset(self):
-        self._power_controller.reset()
+        with self._hardware_lock:
+            self._power_controller.reset()
 
     def close(self):
         self._ser.close()
