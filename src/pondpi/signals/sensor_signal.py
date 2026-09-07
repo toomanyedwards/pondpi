@@ -44,13 +44,13 @@ class SensorSignal(LevelSignal):
     def __init__(self, sensor_names, sensor=None, unit=None, mode="raw"):
         super().__init__()
         if sensor not in sensor_names:
-            raise ValueError(f"invalid or missing params.sensor '{sensor}' (expected one of {sorted(sensor_names)})")
+            raise ValueError(f"invalid or missing 'sensor' '{sensor}' (expected one of {sorted(sensor_names)})")
         if not unit:
-            raise ValueError("is missing required params.unit")
+            raise ValueError("missing required 'unit'")
         if unit not in self.UNIT_DIVISORS:
-            raise ValueError(f"invalid params.unit '{unit}' (expected one of {sorted(self.UNIT_DIVISORS)})")
+            raise ValueError(f"invalid 'unit' '{unit}' (expected one of {sorted(self.UNIT_DIVISORS)})")
         if mode not in self.VALID_MODES:
-            raise ValueError(f"invalid params.mode '{mode}' (expected one of {self.VALID_MODES})")
+            raise ValueError(f"invalid 'mode' '{mode}' (expected one of {self.VALID_MODES})")
         self._sensor = sensor
         self._unit = unit
         self._mode = mode

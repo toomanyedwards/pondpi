@@ -18,19 +18,24 @@ sensors:
 
 # Named, parameterized instances of the LevelSignal classes in
 # src/pondpi/signals/. See README.md's "Signal processing" section for
-# this schema in full (params.sensor, params.unit, params.mode, input:,
-# emit: false).
+# this schema in full (sensor:, unit:, mode:, input:, emit: false,
+# params:).
 #
 # Only a `type: sensor` signal reads directly from a sensor, via
-# params.sensor naming it -- it must also declare params.unit (the
-# unit its readings are in, e.g. "cm"), since nothing upstream can tell
-# us that. It may also set params.mode ("raw", the default, or
-# "processed") to pick which of the sensor's two hardware readings
-# feeds it -- see README.md's "RX pin" section for what those mean for
-# the A02YYUW. Every other signal reads another signal's live output
-# instead, named by `input:` -- this is how sequential composition
-# (e.g. median-then-average) is expressed, without a dedicated "chain"
-# type -- and derives its own unit/mode from that input automatically.
+# top-level `sensor:` naming it -- it must also declare a top-level
+# `unit:` (the unit its readings are in, e.g. "cm"), since nothing
+# upstream can tell us that. It may also set a top-level `mode:`
+# ("raw", the default, or "processed") to pick which of the sensor's
+# two hardware readings feeds it -- see README.md's "RX pin" section
+# for what those mean for the A02YYUW. Every other signal reads
+# another signal's live output instead, named by `input:` -- this is
+# how sequential composition (e.g. median-then-average) is expressed,
+# without a dedicated "chain" type -- and derives its own unit/mode
+# from that input automatically. `params:` is reserved for whatever
+# else a signal type's own constructor needs (e.g. rolling_average's
+# window_size below) -- sensor:/unit:/mode: live at the top level
+# instead, alongside input:, since signal_config.py tracks and
+# propagates them generically for every signal, not just this one type.
 #
 # rolling_average is a normal input:-composed type like any other,
 # with one difference: it owns its own dedicated background thread
@@ -44,15 +49,13 @@ sensors:
 signals:
   - name: pond_main_sensor_raw
     type: sensor
-    params:
-      sensor: pond_main
-      unit: cm
+    sensor: pond_main
+    unit: cm
   - name: pond_main_sensor_processed
     type: sensor
-    params:
-      sensor: pond_main
-      unit: cm
-      mode: processed
+    sensor: pond_main
+    unit: cm
+    mode: processed
   - name: rolling_median5
     type: rolling_median
     input: pond_main_sensor_raw

@@ -104,7 +104,7 @@ pondpi/
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Builds each sensor's signal graph *before* its driver (`_build_on_reading()` wires a sensor's readings into its signals, and has to exist before the driver's construction starts its own read thread). |
 | `signals/` | `LevelSignal` base class (`base.py`) — owns the thread-safe `feed()`/`current()` cache every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `LevelSignal` classes. Not signals themselves (they don't implement the `LevelSignal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
-| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `params.sensor`). |
+| `signal_config.py` | `load_signals()`/`build_signals()` — builds named `LevelSignal` instances from `config/sensors.yaml`'s top-level `signals:` list and groups them by which sensor each is ultimately rooted at (tracing `input:` chains back to a `sensor` signal's `sensor`). |
 | `commit_sha.py` | `read_commit_sha()` — resolves the deployed commit SHA for `/health`. |
 | `duration.py` | `format_duration()` — formats a seconds count as `"1d 2h 3m 4s"` for `/health`'s `uptime_human`. |
 | `server.py` | Service entrypoint (`pondpi-server`). Builds every sensor and signal (already running their own background threads by the time `load_sensors()` returns) and runs the Flask app -- no thread/loop code of its own. Owns all CLI configuration. |
@@ -144,11 +144,11 @@ exactly one signal directly.
 {
   "signals": {
     "pond_main_sensor_raw": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm"}, "emit": true, "unit": "cm", "mode": "raw"},
+      "config": {"type": "sensor", "params": {}, "emit": true, "unit": "cm", "mode": "raw"},
       "output": {"value": 11.3, "unit": "cm", "at": "2026-09-07T00:28:23.470621+00:00", "sensor": "pond_main", "mode": "raw"}
     },
     "pond_main_sensor_processed": {
-      "config": {"type": "sensor", "params": {"sensor": "pond_main", "unit": "cm", "mode": "processed"}, "emit": true, "unit": "cm", "mode": "processed"},
+      "config": {"type": "sensor", "params": {}, "emit": true, "unit": "cm", "mode": "processed"},
       "output": {"value": 11.0, "unit": "cm", "at": "2026-09-07T00:28:22.093268+00:00", "sensor": "pond_main", "mode": "processed"}
     },
     "rolling_median5": {
@@ -197,6 +197,13 @@ is always present even if the YAML omitted it; a non-`sensor` signal's
 own `extra_state()`. Returns `503 {"error": "no readings yet"}` before
 this sensor has produced a first value for any of its signals.
 
+A `sensor`-type signal's own `sensor`/`unit`/`mode` are top-level YAML
+fields, not `params:` (see [Signal processing](#signal-processing)), so
+its `config.params` is typically empty (`{}`) -- `sensor` is still
+recoverable from the outer per-sensor grouping key or this signal's own
+`output.sensor`, and `unit`/`mode` are already reported as siblings of
+`params` in this same `config`.
+
 ### `GET /diag`
 
 The bare form of the same route, spanning every configured sensor at
@@ -215,7 +222,7 @@ instead of an all-or-nothing error:
 ```
 
 Every signal's `config`/`output` includes `unit` — the unit its own
-`value` is actually in (e.g. `"cm"`), as declared in `params.unit` for
+`value` is actually in (e.g. `"cm"`), as declared in `unit` for
 a `sensor`-type signal or derived automatically from `input` for every
 other type. See [Signal processing](#signal-processing). `value` is
 already in that unit by the time server.py sees it -- `SensorSignal`
@@ -270,8 +277,8 @@ subtract it from the sensor's fixed mounting height:
 ```
 
 `sensor` is which configured sensor this signal is ultimately rooted at
-(traced through any `input:` chain back to a `sensor`-type signal's
-`params.sensor`). `unit` is this signal's own configured/derived unit,
+(traced through any `input:` chain back to a `sensor`-type signal's own
+`sensor`). `unit` is this signal's own configured/derived unit,
 and `at` is when this `value` was last computed (see [Signal
 processing](#signal-processing) for both) — every field past that is
 this signal's own `extra_state()` alongside its value, varying by
@@ -592,9 +599,9 @@ the alternating cycle above) pins the driver permanently in one mode
 instead — no cycling, no settling windows after the first frame, and
 `read()` only ever reports that one key. This is a driver-level
 override, distinct from (but easy to confuse with) a `sensor` signal's
-own `params.mode` (see [Signal processing](#signal-processing)) —
+own `mode` (see [Signal processing](#signal-processing)) —
 `read_mode` controls which reading the driver ever *produces*;
-`params.mode` controls which reading a given *signal* consumes. Pinning
+`mode` controls which reading a given *signal* consumes. Pinning
 `read_mode` to `"processed"` means only signals rooted at `mode:
 processed` (e.g. `pond_main_sensor_processed`) ever get fed — the
 default `raw`-rooted pipeline (`pond_main_sensor_raw`, `rolling_avg`)
@@ -648,7 +655,7 @@ it's powered off.
 Signals live in their own top-level `signals:` list in
 `config/sensors.yaml`, independent of the `sensors:` list — not nested
 under a sensor. Only a `type: sensor` signal reads directly from a
-sensor, named by `params.sensor`; every other signal reads another
+sensor, named by its top-level `sensor:` field; every other signal reads another
 signal's *live output* instead, named by a top-level `input:` key. This
 is how sequential composition (e.g. median-then-average) is expressed —
 no dedicated "chain" type needed, just two flat entries linked by
@@ -676,8 +683,8 @@ centimeters happen to represent. `sensor` is the deliberate one
 exception: it's the boundary where a sensor's canonical reading (always
 millimeters -- `LevelSensor.read()`'s fixed contract, see [Sensor
 drivers](#sensor-drivers)) first enters the signal graph, so its own
-`add()` converts once, there, into its declared `params.unit`
-(`SensorSignal.UNIT_DIVISORS`, currently just `"cm"`) -- `params.unit: cm`
+`add()` converts once, there, into its declared `unit`
+(`SensorSignal.UNIT_DIVISORS`, currently just `"cm"`) -- `unit: cm`
 on `pond_main_sensor_raw` is correct precisely because dividing
 millimeters by `UNIT_DIVISORS["cm"]` (10) produces centimeters. Nothing
 downstream of that one signal, including every other signal type and
@@ -692,11 +699,11 @@ back. This is what lets `rolling_average` sample its `input:` signal
 directly (`input_signal.current()`) rather than needing anything in
 server.py to mediate between them -- see [How it works](#how-it-works).
 
-Built-in `LevelSignal` types (`type:` in the YAML) and their `params`:
+Built-in `LevelSignal` types (`type:` in the YAML) and their fields:
 
-| Type | Params | Behavior |
+| Type | Fields | Behavior |
 |---|---|---|
-| `sensor` | `sensor`, `unit`, `mode` | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type that connects to a sensor -- everything else uses `input:` instead. |
+| `sensor` | `sensor`, `unit`, `mode` (top-level, not under `params:`) | Converts the named sensor's raw millimeter reading into `unit` and passes it through. The only type that connects to a sensor -- everything else uses `input:` instead. |
 | `rolling_median` | `window_size` | Median-filters its input over a rolling window — rejects spikes/outliers. |
 | `rolling_average` | `window_size`, `poll_interval_ms` | Averages its input over a rolling window, like `rolling_median` averages instead of filters -- but instead of being pushed a new value on every one of the sensor's own reads, it owns its own dedicated background thread that samples its `input:` signal's current cached value once every `poll_interval_ms`, on its own timer (`LevelSignal.owns_read_loop = True`, see below). `window_size * poll_interval_ms` is then the real-world window, independent of the sensor's own poll rate, so it doesn't drift if the underlying pipeline's duty cycle changes (see [RX pin](#rx-pin-raw-vs-processed-hardware-mode) below) and doesn't need a large `window_size` to cover a long span. |
 | `exponential_smoothing` | `alpha` | Exponentially-weighted moving average of its input — each new reading is weighted by `alpha` (0-1), with every prior reading's weight decaying geometrically by `(1 - alpha)`. Unlike a rolling window, there's no fixed window size: older readings are never fully dropped, just weighted down forever. Higher `alpha` tracks the latest reading more closely; lower `alpha` smooths more aggressively. |
@@ -707,24 +714,25 @@ naming the signal (defined earlier in the file) whose output feeds it.
 `sensor` is the one signal type with `LevelSignal.reads_from_sensor = True`
 (same capability-flag pattern as `owns_read_loop`, below) -- the only
 generic thing `signal_config.py` knows about it is that flag itself; it
-has no notion of `params.sensor`/`params.unit`/`params.mode` or what
-values are valid for them. All of that -- including validating
-`params.sensor` against the configured sensor names, and `params.unit`
-against `SensorSignal.UNIT_DIVISORS` (currently just `{"cm": 10.0}`) --
-happens inside `SensorSignal`'s own constructor, which raises if
-something's wrong; `signal_config.py` just wraps whatever it raises with
-file/signal-name context. `params.unit` (e.g. `"cm"`) is required, since
+has no notion of `sensor`/`unit`/`mode` (its three top-level fields,
+siblings of `input:`, not nested under `params:`) or what values are
+valid for them. All of that -- including validating `sensor` against
+the configured sensor names, and `unit` against
+`SensorSignal.UNIT_DIVISORS` (currently just `{"cm": 10.0}`) -- happens
+inside `SensorSignal`'s own constructor, which raises if something's
+wrong; `signal_config.py` just wraps whatever it raises with
+file/signal-name context. `unit` (e.g. `"cm"`) is required, since
 it's the boundary where a value enters the signal graph and nothing
 upstream can tell us what unit to convert into -- an unsupported unit
 fails config loading outright rather than silently mislabeling a number.
 Every other signal type derives its `unit` automatically from whichever
 signal its `input:` names, since none of them perform any unit
 conversion -- a rolling average of centimeters is still in centimeters --
-and must not set `params.unit` itself (that raises a config error, since
+and must not set `unit` itself (that raises a config error, since
 it would silently be ignored otherwise). This is reported on `/diag` and
 `/signals/<name>`; see those endpoints above.
 
-A `sensor` signal may also set `params.mode` -- `"raw"` (the default)
+A `sensor` signal may also set `mode` -- `"raw"` (the default)
 or `"processed"`, picking which of the sensor's own named readings
 feeds it (see `LevelSensor.read()` in [Sensor drivers](#sensor-drivers)
 and the A02YYUW's two hardware modes in [Sensor
@@ -776,15 +784,13 @@ sensors:
 signals:
   - name: pond_main_sensor_raw
     type: sensor
-    params:
-      sensor: pond_main
-      unit: cm
+    sensor: pond_main
+    unit: cm
   - name: pond_main_sensor_processed
     type: sensor
-    params:
-      sensor: pond_main
-      unit: cm
-      mode: processed
+    sensor: pond_main
+    unit: cm
+    mode: processed
   - name: rolling_median5
     type: rolling_median
     input: pond_main_sensor_raw
