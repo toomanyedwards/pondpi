@@ -49,6 +49,7 @@ def test_loads_valid_config(tmp_path):
         "emit": True,
         "input": "instantaneous_raw",
         "unit": "cm",
+        "mode": "raw",
     }
     assert group["configs"]["instantaneous_raw"] == {
         "type": "sensor",
@@ -56,6 +57,7 @@ def test_loads_valid_config(tmp_path):
         "primary": False,
         "emit": True,
         "unit": "cm",
+        "mode": "raw",
     }
 
 
@@ -344,6 +346,139 @@ def test_downstream_signal_derives_unit_from_input(tmp_path):
     # rolling_avg.
     assert group["configs"]["rolling_median5"]["unit"] == "cm"
     assert group["configs"]["rolling_avg"]["unit"] == "cm"
+
+
+def test_sensor_mode_defaults_to_raw(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+        """,
+    )
+
+    group = load_signals(path, {"pond_main"})["pond_main"]
+    assert group["configs"]["a"]["mode"] == "raw"
+
+
+def test_sensor_mode_processed_is_respected(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+          - name: b
+            type: sensor
+            params:
+              sensor: pond_main
+              unit: cm
+              mode: processed
+        """,
+    )
+
+    group = load_signals(path, {"pond_main"})["pond_main"]
+    assert group["configs"]["b"]["mode"] == "processed"
+
+
+def test_invalid_mode_param_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+              mode: smoothed
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid params.mode 'smoothed'"):
+        load_signals(path, {"pond_main"})
+
+
+def test_non_sensor_setting_mode_directly_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+          - name: b
+            type: rolling_median
+            input: a
+            params:
+              window_size: 5
+              mode: processed
+        """,
+    )
+
+    with pytest.raises(ValueError, match="must not set params.mode directly"):
+        load_signals(path, {"pond_main"})
+
+
+def test_downstream_signal_derives_mode_from_input(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+          - name: b
+            type: sensor
+            params:
+              sensor: pond_main
+              unit: cm
+              mode: processed
+          - name: c
+            type: rolling_average
+            input: b
+            params:
+              window_size: 2
+        """,
+    )
+
+    group = load_signals(path, {"pond_main"})["pond_main"]
+    assert group["configs"]["c"]["mode"] == "processed"
+
+
+def test_primary_rooted_at_processed_mode_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            primary: true
+            params:
+              sensor: pond_main
+              unit: cm
+              mode: processed
+        """,
+    )
+
+    with pytest.raises(ValueError, match="primary signal 'a' must be rooted at mode 'raw'"):
+        load_signals(path, {"pond_main"})
 
 
 def test_sensor_with_no_signals_raises(tmp_path):

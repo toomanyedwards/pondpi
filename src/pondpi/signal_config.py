@@ -2,6 +2,8 @@ import yaml
 
 from pondpi.signals import discover_signal_types
 
+_VALID_MODES = ("raw", "processed")
+
 
 def load_signals(path, sensor_names):
     """Loads named LevelSignal instances from a YAML file's top-level
@@ -24,6 +26,16 @@ def load_signals(path, sensor_names):
     automatically from whichever signal its `input:` names (they're
     pure numeric transforms -- a rolling average of centimeters is
     still in centimeters), and must not set `params.unit` itself.
+
+    A `type: sensor` signal may also set `params.mode` ("raw", the
+    default, or "processed") -- which of that sensor's named readings
+    (see LevelSensor.read()) feeds it. Every other signal type derives
+    its `mode` from `input`, same as `unit`, and must not set
+    `params.mode` itself. The sensor rooted at `mode: "processed"`
+    updates on a different poll cadence than one rooted at "raw" (see
+    poll_sensor() in server.py), so a sensor's `primary` signal must be
+    rooted at "raw" -- /health's staleness check and /level's default
+    view are both built around that cadence.
 
     Returns dict[sensor_name -> {"signals", "primary_name",
     "emit_flags", "configs"}], one entry per name in `sensor_names`
@@ -55,6 +67,7 @@ def build_signals(entries, sensor_names, path):
     entries_by_name = {}
     root_sensor = {}
     unit_by_name = {}
+    mode_by_name = {}
 
     for entry in entries:
         name = entry.get("name")
@@ -86,8 +99,12 @@ def build_signals(entries, sensor_names, path):
             unit = params.pop("unit", None)
             if not unit:
                 raise ValueError(f"{path}: signal '{name}' (type 'sensor') is missing required params.unit")
+            mode = params.get("mode", "raw")
+            if mode not in _VALID_MODES:
+                raise ValueError(f"{path}: signal '{name}' (type 'sensor') has invalid params.mode '{mode}' (expected one of {_VALID_MODES})")
             root_sensor[name] = sensor
             unit_by_name[name] = unit
+            mode_by_name[name] = mode
         else:
             if not input_name:
                 raise ValueError(
@@ -101,8 +118,14 @@ def build_signals(entries, sensor_names, path):
                     f"{path}: signal '{name}' must not set params.unit directly "
                     "(unit is derived automatically from 'input')"
                 )
+            if "mode" in params:
+                raise ValueError(
+                    f"{path}: signal '{name}' must not set params.mode directly "
+                    "(mode is derived automatically from 'input')"
+                )
             root_sensor[name] = root_sensor[input_name]
             unit_by_name[name] = unit_by_name[input_name]
+            mode_by_name[name] = mode_by_name[input_name]
 
         try:
             instances[name] = signal_types[signal_type](**params)
@@ -117,7 +140,7 @@ def build_signals(entries, sensor_names, path):
         group = grouped[root_sensor[name]]
         group["signals"][name] = instances[name]
         group["emit_flags"][name] = entry.get("emit", True)
-        group["configs"][name] = _config_summary(entry, unit_by_name[name])
+        group["configs"][name] = _config_summary(entry, unit_by_name[name], mode_by_name[name])
 
         if entry.get("primary", False):
             if group["primary_name"] is not None:
@@ -132,17 +155,24 @@ def build_signals(entries, sensor_names, path):
             raise ValueError(f"{path}: sensor '{sensor}' has no signals rooted at it (add a 'sensor' signal with params.sensor: {sensor})")
         if group["primary_name"] is None:
             raise ValueError(f"{path}: sensor '{sensor}': exactly one signal must be marked 'primary: true'")
+        primary_mode = mode_by_name[group["primary_name"]]
+        if primary_mode != "raw":
+            raise ValueError(
+                f"{path}: sensor '{sensor}': primary signal '{group['primary_name']}' must be rooted at mode "
+                f"'raw' (got '{primary_mode}')"
+            )
 
     return grouped
 
 
-def _config_summary(entry, unit):
+def _config_summary(entry, unit, mode):
     summary = {
         "type": entry.get("type"),
         "params": entry.get("params") or {},
         "primary": bool(entry.get("primary", False)),
         "emit": entry.get("emit", True),
         "unit": unit,
+        "mode": mode,
     }
     if entry.get("input") is not None:
         summary["input"] = entry["input"]

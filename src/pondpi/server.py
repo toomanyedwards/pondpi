@@ -51,52 +51,64 @@ def _new_sensor_state():
 
 def poll_sensor(name, sensor, signals, configs, primary_name, stop_event, poll_interval_s):
     """Sensor-agnostic polling loop for one named sensor: repeatedly
-    calls `sensor.read()` and routes whichever named readings it returns
-    into that sensor's own state slot. "raw" readings are run through
-    this sensor's own signal graph -- each signal either reads the raw
-    reading directly (a `sensor`-type signal, config's `configs[name]`
-    has no `"input"`) or reads whatever its `input:`-named signal just
-    computed this same poll cycle (`configs[name]["input"]`, already
-    resolved into `results` since `signals`' iteration order is a valid
-    dependency order -- see signal_config.py). "processed" readings (if
-    the sensor reports any -- not every driver will) are cached as-is,
-    since a sensor's own onboard smoothing isn't something further
-    Pi-side processing should second-guess. One of these runs per
-    configured sensor, each in its own thread."""
+    calls `sensor.read()` and routes whichever named readings it
+    returns into that sensor's own state slot. Each reading key (e.g.
+    "raw", "processed" -- see LevelSensor.read()) only feeds the
+    signals rooted at that same `mode` (`configs[sname]["mode"]`, see
+    signal_config.py) -- a signal either reads that reading directly (a
+    `sensor`-type signal, config's `configs[name]` has no `"input"`) or
+    reads whatever its `input:`-named signal just computed this same
+    pass (`configs[name]["input"]`, already resolved into `results`
+    since `signals`' iteration order is a valid dependency order).
+    Signals rooted at other modes keep their last-computed value
+    untouched -- results are merged into this sensor's state, not
+    replaced wholesale, since "raw"- and "processed"-rooted signals
+    update on different, independent cadences (see each signal's own
+    `at` timestamp on /diag and /signals/<name> to tell how fresh a
+    given one actually is). The "raw"-rooted primary signal's own
+    freshness additionally still drives `instantaneous_mm`/
+    `last_reading_monotonic`, which /level's default view and
+    /health's staleness check are built around -- see
+    signal_config.py's requirement that a sensor's `primary` signal be
+    rooted at mode "raw". One of these runs per configured sensor,
+    each in its own thread."""
     while not stop_event.is_set():
         readings = sensor.read()
 
-        if "raw" in readings:
-            distance_mm = readings["raw"]
+        for reading_key, distance_mm in readings.items():
+            at = datetime.now(timezone.utc).isoformat()
             results = {}
             for sname, signal in signals.items():
+                if configs[sname]["mode"] != reading_key:
+                    continue
                 input_name = configs[sname].get("input")
                 value = distance_mm if input_name is None else results[input_name]["value"]
-                results[sname] = {"value": signal.add(value), **signal.extra_state()}
+                results[sname] = {"value": signal.add(value), "at": at, **signal.extra_state()}
 
             with _state_lock:
-                _state[name]["instantaneous_mm"] = distance_mm
-                _state[name]["signals"] = results
-                _state[name]["rolling_avg_mm"] = results[primary_name]["value"]
-                _state[name]["last_reading_monotonic"] = time.monotonic()
-
-        if "processed" in readings:
-            with _state_lock:
-                _state[name]["processed_mm"] = readings["processed"]
+                if results:
+                    _state[name]["signals"].update(results)
+                if reading_key == "raw":
+                    _state[name]["instantaneous_mm"] = distance_mm
+                    if primary_name in results:
+                        _state[name]["rolling_avg_mm"] = results[primary_name]["value"]
+                    _state[name]["last_reading_monotonic"] = time.monotonic()
+                elif reading_key == "processed":
+                    _state[name]["processed_mm"] = distance_mm
 
         time.sleep(poll_interval_s)
 
 
 def _signal_output(result, unit):
     """Converts one signal's cached poll_sensor() result ({"value": mm,
-    **extra_state}) into its /level and /diag output shape
-    ({"value": cm, "unit": ..., **extra_state}). `unit` is that
-    signal's own configured/derived unit (see signal_config.py's
+    "at": ..., **extra_state}) into its /level and /diag output shape
+    ({"value": cm, "unit": ..., "at": ..., **extra_state}). `unit` is
+    that signal's own configured/derived unit (see signal_config.py's
     `_config_summary()`) -- static per-signal metadata, not something
     poll_sensor() recomputes every cycle, so it's passed in rather than
     read off `result`."""
-    extra_state = {k: v for k, v in result.items() if k != "value"}
-    return {"value": round(result["value"] / 10.0, 1), "unit": unit, **extra_state}
+    extra_state = {k: v for k, v in result.items() if k not in ("value", "at")}
+    return {"value": round(result["value"] / 10.0, 1), "unit": unit, "at": result["at"], **extra_state}
 
 
 @app.route("/health")

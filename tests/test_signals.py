@@ -13,9 +13,14 @@ def test_sensor_signal_passes_through_unchanged():
     assert signal.add(999) == 999
 
 
-def test_sensor_signal_extra_state_reports_its_sensor():
+def test_sensor_signal_extra_state_reports_its_sensor_and_mode():
     signal = SensorSignal(sensor="pond_main")
-    assert signal.extra_state() == {"sensor": "pond_main"}
+    assert signal.extra_state() == {"sensor": "pond_main", "mode": "raw"}
+
+
+def test_sensor_signal_extra_state_reports_explicit_mode():
+    signal = SensorSignal(sensor="pond_main", mode="processed")
+    assert signal.extra_state() == {"sensor": "pond_main", "mode": "processed"}
 
 
 def test_rolling_median_signal_delegates_to_rolling_median_filter():
