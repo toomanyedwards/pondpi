@@ -29,12 +29,14 @@ def test_loads_valid_config(tmp_path):
         signals:
           - name: raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: instantaneous_raw
             type: rolling_average
-            source: raw
+            source:
+              name: raw
             settings:
               window_size: 5
               poll_interval_ms: 1000
@@ -62,23 +64,27 @@ def test_loads_multiple_sensors(tmp_path):
         signals:
           - name: pond_raw_sensor
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: pond_raw
             type: rolling_average
-            source: pond_raw_sensor
+            source:
+              name: pond_raw_sensor
             settings:
               window_size: 5
               poll_interval_ms: 1000
           - name: barrel_raw_sensor
             type: sensor
-            source: rain_barrel
+            source:
+              name: rain_barrel
             settings:
               unit: cm
           - name: barrel_raw
             type: rolling_average
-            source: barrel_raw_sensor
+            source:
+              name: barrel_raw_sensor
             settings:
               window_size: 5
               poll_interval_ms: 1000
@@ -111,12 +117,14 @@ def test_simulate_true_ignores_hardware_settings(tmp_path):
         signals:
           - name: raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: instantaneous_raw
             type: rolling_average
-            source: raw
+            source:
+              name: raw
             settings:
               window_size: 5
               poll_interval_ms: 1000
@@ -205,12 +213,14 @@ def test_sensor_with_no_matching_signal_raises(tmp_path):
         signals:
           - name: pond_raw_sensor
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: pond_raw
             type: rolling_average
-            source: pond_raw_sensor
+            source:
+              name: pond_raw_sensor
             settings:
               window_size: 5
               poll_interval_ms: 1000
@@ -247,17 +257,20 @@ def test_full_pull_chain_populates_without_any_push_wiring(tmp_path):
         signals:
           - name: raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: median
             type: rolling_median
-            source: raw
+            source:
+              name: raw
             settings:
               window_size: 3
           - name: avg
             type: rolling_average
-            source: median
+            source:
+              name: median
             settings:
               window_size: 3
               poll_interval_ms: 10

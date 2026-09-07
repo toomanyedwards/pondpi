@@ -270,14 +270,14 @@ def test_sensor_reset_targets_named_sensor_independently():
 
 _ROLLING_MEDIAN5_CONFIG = {
     "type": "rolling_median",
-    "source": "instantaneous_raw",
+    "source": {"name": "instantaneous_raw"},
     "settings": {"window_size": 5},
     "emit": False,
     "unit": "cm",
 }
 _ROLLING_AVG_CONFIG = {
     "type": "rolling_average",
-    "source": "rolling_median5",
+    "source": {"name": "rolling_median5"},
     "settings": {"window_size": 200},
     "emit": True,
     "unit": "cm",
@@ -454,7 +454,7 @@ def test_signal_diag_returns_config_and_output():
         configs={
             "rolling_avg": {
                 "type": "rolling_average",
-                "source": "instantaneous_raw",
+                "source": {"name": "instantaneous_raw"},
                 "settings": {"window_size": 400},
                 "emit": True,
                 "unit": "cm",
@@ -471,7 +471,7 @@ def test_signal_diag_returns_config_and_output():
         "sensor": "pond_main",
         "config": {
             "type": "rolling_average",
-            "source": "instantaneous_raw",
+            "source": {"name": "instantaneous_raw"},
             "settings": {"window_size": 400},
             "emit": True,
             "unit": "cm",

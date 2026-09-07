@@ -33,17 +33,20 @@ def test_loads_valid_config(tmp_path):
         signals:
           - name: instantaneous_raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: rolling_median5
             type: rolling_median
-            source: instantaneous_raw
+            source:
+              name: instantaneous_raw
             settings:
               window_size: 5
           - name: rolling_avg
             type: rolling_average
-            source: rolling_median5
+            source:
+              name: rolling_median5
             settings:
               window_size: 40
               poll_interval_ms: 1000
@@ -59,7 +62,7 @@ def test_loads_valid_config(tmp_path):
     assert group["emit_flags"] == {"instantaneous_raw": True, "rolling_median5": True, "rolling_avg": True}
     assert group["configs"]["rolling_median5"] == {
         "type": "rolling_median",
-        "source": "instantaneous_raw",
+        "source": {"name": "instantaneous_raw"},
         "settings": {"window_size": 5},
         "emit": True,
         "unit": "cm",
@@ -67,7 +70,7 @@ def test_loads_valid_config(tmp_path):
     }
     assert group["configs"]["instantaneous_raw"] == {
         "type": "sensor",
-        "source": "pond_main",
+        "source": {"name": "pond_main"},
         "settings": {"unit": "cm"},
         "emit": True,
         "unit": "cm",
@@ -82,18 +85,21 @@ def test_emit_false_is_respected(tmp_path):
         signals:
           - name: instantaneous_raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: rolling_median5
             type: rolling_median
-            source: instantaneous_raw
+            source:
+              name: instantaneous_raw
             emit: false
             settings:
               window_size: 5
           - name: rolling_avg
             type: rolling_average
-            source: rolling_median5
+            source:
+              name: rolling_median5
             settings:
               window_size: 40
               poll_interval_ms: 1000
@@ -113,23 +119,27 @@ def test_signals_grouped_independently_per_sensor(tmp_path):
         signals:
           - name: pond_raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: pond_avg
             type: rolling_average
-            source: pond_raw
+            source:
+              name: pond_raw
             settings:
               window_size: 2
               poll_interval_ms: 1000
           - name: barrel_raw
             type: sensor
-            source: rain_barrel
+            source:
+              name: rain_barrel
             settings:
               unit: cm
           - name: barrel_avg
             type: rolling_average
-            source: barrel_raw
+            source:
+              name: barrel_raw
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -149,17 +159,20 @@ def test_downstream_signal_input_can_be_multiple_hops_away(tmp_path):
         signals:
           - name: instantaneous_raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: rolling_median5
             type: rolling_median
-            source: instantaneous_raw
+            source:
+              name: instantaneous_raw
             settings:
               window_size: 3
           - name: rolling_avg
             type: rolling_average
-            source: rolling_median5
+            source:
+              name: rolling_median5
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -184,6 +197,55 @@ def test_missing_source_raises(tmp_path):
         load_signals(path, _fake_sensors("pond_main"))
 
 
+def test_source_not_a_mapping_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            source: pond_main
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid 'source' \\(expected a mapping with a 'name'\\)"):
+        load_signals(path, _fake_sensors("pond_main"))
+
+
+def test_source_missing_name_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            source:
+              options:
+                read_mode: processed
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid 'source' \\(expected a mapping with a 'name'\\)"):
+        load_signals(path, _fake_sensors("pond_main"))
+
+
+def test_source_unexpected_key_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        signals:
+          - name: a
+            type: sensor
+            source:
+              name: pond_main
+              typo: cm
+        """,
+    )
+
+    with pytest.raises(ValueError, match="invalid 'source' key.*typo"):
+        load_signals(path, _fake_sensors("pond_main"))
+
+
 def test_input_referencing_undefined_signal_raises(tmp_path):
     path = write_yaml(
         tmp_path,
@@ -191,7 +253,8 @@ def test_input_referencing_undefined_signal_raises(tmp_path):
         signals:
           - name: a
             type: rolling_median
-            source: does_not_exist
+            source:
+              name: does_not_exist
             settings:
               window_size: 5
         """,
@@ -208,12 +271,14 @@ def test_input_referencing_signal_defined_later_raises(tmp_path):
         signals:
           - name: a
             type: rolling_median
-            source: b
+            source:
+              name: b
             settings:
               window_size: 5
           - name: b
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
         """,
     )
 
@@ -228,7 +293,8 @@ def test_input_self_reference_raises(tmp_path):
         signals:
           - name: a
             type: rolling_median
-            source: a
+            source:
+              name: a
             settings:
               window_size: 5
         """,
@@ -245,7 +311,8 @@ def test_unknown_sensor_source_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: not_a_real_sensor
+            source:
+              name: not_a_real_sensor
         """,
     )
 
@@ -260,7 +327,8 @@ def test_missing_unit_setting_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
         """,
     )
 
@@ -275,12 +343,14 @@ def test_non_sensor_setting_unit_directly_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: rolling_median
-            source: a
+            source:
+              name: a
             settings:
               window_size: 5
               unit: cm
@@ -298,17 +368,20 @@ def test_downstream_signal_derives_unit_from_input(tmp_path):
         signals:
           - name: instantaneous_raw
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: rolling_median5
             type: rolling_median
-            source: instantaneous_raw
+            source:
+              name: instantaneous_raw
             settings:
               window_size: 3
           - name: rolling_avg
             type: rolling_average
-            source: rolling_median5
+            source:
+              name: rolling_median5
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -331,12 +404,14 @@ def test_sensor_mode_defaults_to_raw(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: rolling_average
-            source: a
+            source:
+              name: a
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -354,19 +429,22 @@ def test_sensor_mode_processed_is_respected(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
+              options:
+                read_mode: processed
             settings:
               unit: cm
-              sensor_options:
-                read_mode: processed
           - name: c
             type: rolling_average
-            source: a
+            source:
+              name: a
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -384,7 +462,8 @@ def test_unsupported_sensor_unit_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: mm
         """,
@@ -401,11 +480,12 @@ def test_invalid_read_mode_setting_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
+              options:
+                read_mode: smoothed
             settings:
               unit: cm
-              sensor_options:
-                read_mode: smoothed
         """,
     )
 
@@ -413,27 +493,29 @@ def test_invalid_read_mode_setting_raises(tmp_path):
         load_signals(path, _fake_sensors("pond_main"))
 
 
-def test_non_sensor_setting_sensor_options_directly_raises(tmp_path):
+def test_non_sensor_setting_source_options_directly_raises(tmp_path):
     path = write_yaml(
         tmp_path,
         """
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: rolling_median
-            source: a
+            source:
+              name: a
+              options:
+                read_mode: processed
             settings:
               window_size: 5
-              sensor_options:
-                read_mode: processed
         """,
     )
 
-    with pytest.raises(ValueError, match="must not set 'sensor_options' directly"):
+    with pytest.raises(ValueError, match="must not set 'source.options'"):
         load_signals(path, _fake_sensors("pond_main"))
 
 
@@ -444,24 +526,28 @@ def test_downstream_signal_derives_mode_from_input(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
+              options:
+                read_mode: processed
             settings:
               unit: cm
-              sensor_options:
-                read_mode: processed
           - name: c
             type: rolling_median
-            source: b
+            source:
+              name: b
             settings:
               window_size: 2
           - name: d
             type: rolling_average
-            source: a
+            source:
+              name: a
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -479,12 +565,14 @@ def test_sensor_with_no_signals_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: rolling_average
-            source: a
+            source:
+              name: a
             settings:
               window_size: 2
               poll_interval_ms: 1000
@@ -502,7 +590,8 @@ def test_unknown_type_raises(tmp_path):
         signals:
           - name: a
             type: not_a_real_type
-            source: pond_main
+            source:
+              name: pond_main
         """,
     )
 
@@ -517,12 +606,14 @@ def test_duplicate_name_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
         """,
@@ -539,12 +630,14 @@ def test_invalid_settings_raises(tmp_path):
         signals:
           - name: a
             type: sensor
-            source: pond_main
+            source:
+              name: pond_main
             settings:
               unit: cm
           - name: b
             type: rolling_median
-            source: a
+            source:
+              name: a
             settings:
               not_a_real_setting: 5
         """,
