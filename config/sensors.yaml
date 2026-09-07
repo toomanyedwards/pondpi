@@ -46,12 +46,12 @@ sensors:
 # rolling_average is a normal source:-composed type like any other,
 # with one difference: it owns its own dedicated background thread
 # that samples its source's current value on its own poll_interval_ms
-# cadence, rather than being pushed a new one on every one of the
-# sensor's own (much faster) poll ticks -- that's what lets
-# window_size * poll_interval_ms be a genuine real-world time span. Any
-# signal type may set Signal.owns_read_loop = True (as this one
-# does) to get its own dedicated background thread automatically -- no
-# marker needed in this file.
+# cadence, rather than recomputing lazily every time something reads
+# it (the default every other signal type uses) -- that's what lets
+# window_size * poll_interval_ms be a genuine real-world time span
+# regardless of how often anything actually polls this signal. Owning
+# a background thread like this is purely a property of a signal
+# type's own implementation, not something marked in this file.
 # ==============================================================================
 signals:
   - name: pond_main_sensor_raw
