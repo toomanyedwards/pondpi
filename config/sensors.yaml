@@ -29,19 +29,21 @@ sensors:
 #
 # See README.md's "Signal processing" section for this schema in full.
 # Every signal names where its data comes from via a top-level `source:`
-# mapping -- `source.name` is required and, for a `type: sensor` signal,
-# is the sensor it reads from directly; for every other type it's
-# another signal (defined earlier in this file) whose live output feeds
-# it. This is how sequential composition (e.g. median-then-average) is
-# expressed, without a dedicated "chain" type. A `type: sensor` signal
-# must also set `unit` in its `settings:` (the unit its readings are in,
-# e.g. "cm"), and may set `source.options.read_mode` too ("raw", the
-# default, or "processed") to pick which of the sensor's two hardware
-# readings feeds it -- see README.md's "RX pin" section for what those
-# mean for the A02YYUW. Every other signal derives its own unit/mode
-# from `source:` automatically, and must leave `source.options` unset.
-# `settings:` otherwise holds whatever else a signal type's own
-# constructor needs (e.g. rolling_average's window_size below).
+# -- a bare name (shorthand for {name: <name>}), or a mapping with a
+# `name` and, optionally, `options`. `source.name` is required and, for
+# a `type: sensor` signal, is the sensor it reads from directly; for
+# every other type it's another signal (defined earlier in this file)
+# whose live output feeds it. This is how sequential composition (e.g.
+# median-then-average) is expressed, without a dedicated "chain" type. A
+# `type: sensor` signal must also set `unit` in its `settings:` (the
+# unit its readings are in, e.g. "cm"), and may set
+# `source.options.read_mode` too ("raw", the default, or "processed") to
+# pick which of the sensor's two hardware readings feeds it -- see
+# README.md's "RX pin" section for what those mean for the A02YYUW.
+# Every other signal derives its own unit/mode from `source:`
+# automatically, and must leave `source.options` unset. `settings:`
+# otherwise holds whatever else a signal type's own constructor needs
+# (e.g. rolling_average's window_size below).
 #
 # rolling_average is a normal source:-composed type like any other,
 # with one difference: it owns its own dedicated background thread
@@ -56,8 +58,7 @@ sensors:
 signals:
   - name: pond_main_sensor_raw
     type: sensor
-    source:
-      name: pond_main
+    source: pond_main
     settings:
       unit: cm
   - name: pond_main_sensor_processed
@@ -70,15 +71,13 @@ signals:
       unit: cm
   - name: rolling_median5
     type: rolling_median
-    source:
-      name: pond_main_sensor_raw
+    source: pond_main_sensor_raw
     emit: false
     settings:
       window_size: 5
   - name: rolling_avg
     type: rolling_average
-    source:
-      name: rolling_median5
+    source: rolling_median5
     settings:
       # Its own dedicated thread admits one sample per poll_interval_ms
       # regardless of how often the sensor itself is actually polled,

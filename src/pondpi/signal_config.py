@@ -11,10 +11,15 @@ def load_signals(path, sensor_objects):
     `sensor_objects` is `dict[name -> Sensor instance]` for every
     already-constructed sensor (from sensor_config.py, which builds
     sensors before signals for exactly this reason). Every signal entry
-    sets a top-level `source:`, a mapping naming where its data comes
-    from: `source.name` is required, `source.options` is an optional
-    mapping of extra settings governing *how* it reads from that name --
-    what `name` refers to, and whether `options` means anything at all,
+    sets a top-level `source:`, naming where its data comes from:
+    `source.name` is required, `source.options` is an optional mapping
+    of extra settings governing *how* it reads from that name. A bare
+    `source: <name>` is accepted too, as shorthand for `source: {name:
+    <name>}` when there's no `options` to set -- normalized to the same
+    mapping shape immediately, so nothing downstream (including a
+    signal's own `config.source` on `/diag`) needs to care which form
+    the YAML used. What `name` refers to, and whether `options` means
+    anything at all,
     depends on the signal type's `reads_from_sensor` flag (see
     Signal.reads_from_sensor): a `reads_from_sensor` type (currently just
     `SensorSignal`) has `source.name` name a configured sensor directly,
@@ -76,14 +81,15 @@ def build_signals(entries, sensor_objects, path):
     This function has no notion of what any particular signal type's
     `settings:` or `source.options` mean or which values are valid for
     them -- it only enforces the structural rules every type is bound by
-    regardless of its own semantics (every entry must set a `source:`
-    mapping with a `name`; a non-`reads_from_sensor` type's `source.name`
-    must name an earlier-defined signal and its `source.options` must be
-    empty) and dispatches construction generically on the
-    `reads_from_sensor` capability flag. Every other validation (is
-    this unit/mode/sensor-name/read_mode actually valid) is each signal
-    type's own responsibility, surfaced as a `ValueError` from its own
-    constructor and wrapped here with config-file context."""
+    regardless of its own semantics (every entry must set a `source:`,
+    a name or a mapping with a `name`, normalized to the mapping form
+    before anything else sees it; a non-`reads_from_sensor` type's
+    `source.name` must name an earlier-defined signal and its
+    `source.options` must be empty) and dispatches construction
+    generically on the `reads_from_sensor` capability flag. Every other
+    validation (is this unit/mode/sensor-name/read_mode actually valid)
+    is each signal type's own responsibility, surfaced as a `ValueError`
+    from its own constructor and wrapped here with config-file context."""
     signal_types = discover_signal_types()
 
     instances = {}
@@ -91,6 +97,7 @@ def build_signals(entries, sensor_objects, path):
     root_sensor = {}
     unit_by_name = {}
     mode_by_name = {}
+    source_by_name = {}
 
     for entry in entries:
         name = entry.get("name")
@@ -108,8 +115,10 @@ def build_signals(entries, sensor_objects, path):
         source = entry.get("source")
         if not source:
             raise ValueError(f"{path}: signal '{name}' must set 'source' naming the sensor or signal it reads from")
+        if isinstance(source, str):
+            source = {"name": source}
         if not isinstance(source, dict) or not source.get("name"):
-            raise ValueError(f"{path}: signal '{name}' has invalid 'source' (expected a mapping with a 'name')")
+            raise ValueError(f"{path}: signal '{name}' has invalid 'source' (expected a name, or a mapping with a 'name')")
         unexpected_source_keys = set(source) - {"name", "options"}
         if unexpected_source_keys:
             raise ValueError(
@@ -155,6 +164,7 @@ def build_signals(entries, sensor_objects, path):
             mode_by_name[name] = mode_by_name[source_name]
 
         entries_by_name[name] = entry
+        source_by_name[name] = source
 
     grouped = {sensor: {"signals": {}, "emit_flags": {}, "configs": {}} for sensor in sensor_objects}
 
@@ -162,7 +172,7 @@ def build_signals(entries, sensor_objects, path):
         group = grouped[root_sensor[name]]
         group["signals"][name] = instances[name]
         group["emit_flags"][name] = entry.get("emit", True)
-        group["configs"][name] = _config_summary(entry, unit_by_name[name], mode_by_name[name])
+        group["configs"][name] = _config_summary(entry, unit_by_name[name], mode_by_name[name], source_by_name[name])
 
     for sensor, group in grouped.items():
         if not group["signals"]:
@@ -171,10 +181,10 @@ def build_signals(entries, sensor_objects, path):
     return grouped
 
 
-def _config_summary(entry, unit, mode):
+def _config_summary(entry, unit, mode, source):
     return {
         "type": entry.get("type"),
-        "source": entry.get("source"),
+        "source": source,
         "settings": entry.get("settings") or {},
         "emit": entry.get("emit", True),
         "unit": unit,
