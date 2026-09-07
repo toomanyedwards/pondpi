@@ -9,9 +9,12 @@ class LevelSignal:
     (pure computation, no caching) -- composable via `input:` in
     config/sensors.yaml, fed by the sensor-to-signal wiring built in
     sensor_config.py, which calls `feed()` (not `add()` directly) as
-    each reading arrives. Signals are unit-agnostic — they don't know
-    or care whether the values they're passed are mm, cm, or anything
-    else; unit conversion happens at the HTTP layer in server.py.
+    each reading arrives. Every signal type except `sensor` is
+    unit-agnostic — they don't know or care whether the values they're
+    passed are mm, cm, or anything else; `SensorSignal` is the one
+    deliberate exception, converting once at the boundary where a
+    sensor's canonical millimeter reading first enters the graph (see
+    signals/sensor_signal.py).
 
     `feed()`/`current()` are concrete on this base class and shared by
     every signal type, `owns_read_loop` or not: `feed()` computes (via

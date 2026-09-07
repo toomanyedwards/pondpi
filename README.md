@@ -12,7 +12,12 @@ Every `LevelSensor` driver instance and `LevelSignal` instance (see
 processing](#signal-processing) below) owns whatever background thread it
 needs entirely by itself, starting the moment it's constructed -- there's
 no external "start polling" call anywhere, and the Flask server (`server.py`)
-has no notion of threads or read loops at all. `sensor_config.py` is the
+has no notion of threads or read loops at all. Neither do the `LevelSensor`/
+`LevelSignal` *base classes* -- `A02YYUWSensor` and `RollingAverageSignal`
+each implement their own loop because they specifically need one, not
+because the base class hands them one; a future driver or signal type
+with no need to poll wouldn't have to fight any inherited thread machinery
+to avoid it. `sensor_config.py` is the
 wiring layer that makes this possible: it builds the full signal graph for
 a sensor *first*, then constructs that sensor's driver with a small
 `on_reading` callback already bound to it (`_build_on_reading()`) -- so by
@@ -90,7 +95,7 @@ pondpi/
 
 | File | Responsibility |
 |---|---|
-| `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). Owns its own background read thread, started automatically at construction (`__init__`/`poll_loop()`, concrete on this base class). `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal; `reset()` itself (which restarts the read thread around it) is not overridden per-driver. See [Sensor drivers](#sensor-drivers). |
+| `sensors/base.py` | `LevelSensor` — the interface every driver implements. `read()` returns canonical `{signal_name: distance_mm}` readings (distance from the sensor's mount point down to the water surface — different sensor technologies measure fundamentally different native quantities, so each driver converts its own before returning). Defines the contract (readings, capability flags, health/reset tracking) but has no notion of *how* a driver obtains a reading -- no polling loop of its own; a driver that polls (like `A02YYUWSensor`) implements that itself and calls `_record_reading()` to participate in health tracking. `supports_reset`/`reset_hardware()` is an optional per-driver capability, not assumed universal. See [Sensor drivers](#sensor-drivers). |
 | `sensors/a02yyuw_sensor/` | The A02YYUW driver, as a directory package rather than a single file since its logic naturally splits across several source files — see [Sensor drivers](#sensor-drivers) for how dynamic discovery finds either shape. |
 | `sensors/a02yyuw_sensor/__init__.py` | `A02YYUWSensor` — consolidates UART frame reading, hardware raw/processed mode-cycling, and stale-buffer resync (built on this package's own `read_sensor.py`/`sensor_mode.py`/`sensor_power.py`). Reports `"raw"` and `"processed"` named signals. This is the module dynamic discovery imports and scans for the driver's `LevelSensor` subclass + `create()`. |
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
@@ -441,28 +446,34 @@ sometimes `"processed"`, see below) — and `close()`. `supports_reset`/
 hardware can actually be power-cycled or otherwise reset in software;
 `POST /reset` checks this flag rather than assuming every sensor has it.
 
-A driver's background read thread starts the moment it's constructed --
-there's no separate "start polling" call, and no public loop-control API
-at all. `LevelSensor.__init__(on_reading, poll_interval_s)` is what every
-driver subclass calls as the *last* line of its own `__init__` (once all
-of its own state -- serial connection, mode controller, whatever it needs
--- is fully set up); that call immediately begins a background thread
-running `poll_loop()` (concrete on the base class, not driver-specific),
-which just calls `read()` repeatedly (every `poll_interval_s`) and passes
-each `(reading_key, distance_mm)` pair to `on_reading`. `on_reading` comes
-from `sensor_config.py`'s `_build_on_reading()` -- built from the
-sensor's already-constructed signal graph *before* the driver itself is
-constructed, since the driver needs it immediately (see [How it
-works](#how-it-works)).
+`LevelSensor` has no notion of *how* a driver actually obtains a reading
+-- no polling loop, no thread, nothing background-shaped on the base
+class at all. `A02YYUWSensor` happens to need one (it has to keep polling
+a UART), so it implements its own `_poll_loop()`/`_begin_polling()` and
+starts that thread itself, as the *last* line of its own `__init__` (once
+all of its own state -- serial connection, mode controller, whatever it
+needs -- is fully set up); that loop just calls `self.read()` repeatedly
+(every `poll_interval_s`) and passes each `(reading_key, distance_mm)`
+pair to `on_reading`, same as before. A future driver that's push-driven
+instead (reacting to an async callback, never looping at all) is just as
+valid -- it simply wouldn't implement a poll loop, since the base class
+never assumed one. `on_reading` comes from `sensor_config.py`'s
+`_build_on_reading()` -- built from the sensor's already-constructed
+signal graph *before* the driver itself is constructed, since a driver
+that needs it immediately (like `A02YYUWSensor`) requires it up front
+(see [How it works](#how-it-works)).
 
-`reset()` is also concrete on the base class: it stops the current read
-thread, waits for it to actually exit, calls the driver's own
-`reset_hardware()`, then starts a fresh thread -- so there's never a
-moment where two threads could both be calling `read()`, and a reset
-always leaves the driver's read loop in a genuinely fresh state, not just
-the hardware. A driver only needs to override `poll_loop()`/`reset()`
-itself if some future type genuinely needs something other than "plain
-polling thread, restarted around a hardware reset."
+Whatever mechanism a driver uses to obtain readings, it calls
+`self._record_reading()` (concrete on `LevelSensor`) each time it gets
+one, to participate in health tracking (below) -- that's the one thing
+the base class asks of every driver. `reset()` is also concrete on the
+base class, but only handles the generic part: calling the driver's own
+`reset_hardware()` and recording when. A driver that owns a background
+loop (like `A02YYUWSensor`) overrides `reset()` to stop that loop, wait
+for it to actually exit, call `super().reset()`, then start a fresh
+loop -- so there's never a moment where two threads could both be calling
+`read()`, and a reset always leaves the driver's own loop in a genuinely
+fresh state, not just the hardware.
 
 `last_reading_monotonic()`/`last_reset_at()`/`is_healthy()` are also
 concrete, and are how `GET /health` (below) gets its per-sensor status --
@@ -491,8 +502,10 @@ simple scalar params directly), most sensor drivers need real hardware
 objects — a serial connection, GPIO controllers — assembled around
 those params, and build entirely different (simulated) objects under
 `--simulate`; `create()` is where a driver type does that assembly (and
-forwards `on_reading` straight into its `LevelSensor.__init__()` call),
-so `sensor_config.py` never needs to know a given type's own construction
+forwards `on_reading` into the driver's own constructor -- what it does
+with it from there, e.g. `A02YYUWSensor` starting its own poll loop, is
+entirely that driver's business, not `LevelSensor`'s), so
+`sensor_config.py` never needs to know a given type's own construction
 details.
 
 An entry can be either a single `<name>_sensor.py` file (the class and

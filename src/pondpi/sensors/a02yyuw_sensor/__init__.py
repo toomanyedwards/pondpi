@@ -34,7 +34,7 @@ PROCESSED_MODE_DURATION_S = 1.0
 MODE_SETTLE_S = 0.4
 
 # How often this driver's own background thread calls read() -- see
-# LevelSensor.__init__(). Comfortably above the sensor's ~100ms response
+# _poll_loop() below. Comfortably above the sensor's ~100ms response
 # time, so every poll is an independent look at the water surface rather
 # than re-reading the same frame multiple times in a row.
 DEFAULT_POLL_INTERVAL_S = 0.15
@@ -57,9 +57,11 @@ class A02YYUWSensor(LevelSensor):
     `read()` then only ever reports that one key.
 
     `read()` does at most one serial read per call and never blocks
-    waiting for a frame -- called repeatedly from this driver's own
+    waiting for a frame -- this driver polls it repeatedly from its own
     background thread (started automatically at construction; see
-    `LevelSensor.__init__()`).
+    `_begin_polling()` below -- `LevelSensor` itself has no notion of
+    polling, this is entirely this driver's own choice of how to obtain
+    readings).
 
     `read()` and `reset_hardware()` are safe to call concurrently from
     different threads (this driver's own background thread calls
@@ -89,6 +91,8 @@ class A02YYUWSensor(LevelSensor):
         self._ser = ser
         self._mode_controller = mode_controller
         self._power_controller = power_controller
+        self._on_reading = on_reading
+        self._poll_interval_s = poll_interval_s
         self._stale_threshold_s = stale_threshold_s
         self._mode_cycle_interval_s = mode_cycle_interval_s
         self._processed_mode_duration_s = processed_mode_duration_s
@@ -106,10 +110,11 @@ class A02YYUWSensor(LevelSensor):
         self._last_mode_switch_monotonic = time.monotonic() - mode_settle_s
         self._cycle_start_monotonic = time.monotonic()
 
+        super().__init__()
         # Must be last: this starts a background thread that immediately
         # begins calling self.read(), so every attribute above must
         # already be set.
-        super().__init__(on_reading, poll_interval_s)
+        self._begin_polling()
 
     def read(self):
         with self._hardware_lock:
@@ -163,10 +168,36 @@ class A02YYUWSensor(LevelSensor):
         with self._hardware_lock:
             self._power_controller.reset()
 
+    def reset(self):
+        """Stops the current polling thread and waits for it to actually
+        exit *before* calling `super().reset()` (which power-cycles the
+        hardware and clears reading/reset bookkeeping), then starts a
+        fresh thread -- so there's never a moment where the old thread
+        could still call `read()`/`_on_reading()` against state that's
+        mid-reset."""
+        self._stop_event.set()
+        self._thread.join(timeout=self._poll_interval_s + 1)
+        super().reset()
+        self._begin_polling()
+
     def close(self):
         self._ser.close()
         self._mode_controller.close()
         self._power_controller.close()
+
+    def _poll_loop(self):
+        while not self._stop_event.is_set():
+            readings = self.read()
+            if readings:
+                self._record_reading()
+            for reading_key, distance_mm in readings.items():
+                self._on_reading(reading_key, distance_mm)
+            time.sleep(self._poll_interval_s)
+
+    def _begin_polling(self):
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
 
 
 def create(params, simulate, on_reading):
