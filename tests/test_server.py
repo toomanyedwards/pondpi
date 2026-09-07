@@ -302,18 +302,17 @@ def test_poll_sensor_routes_raw_readings_through_signals():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, "instantaneous_raw", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
         with server._state_lock:
-            if server._state["pond_main"]["instantaneous_mm"] == 100:
+            if "instantaneous_raw" in server._state["pond_main"]["signals"]:
                 break
         time.sleep(0.005)
     stop_event.set()
     thread.join(timeout=1)
 
-    assert server._state["pond_main"]["instantaneous_mm"] == 100
     assert server._state["pond_main"]["signals"]["instantaneous_raw"]["value"] == 100
     assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
@@ -330,7 +329,7 @@ def test_poll_sensor_downstream_signal_receives_upstream_signals_output():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, "downstream", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -354,12 +353,12 @@ def test_poll_sensor_skips_signals_that_own_their_own_read_loop():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, "avg", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
         with server._state_lock:
-            if server._state["pond_main"]["instantaneous_mm"] == 100:
+            if "instantaneous_raw" in server._state["pond_main"]["signals"]:
                 break
         time.sleep(0.005)
     stop_event.set()
@@ -369,28 +368,30 @@ def test_poll_sensor_skips_signals_that_own_their_own_read_loop():
     assert "avg" not in server._state["pond_main"]["signals"]
 
 
-def test_poll_sensor_caches_processed_readings_as_is():
-    # No signals configured for "processed" -- unlike "raw", it's
-    # cached directly rather than run through a pipeline (see
-    # poll_sensor()'s docstring).
+def test_poll_sensor_caches_processed_signals_independently_of_raw():
     _reset_globals(["pond_main"])
+    signals = {"proc_sig": _PassthroughSignal()}
+    configs = {"proc_sig": {"mode": "processed"}}
     sensor = FakeSensorDriver([{"processed": 123}])
     stop_event = threading.Event()
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, {}, {}, "primary", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
         with server._state_lock:
-            if server._state["pond_main"]["processed_mm"] == 123:
+            if "proc_sig" in server._state["pond_main"]["signals"]:
                 break
         time.sleep(0.005)
     stop_event.set()
     thread.join(timeout=1)
 
-    assert server._state["pond_main"]["processed_mm"] == 123
+    assert server._state["pond_main"]["signals"]["proc_sig"]["value"] == 123
+    # A "processed" reading must never touch last_reading_monotonic --
+    # /health's staleness check is specifically about the raw pipeline.
+    assert server._state["pond_main"]["last_reading_monotonic"] is None
 
 
 def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
@@ -405,7 +406,7 @@ def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
 
     thread = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor, signals, configs, "raw_sig", stop_event, 0.001),
+        args=("pond_main", sensor, signals, configs, stop_event, 0.001),
     )
     thread.start()
     for _ in range(200):
@@ -422,8 +423,7 @@ def test_poll_sensor_routes_each_reading_to_signals_rooted_at_its_own_mode():
     assert sigs["proc_sig"]["value"] == 50
     assert sigs["raw_sig"]["at"]
     assert sigs["proc_sig"]["at"]
-    assert server._state["pond_main"]["instantaneous_mm"] == 100
-    assert server._state["pond_main"]["processed_mm"] == 50
+    assert server._state["pond_main"]["last_reading_monotonic"] is not None
 
 
 def test_poll_sensor_keeps_multiple_sensors_state_independent():
@@ -434,19 +434,19 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
 
     thread_main = threading.Thread(
         target=server.poll_sensor,
-        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", stop_event, 0.001),
+        args=("pond_main", sensor_main, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, stop_event, 0.001),
     )
     thread_barrel = threading.Thread(
         target=server.poll_sensor,
-        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, "raw", stop_event, 0.001),
+        args=("rain_barrel", sensor_barrel, {"raw": _PassthroughSignal()}, {"raw": {"mode": "raw"}}, stop_event, 0.001),
     )
     thread_main.start()
     thread_barrel.start()
     for _ in range(200):
         with server._state_lock:
             if (
-                server._state["pond_main"]["instantaneous_mm"] == 100
-                and server._state["rain_barrel"]["instantaneous_mm"] == 200
+                "raw" in server._state["pond_main"]["signals"]
+                and "raw" in server._state["rain_barrel"]["signals"]
             ):
                 break
         time.sleep(0.005)
@@ -454,138 +454,8 @@ def test_poll_sensor_keeps_multiple_sensors_state_independent():
     thread_main.join(timeout=1)
     thread_barrel.join(timeout=1)
 
-    assert server._state["pond_main"]["instantaneous_mm"] == 100
-    assert server._state["rain_barrel"]["instantaneous_mm"] == 200
-
-
-def test_level_returns_503_before_first_reading():
-    _reset_globals(["pond_main"])
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/level")
-
-    assert resp.status_code == 503
-
-
-def test_level_returns_current_reading():
-    _reset_globals(["pond_main"])
-    server._signal_objects = {
-        "rolling_median5": FakeSignal(),
-        "rolling_avg": FakePollingSignal(
-            {"value": 850.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 400, "samples_in_window": 400, "poll_interval_ms": 1000}
-        ),
-        "instantaneous_raw": FakeSignal(),
-    }
-    server._state["pond_main"].update(
-        primary_name="rolling_avg",
-        signal_names=["rolling_median5", "rolling_avg", "instantaneous_raw"],
-        emit_flags={"rolling_median5": False, "rolling_avg": True, "instantaneous_raw": True},
-        configs={
-            "rolling_median5": {"unit": "cm"},
-            "rolling_avg": {"unit": "cm"},
-            "instantaneous_raw": {"unit": "cm"},
-        },
-        signals={
-            "rolling_median5": {"value": 500.0, "at": "2026-01-01T00:00:00+00:00", "window_size": 5, "samples_in_window": 5},
-            "instantaneous_raw": {"value": 101.0, "at": "2026-01-01T00:00:00+00:00", "sensor": "pond_main"},
-        },
-    )
-    server._polling_interval_ms = 10
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/level")
-
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data == {
-        "measure_name": "level",
-        "units": "cm",
-        "mode": "raw",
-        "polling_interval_ms": 10,
-        "primary_signal": {"value": 85.0, "name": "rolling_avg"},
-        # rolling_median5 is emit: false -- absent from `signals`.
-        "signals": {
-            "rolling_avg": 85.0,
-            "instantaneous_raw": 10.1,
-        },
-    }
-
-
-def test_level_processed_mode_returns_503_before_first_processed_reading():
-    _reset_globals(["pond_main"])
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/level?mode=processed")
-
-    assert resp.status_code == 503
-
-
-def test_level_processed_mode_returns_current_reading():
-    _reset_globals(["pond_main"])
-    server._state["pond_main"]["processed_mm"] = 123.0
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/level?mode=processed")
-
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data == {
-        "measure_name": "level",
-        "units": "cm",
-        "mode": "processed",
-        "distance_cm": 12.3,
-    }
-
-
-def test_level_unrecognized_mode_falls_back_to_raw():
-    _reset_globals(["pond_main"])
-    server._signal_objects = {"rolling_avg": FakePollingSignal({"value": 850.0, "at": "2026-01-01T00:00:00+00:00"})}
-    server._state["pond_main"].update(
-        primary_name="rolling_avg",
-        signal_names=["rolling_avg"],
-        emit_flags={"rolling_avg": True},
-        configs={"rolling_avg": {"unit": "cm"}},
-    )
-    server._polling_interval_ms = 10
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/level?mode=bogus")
-
-    assert resp.status_code == 200
-    assert resp.get_json()["mode"] == "raw"
-
-
-def test_sensor_level_returns_404_for_unknown_sensor():
-    _reset_globals(["pond_main"])
-    client = server.app.test_client()
-
-    resp = client.get("/sensors/nonexistent/level")
-
-    assert resp.status_code == 404
-
-
-def test_sensor_level_targets_named_sensor_independently_of_default():
-    _reset_globals(["pond_main", "rain_barrel"])
-    server._signal_objects["raw"] = FakePollingSignal({"value": 200.0, "at": "2026-01-01T00:00:00+00:00"})
-    server._state["rain_barrel"].update(
-        primary_name="raw",
-        signal_names=["raw"],
-        emit_flags={"raw": True},
-        configs={"raw": {"unit": "cm"}},
-    )
-    server._polling_interval_ms = 150
-    server._default_sensor_name = "pond_main"
-    client = server.app.test_client()
-
-    resp = client.get("/sensors/rain_barrel/level")
-
-    assert resp.status_code == 200
-    assert resp.get_json()["primary_signal"]["value"] == 20.0
+    assert server._state["pond_main"]["signals"]["raw"]["value"] == 100
+    assert server._state["rain_barrel"]["signals"]["raw"]["value"] == 200
 
 
 def test_diag_returns_503_before_first_reading():
