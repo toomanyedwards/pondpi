@@ -40,6 +40,9 @@ class FakeSensor:
     def last_reset_at(self):
         return self._last_reset_at
 
+    def extra_diag(self):
+        return {}
+
 
 class FakeResetSensor:
     def __init__(self, supports_reset=True):
@@ -327,7 +330,7 @@ _EXPECTED_POND_MAIN_DIAG_SIGNALS = {
 
 def test_diag_aggregates_every_sensor_at_once():
     _reset_globals(["pond_main", "rain_barrel"])
-    server._sensors = {"pond_main": object(), "rain_barrel": object()}
+    server._sensors = {"pond_main": FakeSensor(), "rain_barrel": FakeSensor()}
     _populate_pond_main_diag_state()
     client = server.app.test_client()
 
@@ -337,11 +340,14 @@ def test_diag_aggregates_every_sensor_at_once():
     data = resp.get_json()
     assert data == {
         "sensors": {
-            "pond_main": _EXPECTED_POND_MAIN_DIAG_SIGNALS,
+            "pond_main": {"signals": _EXPECTED_POND_MAIN_DIAG_SIGNALS, "driver": {}},
             # No readings yet for rain_barrel -- shown as empty rather
             # than failing the whole request, same as bare POST /reset
             # reports per-sensor status instead of an all-or-nothing error.
-            "rain_barrel": {},
+            # "driver" is still included even with no signals -- a
+            # driver's own extra_diag() can explain *why* there's
+            # nothing yet (see A02YYUWSensor.frame_stats()).
+            "rain_barrel": {"signals": {}, "driver": {}},
         },
     }
 
@@ -357,22 +363,27 @@ def test_sensor_diag_returns_404_for_unknown_sensor():
 
 def test_sensor_diag_returns_503_before_first_reading():
     _reset_globals(["pond_main"])
+    server._sensors = {"pond_main": FakeSensor()}
     client = server.app.test_client()
 
     resp = client.get("/sensors/pond_main/diag")
 
     assert resp.status_code == 503
+    # driver's own extra_diag() is included even in the 503 body -- see
+    # test_diag_aggregates_every_sensor_at_once's comment on why.
+    assert resp.get_json() == {"error": "no readings yet", "driver": {}}
 
 
 def test_sensor_diag_returns_config_and_output_for_every_signal():
     _reset_globals(["pond_main"])
+    server._sensors = {"pond_main": FakeSensor()}
     _populate_pond_main_diag_state()
     client = server.app.test_client()
 
     resp = client.get("/sensors/pond_main/diag")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"signals": _EXPECTED_POND_MAIN_DIAG_SIGNALS}
+    assert resp.get_json() == {"signals": _EXPECTED_POND_MAIN_DIAG_SIGNALS, "driver": {}}
 
 
 def test_sensors_list_returns_names():

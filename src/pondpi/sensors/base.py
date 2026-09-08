@@ -116,6 +116,17 @@ class Sensor:
         definition."""
         raise NotImplementedError
 
+    def extra_diag(self):
+        """Optional hook for a driver's own extra diagnostic info,
+        surfaced on `GET /diag`/`GET /sensors/<name>/diag` alongside
+        whatever signals are rooted at this sensor -- entirely opaque to
+        this base class and to server.py, same pattern as `Signal`'s own
+        `extra_state()`. Empty by default; a driver overrides this only
+        if it has something worth exposing (see
+        `A02YYUWSensor.extra_diag()` for one that does -- frame-level
+        read statistics)."""
+        return {}
+
     def reset(self):
         """Resets the hardware (`reset_hardware()`) and records this
         reset's own timestamp (`last_reset_at()`). A driver that owns a

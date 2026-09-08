@@ -260,6 +260,88 @@ def test_flushes_buffer_after_prolonged_no_valid_frame():
     assert ser.reset_count > 0
 
 
+def test_frame_stats_tallies_ok_reads():
+    sensor = A02YYUWSensor(
+        FakeSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+    )
+
+    _wait_until(lambda: sensor.frame_stats()[read_sensor.OK] > 0)
+
+    assert sensor.frame_stats()[read_sensor.OK] > 0
+
+
+def test_frame_stats_tallies_checksum_failures():
+    bad = bytes([0xFF, 0x01, 0x2C, 0x00])
+    sensor = A02YYUWSensor(
+        FakeSerial(bad),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=0.001,
+        stale_threshold_s=1000,  # don't let the stale-timeout flush hide the count
+    )
+
+    _wait_until(lambda: sensor.frame_stats()[read_sensor.CHECKSUM_FAILED] > 0)
+
+    assert sensor.frame_stats()[read_sensor.CHECKSUM_FAILED] > 0
+    assert sensor.frame_stats()[read_sensor.OK] == 0
+
+
+def test_frame_stats_starts_with_no_successful_or_failed_reads():
+    # poll_interval_s=1000 parks the auto-started background thread
+    # asleep after its one initial call -- with nothing waiting on the
+    # fake serial, that call counts as NO_DATA (not itself interesting),
+    # so only the other outcomes are asserted at zero here.
+    sensor = A02YYUWSensor(FakeSerial(b""), FakeModeController(), FakePowerController(), poll_interval_s=1000)
+    stats = sensor.frame_stats()
+    assert stats[read_sensor.OK] == 0
+    assert stats[read_sensor.MISALIGNED] == 0
+    assert stats[read_sensor.CHECKSUM_FAILED] == 0
+    assert stats[read_sensor.INCOMPLETE] == 0
+
+
+def test_reset_hardware_clears_frame_stats():
+    # poll_interval_s=1000 parks the background thread asleep after its
+    # one initial (successful) read, so calling reset_hardware()
+    # directly here can't race against it recording another outcome
+    # right after the clear.
+    sensor = A02YYUWSensor(
+        FakeSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=1000,
+    )
+    _wait_until(lambda: sensor.frame_stats()[read_sensor.OK] > 0)
+
+    sensor.reset_hardware()
+
+    assert sensor.frame_stats() == {
+        read_sensor.OK: 0,
+        read_sensor.NO_DATA: 0,
+        read_sensor.MISALIGNED: 0,
+        read_sensor.CHECKSUM_FAILED: 0,
+        read_sensor.INCOMPLETE: 0,
+    }
+
+
+def test_extra_diag_reports_frame_stats():
+    # poll_interval_s=1000 parks the background thread asleep after its
+    # one initial read, so the two frame_stats() snapshots below (one
+    # via extra_diag(), one direct) can't race against it recording
+    # another outcome in between.
+    sensor = A02YYUWSensor(
+        FakeSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        FakePowerController(),
+        poll_interval_s=1000,
+    )
+    _wait_until(lambda: sensor.frame_stats()[read_sensor.OK] > 0)
+
+    assert sensor.extra_diag() == {"frame_stats": sensor.frame_stats()}
+
+
 def test_cycles_into_processed_mode():
     ser = read_sensor.SimulatedSerial()
     mode_controller = FakeModeController()
