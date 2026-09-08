@@ -159,17 +159,28 @@ def _sensor_diag_signals(name):
 def diag():
     """Diagnostic view for every configured sensor at once. See GET
     /sensors/<name>/diag to target one sensor individually."""
-    return jsonify(sensors={name: _sensor_diag_signals(name) for name in _sensors})
+    return jsonify(
+        sensors={
+            name: {"signals": _sensor_diag_signals(name), "driver": sensor.extra_diag()}
+            for name, sensor in _sensors.items()
+        }
+    )
 
 
 @app.route("/sensors/<name>/diag")
 def sensor_diag(name):
-    if name not in _state:
+    sensor = _sensors.get(name)
+    if sensor is None:
         return jsonify(error=f"unknown sensor '{name}'"), 404
     signals = _sensor_diag_signals(name)
+    driver = sensor.extra_diag()
     if not signals:
-        return jsonify(error="no readings yet"), 503
-    return jsonify(signals=signals)
+        # driver's own extra_diag() (e.g. A02YYUWSensor's frame_stats())
+        # is included even here -- a lopsided read-outcome count is
+        # exactly the kind of thing that explains *why* nothing's
+        # arrived yet, not something worth hiding behind the 503.
+        return jsonify(error="no readings yet", driver=driver), 503
+    return jsonify(signals=signals, driver=driver)
 
 
 @app.route("/sensors")

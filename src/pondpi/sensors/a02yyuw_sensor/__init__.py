@@ -133,6 +133,9 @@ class A02YYUWSensor(Sensor):
         self._read_mode = read_mode
         self._hardware_lock = threading.Lock()
         self._last_readings = {}
+        self._frame_stats = dict.fromkeys(
+            (read_sensor.OK, read_sensor.NO_DATA, read_sensor.MISALIGNED, read_sensor.CHECKSUM_FAILED, read_sensor.INCOMPLETE), 0
+        )
 
         self._last_valid_monotonic = time.monotonic()
         self._current_mode = self._read_mode if self._read_mode is not None else sensor_mode.RAW
@@ -184,6 +187,30 @@ class A02YYUWSensor(Sensor):
             return False
         return (time.monotonic() - self.last_reading_monotonic()) <= self._health_stale_threshold_s
 
+    def frame_stats(self):
+        """Thread-safe snapshot `{outcome: count}` of every
+        `read_sensor.read_frame()` outcome (`OK`/`NO_DATA`/`MISALIGNED`/
+        `CHECKSUM_FAILED`/`INCOMPLETE`, see there) this driver has seen
+        since construction or its last `reset_hardware()` -- a high rate
+        of `MISALIGNED`/`CHECKSUM_FAILED` relative to `OK` is a real
+        diagnostic signal of a wiring/interference/electrical problem
+        (as opposed to `NO_DATA`, which is just normal between-frames
+        polling and expected to dominate). Surfaced via `extra_diag()`
+        (below)."""
+        with self._hardware_lock:
+            return dict(self._frame_stats)
+
+    def extra_diag(self):
+        """Overrides `Sensor.extra_diag()` (empty by default) to surface
+        `frame_stats()` on `GET /diag`/`GET /sensors/<name>/diag` --
+        this is the one thing this driver has worth reporting there
+        beyond the generic health/reset fields every driver already
+        gets. Deliberately included even when there's no reading yet
+        (e.g. a 503 "no readings yet" response), since a lopsided
+        MISALIGNED/CHECKSUM_FAILED count is exactly the kind of thing
+        that explains *why* nothing's arrived."""
+        return {"frame_stats": self.frame_stats()}
+
     def _read_hardware(self):
         with self._hardware_lock:
             now = time.monotonic()
@@ -207,7 +234,8 @@ class A02YYUWSensor(Sensor):
                 self._mode_controller.set_mode(self._current_mode)
                 self._last_mode_switch_monotonic = now
 
-            distance_mm = read_sensor.read_frame(self._ser)
+            distance_mm, outcome = read_sensor.read_frame(self._ser)
+            self._frame_stats[outcome] += 1
             settling = (now - self._last_mode_switch_monotonic) < self._mode_settle_s
 
             if distance_mm is not None and read_sensor.is_valid_reading(distance_mm):
@@ -242,11 +270,14 @@ class A02YYUWSensor(Sensor):
         failure) to eventually clear. Also re-bases
         `_last_valid_monotonic` to now, so that secondary flush doesn't
         fire immediately just because the pre-reset value was already
-        old."""
+        old, and clears `frame_stats()` back to zero -- a clean slate to
+        see whether the discard rate actually changes post-reset."""
         with self._hardware_lock:
             self._power_controller.reset()
             self._ser.reset_input_buffer()
             self._last_valid_monotonic = time.monotonic()
+            for key in self._frame_stats:
+                self._frame_stats[key] = 0
 
     def reset(self):
         """Signals the current polling thread to stop and waits (up to

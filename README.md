@@ -200,6 +200,9 @@ exactly one signal directly.
         "poll_interval_ms": 1000
       }
     }
+  },
+  "driver": {
+    "frame_stats": {"ok": 40213, "no_data": 812, "misaligned": 2, "checksum_failed": 0, "incomplete": 0}
   }
 }
 ```
@@ -207,9 +210,20 @@ exactly one signal directly.
 Each signal's `config` is its *effective* configuration from
 `config/sensors.yaml`'s `signals:` list (defaults filled in, so `emit`
 is always present even if the YAML omitted it), and `output` is `value`
-plus that signal's own `extra_state()`. Returns `503 {"error": "no
-readings yet"}` before this sensor has produced a first value for any
-of its signals.
+plus that signal's own `extra_state()`.
+
+`driver` is whatever this sensor's own driver has to report via
+`extra_diag()` (see [Sensor drivers](#sensor-drivers)) -- empty (`{}`)
+for a driver with nothing extra worth exposing; for `A02YYUWSensor` it's
+`frame_stats`, a running count of every `read_sensor.read_frame()`
+outcome since construction or the last `POST /reset` (`ok`/`no_data`/
+`misaligned`/`checksum_failed`/`incomplete` -- see [Frame protocol and
+`frame_stats`](#frame-protocol-and-frame_stats) for what each means and
+how to read them). This is included even in a `503 {"error": "no
+readings yet", "driver": ...}`
+response -- a lopsided `misaligned`/`checksum_failed` count relative to
+`ok` is exactly the kind of thing that explains *why* nothing's arrived
+yet, so it's not worth hiding behind the error.
 
 `config.source` and `config.settings` mirror the entry's own top-level
 `source:`/`settings:` fields (see [Signal processing](#signal-processing))
@@ -229,16 +243,17 @@ field name inside a `sensor`-type signal's own `source.options` (see
 ### `GET /diag`
 
 The bare form of the same route, spanning every configured sensor at
-once -- each keyed by name, with exactly the same per-sensor `signals`
-shape `GET /sensors/<name>/diag` returns for one. A sensor with no
-readings yet shows an empty object rather than failing the whole
-request, same as bare `POST /reset` below reports per-sensor status
-instead of an all-or-nothing error:
+once -- each keyed by name, with exactly the same per-sensor
+`{"signals": ..., "driver": ...}` shape `GET /sensors/<name>/diag`
+returns for one. A sensor with no readings yet shows an empty
+`signals` object (its `driver` is still populated) rather than failing
+the whole request, same as bare `POST /reset` below reports per-sensor
+status instead of an all-or-nothing error:
 
 ```json
 {
   "sensors": {
-    "pond_main": { "...": "same shape as GET /sensors/pond_main/diag's \"signals\"" }
+    "pond_main": { "...": "same {\"signals\", \"driver\"} shape as GET /sensors/pond_main/diag" }
   }
 }
 ```
@@ -483,7 +498,11 @@ reports more than one named reading, like the A02YYUW's `"raw"`/
 defaulting to whatever the driver considers its primary reading), plus
 `reset_hardware()`, `check_health()`, and `close()` -- every one of
 these a required override, entirely driver-specific in both meaning and
-mechanism. `Sensor` itself holds no reading cache, no notion of how many
+mechanism. `extra_diag()` is the one *optional* hook -- empty `{}` by
+default, for a driver with its own extra diagnostic info worth
+surfacing on `GET /diag`/`GET /sensors/<name>/diag` (see those routes
+above); `A02YYUWSensor` overrides it to report `frame_stats` (below).
+`Sensor` itself holds no reading cache, no notion of how many
 named readings a driver reports, and no health policy — it's
 deliberately thin, since a future driver might report just one reading
 (no per-key cache needed at all) or define "healthy" completely
@@ -631,6 +650,41 @@ These two numbers directly shape the polling and smoothing defaults:
   don't read too much into a rolling average that only moves by a few
   mm between samples; that can be within the sensor's own accuracy
   budget rather than a real water level change.
+
+### Frame protocol and `frame_stats`
+
+Each reading arrives as a 4-byte UART frame: a `0xFF` header, two
+distance bytes, and a checksum (`read_sensor.py`'s `read_frame()`).
+`_read_hardware()` (`A02YYUWSensor`'s own poll loop body) tallies every
+outcome `read_frame()` reports, exposed via `extra_diag()` as
+`frame_stats` on `GET /diag`/`GET /sensors/<name>/diag` (see those
+routes above), running since construction or the last `POST /reset`:
+
+| Outcome | Meaning |
+|---|---|
+| `ok` | A valid, checksummed frame -- a real reading. |
+| `no_data` | Fewer than 4 bytes were waiting yet. Normal and expected to dominate -- this driver polls (`poll_interval_s`) faster than it needs to, so most calls simply find nothing new. |
+| `misaligned` | Bytes were waiting, but the first one wasn't the `0xFF` header. One byte is consumed hunting for resync (see below); more than the occasional one of these is a real sign the byte stream has drifted out of alignment. |
+| `checksum_failed` | A `0xFF` header was found, but the following 3 bytes didn't check out -- the input buffer is flushed immediately to force a fresh resync. |
+| `incomplete` | A `0xFF` header was found but fewer than 3 more bytes were available right away (e.g. read mid-transmission). Rare. |
+
+A high `misaligned`/`checksum_failed` count relative to `ok` points at
+a wiring, interference, or electrical problem on the UART line itself
+-- as opposed to a driver or downstream signal-processing bug, which
+wouldn't show up here at all (this counts what actually arrived over
+the wire, before any of that). `POST /reset` (or `/sensors/<name>/reset`)
+clears these counters back to zero, alongside everything else it
+resets (see below) -- a clean slate to see whether the discard rate
+actually changes afterward.
+
+`misaligned`'s single-byte resync (rather than flushing the whole
+buffer) is deliberate: if the stream is only off by a byte or two, this
+finds the next real header quickly; `checksum_failed`'s buffer flush is
+the heavier fallback for when a whole frame parsed but didn't validate.
+If the byte stream stays knocked out of alignment for a while despite
+that, `_read_hardware()`'s own stale-timeout (`stale_threshold_s`, not
+`frame_stats`-related) forces a buffer flush anyway -- see [`GET
+/health`](#get-health) for the health-check side of staleness.
 
 ### RX pin: raw vs. processed hardware mode
 

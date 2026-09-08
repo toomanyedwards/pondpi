@@ -54,6 +54,10 @@ def test_last_reset_at_is_none_before_any_reset():
     assert sensor.last_reset_at() is None
 
 
+def test_extra_diag_is_empty_by_default():
+    assert _StubSensor().extra_diag() == {}
+
+
 def test_last_reset_at_updates_after_reset():
     sensor = _StubSensor()
     sensor.reset()

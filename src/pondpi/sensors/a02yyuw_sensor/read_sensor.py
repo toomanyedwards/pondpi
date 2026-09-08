@@ -2,6 +2,16 @@ import math
 import random
 import time
 
+# read_frame()'s outcome values -- see its own docstring for what each
+# means. Plain string constants, same style as sensor_mode.py's
+# RAW/PROCESSED, so a caller (A02YYUWSensor, to tally frame_stats()) can
+# compare against them without importing anything heavier.
+OK = "ok"
+NO_DATA = "no_data"
+MISALIGNED = "misaligned"
+CHECKSUM_FAILED = "checksum_failed"
+INCOMPLETE = "incomplete"
+
 
 def calculate_checksum(data_h, data_l):
     return (0xFF + data_h + data_l) & 0xFF
@@ -17,24 +27,46 @@ def is_valid_reading(distance_mm):
 
 
 def read_frame(ser):
-    """Try to read one A02YYUW frame. Returns distance_mm, or None if no
-    valid frame was available this call."""
+    """Try to read one A02YYUW frame. Returns `(distance_mm, outcome)`
+    -- `distance_mm` is None unless `outcome` is `OK`. `outcome` is one
+    of this module's own constants (above):
+    - `OK`: a valid, checksummed frame was read.
+    - `NO_DATA`: fewer than 4 bytes were waiting -- nothing to read yet,
+      the normal case when polling faster than the sensor's own frame
+      rate.
+    - `MISALIGNED`: bytes were waiting but the first one wasn't the
+      0xFF header -- this call consumed exactly one byte hunting for
+      resync (see A02YYUWSensor's own docstring for why); a real
+      diagnostic signal if this keeps happening rather than being rare.
+    - `CHECKSUM_FAILED`: a 0xFF header was found but the following 3
+      bytes didn't check out -- the input buffer has already been
+      flushed to force a fresh resync.
+    - `INCOMPLETE`: a 0xFF header was found but fewer than 3 more bytes
+      were available right away (e.g. read mid-transmission) -- rare,
+      treated like `NO_DATA` by the caller but tracked separately since
+      it means something *was* on the wire, just not fully yet.
+    """
     # Check if we have enough bytes in the buffer to make a full 4-byte frame,
     # and read a single byte looking for the 0xFF header
-    if ser.in_waiting >= 4 and ser.read(1) == b'\xff':
-        # Grab the remaining 3 bytes of this frame immediately
-        data = ser.read(3)
+    if ser.in_waiting < 4:
+        return None, NO_DATA
 
-        if len(data) == 3:
-            data_h, data_l, checksum = data[0], data[1], data[2]
+    if ser.read(1) != b'\xff':
+        return None, MISALIGNED
 
-            if calculate_checksum(data_h, data_l) == checksum:
-                return parse_distance_mm(data_h, data_l)
+    # Grab the remaining 3 bytes of this frame immediately
+    data = ser.read(3)
+    if len(data) != 3:
+        return None, INCOMPLETE
 
-            # If checksum fails, we likely misaligned; flush buffer to reset
-            ser.reset_input_buffer()
+    data_h, data_l, checksum = data[0], data[1], data[2]
 
-    return None
+    if calculate_checksum(data_h, data_l) == checksum:
+        return parse_distance_mm(data_h, data_l), OK
+
+    # If checksum fails, we likely misaligned; flush buffer to reset
+    ser.reset_input_buffer()
+    return None, CHECKSUM_FAILED
 
 
 class SimulatedSerial:
