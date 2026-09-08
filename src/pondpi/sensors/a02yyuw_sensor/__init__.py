@@ -233,19 +233,41 @@ class A02YYUWSensor(Sensor):
             return {}
 
     def reset_hardware(self):
+        """Power-cycles the sensor *and* flushes whatever's sitting in
+        the serial receive buffer -- leftover misaligned bytes from
+        before the reset, or noise picked up on the floating RX line
+        during the power transient itself, would otherwise survive the
+        power-cycle untouched and need `_read_hardware()`'s own
+        stale-timeout flush (another `_stale_threshold_s` of continued
+        failure) to eventually clear. Also re-bases
+        `_last_valid_monotonic` to now, so that secondary flush doesn't
+        fire immediately just because the pre-reset value was already
+        old."""
         with self._hardware_lock:
             self._power_controller.reset()
+            self._ser.reset_input_buffer()
+            self._last_valid_monotonic = time.monotonic()
 
     def reset(self):
-        """Stops the current polling thread and waits for it to actually
-        exit *before* calling `super().reset()` (which power-cycles the
+        """Signals the current polling thread to stop and waits (up to
+        `poll_interval_s + 1`, comfortably above how long a single
+        `_read_hardware()` call can block) for it to actually exit,
+        *before* calling `super().reset()` (which power-cycles the
         hardware and clears the generic `last_reading_monotonic()`
         bookkeeping) and clearing this driver's own `_last_readings`
-        cache, then starts a fresh thread -- so there's never a moment
-        where the old thread could still call
-        `_read_hardware()`/populate stale-reset state, and a signal
-        pulling from this sensor can't immediately re-read the
-        pre-reset value."""
+        cache, then starts a fresh thread.
+
+        The join timeout is a bound, not a guarantee -- if the old
+        thread's current call is still running when it elapses, this
+        proceeds anyway rather than blocking `POST /reset` indefinitely
+        against a genuinely wedged read. `_poll_loop()`'s own
+        `stop_event` argument (captured at thread-start time, not read
+        off `self._stop_event` each iteration) guarantees the old thread
+        still sees the stop signal and exits on its own shortly after,
+        even though `_begin_polling()` below immediately replaces
+        `self._stop_event` with a fresh one for the new thread -- so any
+        overlap between old and new threads is brief and self-resolving,
+        never permanent."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         super().reset()
@@ -258,8 +280,25 @@ class A02YYUWSensor(Sensor):
         self._mode_controller.close()
         self._power_controller.close()
 
-    def _poll_loop(self):
-        while not self._stop_event.is_set():
+    def _poll_loop(self, stop_event):
+        """Loops until `stop_event` -- specifically the one this thread
+        was started with, passed in as an argument rather than read off
+        `self._stop_event` -- is set. This matters because `reset()`'s
+        `self._thread.join(timeout=...)` can time out while this loop is
+        still mid-iteration (a single `_read_hardware()` call can block
+        for close to pyserial's own read timeout); if that happens,
+        `_begin_polling()` still proceeds to replace `self._stop_event`
+        with a fresh, unset `Event` for the new thread. A loop that read
+        `self._stop_event` dynamically would then be checking a
+        different object than the one `.set()` was actually called on,
+        and would never see it -- silently leaking this thread forever,
+        left running (and contending for `_hardware_lock`/mutating
+        shared mode-cycling state) alongside its replacement, with
+        nothing able to stop it short of process exit. Capturing the
+        exact `Event` this thread was handed avoids that: reassigning
+        `self._stop_event` elsewhere can't change what this loop is
+        actually watching."""
+        while not stop_event.is_set():
             readings = self._read_hardware()
             if readings:
                 now_iso = datetime.now(timezone.utc).isoformat()
@@ -271,7 +310,7 @@ class A02YYUWSensor(Sensor):
 
     def _begin_polling(self):
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread = threading.Thread(target=self._poll_loop, args=(self._stop_event,), daemon=True)
         self._thread.start()
 
 

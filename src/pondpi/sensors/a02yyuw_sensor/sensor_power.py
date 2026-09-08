@@ -13,17 +13,20 @@ for tests, which never touch real GPIO hardware.
 
 import time
 
-# How long to hold the sensor's power pin low during a reset -- long
-# enough for it to fully discharge and power-on-reset cleanly once power
-# is restored. Was 1.0 originally; bumped to 5.0 after a real incident
-# (2026-09-07/08) where the sensor got wedged reporting a stuck,
-# zero-jitter reading and a 1s sensor-level reset didn't clear it
-# (an HA automation retried this reset hourly with no effect), but a
-# full Pi power cycle -- which leaves the sensor unpowered far longer
-# than 1s -- did. 5s gives real hold-up capacitance more room to
-# discharge while staying under the 10s default timeout HA's
-# `rest_command` integration uses (see README's "POST /reset" section
-# for the full per-request latency this adds).
+# How long to hold the sensor's power pin low during a reset. Was 1.0
+# originally; bumped to 5.0 after a real incident (2026-09-07/08) where
+# the sensor kept producing fresh, validly-checksummed frames throughout
+# (never stopped communicating) but reported an anomalously flat,
+# near-zero-jitter value well off the real level -- three hourly 1s
+# sensor-level resets didn't change that, but a full Pi power cycle did.
+# Longer power-off time is one plausible explanation (more time for any
+# real hold-up capacitance to discharge) but isn't a confirmed root
+# cause -- the full power cycle also differs from a sensor-only reset in
+# other ways (e.g. physically unplugging/replugging), any of which could
+# be what actually mattered. Treat 5s as an empirical adjustment worth
+# trying, not a verified fix; it's still comfortably under the 10s
+# default timeout HA's `rest_command` integration uses (see README's
+# "POST /reset" section for the full per-request latency this adds).
 RESET_OFF_DURATION_S = 5.0
 
 
