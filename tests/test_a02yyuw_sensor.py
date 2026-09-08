@@ -337,6 +337,35 @@ def test_reset_delegates_to_power_controller():
     assert power_controller.reset_calls == 1
 
 
+def test_reset_hardware_flushes_the_input_buffer():
+    # Leftover misaligned bytes from before the reset, or noise picked
+    # up on the floating RX line during the power transient itself,
+    # would otherwise survive the power-cycle untouched -- reset_hardware()
+    # must flush them rather than leaving that to _read_hardware()'s own
+    # (much slower, multi-second) stale-timeout flush.
+    ser = FakeSerial(b"garbage")
+    sensor = A02YYUWSensor(ser, FakeModeController(), FakePowerController(), poll_interval_s=1000)
+
+    reset_count_before = ser.reset_count
+    sensor.reset_hardware()
+
+    assert ser.reset_count == reset_count_before + 1
+
+
+def test_reset_hardware_rebases_last_valid_monotonic():
+    # Otherwise the first _read_hardware() call after a reset could see
+    # an already-stale _last_valid_monotonic left over from before the
+    # reset and immediately trigger a second, redundant stale-timeout
+    # flush of its own.
+    sensor = A02YYUWSensor(FakeSerial(), FakeModeController(), FakePowerController(), poll_interval_s=1000)
+    with sensor._hardware_lock:
+        sensor._last_valid_monotonic = time.monotonic() - 1000
+
+    sensor.reset_hardware()
+
+    assert time.monotonic() - sensor._last_valid_monotonic < 1
+
+
 def test_reset_restarts_polling_with_a_fresh_thread():
     power_controller = FakePowerController()
     sensor = A02YYUWSensor(
@@ -359,6 +388,59 @@ def test_reset_restarts_polling_with_a_fresh_thread():
     # actually restarted, not just that the hardware was power-cycled.
     _wait_until(lambda: sensor.last_reading("raw") is not None)
     assert sensor.last_reading("raw") is not None
+
+
+def test_reset_does_not_leak_the_old_thread_when_the_join_times_out():
+    # reset()'s self._thread.join(timeout=poll_interval_s + 1) is a
+    # bound, not a guarantee -- if the old thread's current
+    # _read_hardware() call is still blocked when it elapses, reset()
+    # proceeds anyway (reset_hardware() then blocks on _hardware_lock
+    # until that call finally releases it). Before the fix, the old
+    # thread's _poll_loop() read self._stop_event dynamically each
+    # iteration; since _begin_polling() immediately replaces that
+    # attribute with a fresh Event for the new thread, the old thread
+    # would never see the stop signal it needed and would leak forever.
+    release_read = threading.Event()
+    header_read_started = threading.Event()
+
+    class BlockingSerial(FakeSerial):
+        def read(self, n):
+            if n == 1 and not release_read.is_set():
+                header_read_started.set()
+                release_read.wait(timeout=5)
+            return super().read(n)
+
+    power_controller = FakePowerController()
+    sensor = A02YYUWSensor(
+        BlockingSerial(_frame(0x01, 0x2C)),
+        FakeModeController(),
+        power_controller,
+        poll_interval_s=0.01,  # reset()'s own join(timeout=~1.01s)
+    )
+    old_thread = sensor._thread
+    assert header_read_started.wait(timeout=1)  # background thread is now blocked mid-read, holding _hardware_lock
+
+    reset_thread = threading.Thread(target=sensor.reset)
+    reset_thread.start()
+
+    # Give reset()'s join(timeout=~1.01s) time to elapse while old_thread
+    # is still blocked -- it can't have finished normally, since nothing
+    # has released it yet.
+    time.sleep(1.2)
+    assert old_thread.is_alive()
+    assert sensor._thread is old_thread  # _begin_polling() hasn't run yet -- reset()
+    # itself is still blocked acquiring _hardware_lock inside reset_hardware()
+
+    release_read.set()  # let the blocked read return, releasing _hardware_lock
+    reset_thread.join(timeout=2)
+    assert power_controller.reset_calls == 1
+
+    # The old thread must notice its own captured stop_event and exit
+    # shortly after -- not keep running forever just because
+    # _begin_polling() already replaced self._stop_event for the new one.
+    _wait_until(lambda: not old_thread.is_alive(), timeout_s=2)
+    assert not old_thread.is_alive()
+    assert sensor._thread is not old_thread
 
 
 def test_read_and_reset_hardware_are_serialized_against_each_other():
