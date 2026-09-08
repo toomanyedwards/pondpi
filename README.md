@@ -349,9 +349,9 @@ does is entirely up to the driver (`reset_hardware()`, see [Sensor
 drivers](#sensor-drivers)) -- the API and server.py have no notion of
 the specifics. For the A02YYUW specifically, this drives its power pin
 (`power_pin` param, default `24`) low for
-`sensor_power.RESET_OFF_DURATION_S` (3s) and back high, so the request
-blocks for about that long per sensor reset -- comfortably under the
-10s default timeout HA's `rest_command` integration uses, for any
+`sensor_power.RESET_OFF_DURATION_S` (5s) and back high, so the request
+blocks for about that long per sensor reset -- still under the 10s
+default timeout HA's `rest_command` integration uses, for any
 automation (like an hourly reset) that calls this over REST.
 
 `POST /sensors/<name>/reset` targets exactly one sensor. Not every

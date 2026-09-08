@@ -15,16 +15,16 @@ import time
 
 # How long to hold the sensor's power pin low during a reset -- long
 # enough for it to fully discharge and power-on-reset cleanly once power
-# is restored. Was 1.0 originally; bumped to 3.0 after a real incident
+# is restored. Was 1.0 originally; bumped to 5.0 after a real incident
 # (2026-09-07/08) where the sensor got wedged reporting a stuck,
 # zero-jitter reading and a 1s sensor-level reset didn't clear it
 # (an HA automation retried this reset hourly with no effect), but a
 # full Pi power cycle -- which leaves the sensor unpowered far longer
-# than 1s -- did. 3s gives real hold-up capacitance more room to
-# discharge while staying safely under the 10s default timeout HA's
+# than 1s -- did. 5s gives real hold-up capacitance more room to
+# discharge while staying under the 10s default timeout HA's
 # `rest_command` integration uses (see README's "POST /reset" section
 # for the full per-request latency this adds).
-RESET_OFF_DURATION_S = 3.0
+RESET_OFF_DURATION_S = 5.0
 
 
 class GpioPowerController:
