@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -259,16 +260,46 @@ def _wait_until(predicate, timeout_s=1):
 
 
 def _fixed_source(value):
-    return _FakeSourceSignal(None if value is None else {"value": value, "at": "at"})
+    """A source reporting `value` (or nothing, for `value=None`) with a
+    genuinely fresh, unique `at` on every single read() -- as if a new
+    reading arrived each poll, same value or not. Use
+    `_FakeSourceSignal.set()` directly instead to simulate a source
+    that's gone stale (the same `at` returned repeatedly)."""
+    if value is None:
+        class _Source:
+            def read(self, options=None):
+                return None
+
+        return _Source()
+
+    class _Source:
+        def __init__(self):
+            self._n = 0
+
+        def read(self, options=None):
+            self._n += 1
+            return {"value": value, "at": f"at-{self._n}"}
+
+    return _Source()
 
 
 def _queue_source(values):
+    """Drains `values` one per read() call, each with its own fresh,
+    unique `at` -- returns None once exhausted. Like `_fixed_source`,
+    every returned value (even a repeated one) counts as a genuinely new
+    reading, not a stale repeat."""
     queue = list(values)
 
     class _Source:
+        def __init__(self):
+            self._n = 0
+
         def read(self, options=None):
             value = queue.pop(0) if queue else None
-            return None if value is None else {"value": value, "at": "at"}
+            if value is None:
+                return None
+            self._n += 1
+            return {"value": value, "at": f"at-{self._n}"}
 
     return _Source()
 
@@ -322,6 +353,92 @@ def test_rolling_average_signal_reset_clears_accumulated_window():
     # continuing to grow from before reset().
     _wait_until(lambda: signal.read() is not None)
     assert signal.read()["samples_in_window"] == 1
+
+
+def test_rolling_average_signal_does_not_double_add_a_stale_source_reading():
+    # A source whose own `at` stops advancing (e.g. A02YYUWSensor's
+    # "raw" reading freezing during its mode-cycling dip into
+    # "processed") must not get counted into the window more than once
+    # for that one genuinely fresh reading, even though this signal
+    # polls on a fixed timer regardless of whether the source changed.
+    source = _FakeSourceSignal()
+    source.set(10, "t1")
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=5, source_signal=source)
+
+    _wait_until(lambda: signal.read() is not None)
+    time.sleep(0.05)  # several more poll cycles, source frozen at the same "t1" the whole time
+
+    result = signal.read()
+    assert result["samples_in_window"] == 1
+    assert result["value"] == 10
+
+
+def test_rolling_average_signal_still_refreshes_at_while_source_is_frozen():
+    # The signal's own `at` reflects when it last sampled, independent
+    # of whether that sample was new -- so it keeps ticking every poll
+    # even while samples_in_window stays put (see previous test).
+    source = _FakeSourceSignal()
+    source.set(10, "t1")
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=5, source_signal=source)
+    _wait_until(lambda: signal.read() is not None)
+
+    first_at = signal.read()["at"]
+    time.sleep(0.05)
+    result = signal.read()
+
+    assert result["at"] != first_at
+    assert result["samples_in_window"] == 1
+
+
+def test_rolling_average_signal_adds_again_once_the_source_advances():
+    source = _FakeSourceSignal()
+    source.set(10, "t1")
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=5, source_signal=source)
+    _wait_until(lambda: signal.read() is not None and signal.read()["samples_in_window"] == 1)
+
+    source.set(20, "t2")
+    _wait_until(lambda: signal.read()["samples_in_window"] == 2)
+
+    result = signal.read()
+    assert result["samples_in_window"] == 2
+    assert result["value"] == 15  # (10 + 20) / 2
+
+
+def test_rolling_average_signal_reset_does_not_leak_the_old_thread_when_the_join_times_out():
+    # Mirrors A02YYUWSensor's identical regression test (see
+    # test_a02yyuw_sensor.py): reset()'s bounded
+    # self._thread.join(timeout=...) can time out while the old
+    # thread's current source.read() call is still blocked; before the
+    # fix, _begin_polling() would still replace self._stop_event with a
+    # fresh Event for the new thread, so the old thread -- reading that
+    # attribute dynamically -- would never see the stop signal it was
+    # actually given and would leak forever.
+    release_read = threading.Event()
+    read_started = threading.Event()
+
+    class BlockingSource:
+        def read(self, options=None):
+            read_started.set()
+            release_read.wait(timeout=5)
+            return {"value": 10, "at": "t1"}
+
+    signal = RollingAverageSignal(window_size=5, poll_interval_ms=10, source_signal=BlockingSource())
+    old_thread = signal._thread
+    assert read_started.wait(timeout=1)  # background thread is now blocked mid-read
+
+    # reset()'s own join(timeout=poll_interval_ms/1000 + 1 = ~1.01s) times
+    # out here, since old_thread can't exit while still blocked -- reset()
+    # doesn't need to wait on any lock the old thread holds (unlike
+    # A02YYUWSensor's _hardware_lock), so it returns once the join itself
+    # times out.
+    signal.reset()
+
+    assert old_thread.is_alive()  # still blocked -- confirms the join really did time out
+    assert signal._thread is not old_thread  # reset() proceeded and started a genuinely new thread
+
+    release_read.set()  # let the blocked read() finally return
+    _wait_until(lambda: not old_thread.is_alive(), timeout_s=2)
+    assert not old_thread.is_alive()
 
 
 def test_exponential_smoothing_signal_first_reading_passes_through():
