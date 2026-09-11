@@ -640,6 +640,20 @@ These two numbers directly shape the polling and smoothing defaults:
   (`config/sensors.yaml`) defaults to `150` (comfortably above 100 ms) so
   that every sample fed into the filters is an independent look at the
   water surface.
+
+  The exact same mechanism can also show up a second way, independent of
+  `poll_interval_ms`: the raw/processed [mode-cycling](#rx-pin-raw-vs-processed-hardware-mode)
+  freezes `pond_main_sensor_raw`'s own cache for ~1.5s every
+  `MODE_CYCLE_INTERVAL_S` (10s, while the driver briefly dips into
+  "processed" mode and settles back). `rolling_average` samples on a
+  fixed once-per-second timer regardless of whether its source has
+  anything new (deliberately, unlike every other signal type -- see
+  `RollingAverageSignal`'s own docstring), so without a guard it would
+  re-add that one frozen reading into its window 1-2 extra times every
+  cycle. It does guard against this: `_poll_loop()` only feeds a sample
+  into the window when the source's own `at` has actually advanced
+  since the last tick, so a frozen source just gets its already-computed
+  average re-written with a fresh timestamp instead of counted twice.
 - **Ranging accuracy (±1 cm) sets a noise floor.** Any single reading
   can be off by up to 1 cm even with a perfectly still water surface, so
   don't expect (or chase) sub-centimeter precision out of
