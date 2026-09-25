@@ -22,6 +22,13 @@ sensors:
       mode_select_pin: 25
       power_pin: 24
 
+  - name: pond_secondary
+    type: a02yyuw
+    settings:
+      serial_port: /dev/ttyAMA3
+      mode_select_pin: 16
+      power_pin: 6
+
 # ==============================================================================
 # SIGNAL PROCESSING CHAINS
 # Generic fields: name, type, source, emit
@@ -85,5 +92,31 @@ signals:
       # real time span this averages over -- matched to Home
       # Assistant's scan_interval so rolling_avg represents a full
       # averaged interval per HA poll rather than a ~6s slice of it.
+      window_size: 60
+      poll_interval_ms: 1000
+
+  - name: pond_secondary_sensor_raw
+    type: sensor
+    source: pond_secondary
+    settings:
+      unit: cm
+  - name: pond_secondary_sensor_processed
+    type: sensor
+    source:
+      name: pond_secondary
+      options:
+        read_mode: processed
+    settings:
+      unit: cm
+  - name: pond_secondary_rolling_median5
+    type: rolling_median
+    source: pond_secondary_sensor_raw
+    emit: false
+    settings:
+      window_size: 5
+  - name: pond_secondary_rolling_avg
+    type: rolling_average
+    source: pond_secondary_rolling_median5
+    settings:
       window_size: 60
       poll_interval_ms: 1000
