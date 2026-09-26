@@ -119,7 +119,7 @@ pondpi/
 | `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
 | `sensors/etape_sensor/` | The Milone eTape driver, also a directory package — protocol layer (`ads1263.py`) split from the sensor itself, same split as `a02yyuw_sensor/`'s `read_sensor.py`. |
-| `sensors/etape_sensor/__init__.py` | `EtapeSensor` — polls one channel of a Waveshare ADS1263 ADC HAT over SPI (via `ads1263.py`) and applies a per-install linear calibration (`adc_channel`, `calibration_slope_cm_per_v`, `calibration_intercept_cm` — all required `settings:`, see [Sensor notes](#sensor-notes)) to turn its voltage into a depth. Reports one named reading, `"raw"` — no onboard smoothing the way the A02YYUW's "processed" mode has. `supports_reset` stays False — this hardware has no software-controllable power pin. |
+| `sensors/etape_sensor/__init__.py` | `EtapeSensor` — polls one channel of a Waveshare ADS1263 ADC HAT over SPI (via `ads1263.py`) and applies a per-install linear calibration (`adc_channel`, `calibration_slope_cm_per_v`, `calibration_intercept_cm` — all required `settings:`, see [Sensor notes](#sensor-notes)) to turn its voltage into a depth. Reports one named reading, `"raw"` — no onboard smoothing the way the A02YYUW's "processed" mode has. `extra_diag()` reports `last_voltage_v`, unrounded — see [Sensor notes](#sensor-notes). `supports_reset` stays False — this hardware has no software-controllable power pin. |
 | `sensors/etape_sensor/ads1263.py` | ADS1263 register-level protocol only: SPI/GPIO command framing, checksum validation, one single-ended `read_voltage(channel)` call, and `SimulatedADS1263` (a fake ADC for local dev). Ported from Waveshare's own demo — see its own module docstring. No calibration, no I/O loop, no knowledge of anything beyond one raw voltage. |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Constructs each sensor's driver *before* its signals, since a `reads_from_sensor` signal needs a live `Sensor` object to pull from. |
 | `signals/` | `Signal` base class (`base.py`) — owns the thread-safe pull-and-cache `read()` every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
@@ -847,6 +847,16 @@ calibration (and update these two settings) if the physical eTape unit,
 its wiring, or the ADC's own `reference_voltage` (below) ever changes —
 a stale calibration doesn't fail loudly, it just silently reports the
 wrong level.
+
+`EtapeSensor.extra_diag()` reports `last_voltage_v` -- the ADC's last raw
+voltage reading, *unrounded* (unlike `value`, which `server.py` always
+rounds to 1 decimal place for display) -- specifically so a fresh
+calibration doesn't need a correct one already in place just to get
+readable data: a 0.1cm-rounded depth, computed from whatever calibration
+happens to be configured (possibly still wrong), can't reliably be
+inverted back into a precise voltage for fitting a new line. `GET
+/diag`/`GET /sensors/pond_etape/diag` (or any other configured name)
+surface it directly.
 
 `EtapeSensor` applies the calibration as a pure linear transform and has
 no opinion of its own about which physical direction is which — the

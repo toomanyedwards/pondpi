@@ -73,6 +73,7 @@ class EtapeSensor(Sensor):
         self._poll_interval_s = poll_interval_s
         self._health_stale_threshold_s = health_stale_threshold_s
         self._last_readings = {}
+        self._last_voltage_v = None
 
         super().__init__()
         # Must be last: this starts a background thread that immediately
@@ -97,6 +98,23 @@ class EtapeSensor(Sensor):
             return False
         return (time.monotonic() - last) <= self._health_stale_threshold_s
 
+    def extra_diag(self):
+        """Overrides `Sensor.extra_diag()` (empty by default) to surface
+        the ADC's last raw voltage reading, unrounded -- unlike
+        `read()`'s `value` (which server.py's `_signal_output()` always
+        rounds to 1 decimal place for display), `GET /diag`/`GET
+        /sensors/<name>/diag` pass `extra_diag()`'s own dict straight
+        through with no rounding at all. That precision matters
+        specifically for calibrating a fresh physical unit: a
+        0.1cm-rounded depth reading (computed from whatever calibration
+        happens to be configured, possibly still a wrong placeholder --
+        see README) can't reliably be inverted back into a precise
+        voltage to fit a new line against; reading this field directly
+        sidesteps needing a correct calibration to already be in place
+        just to calibrate at all."""
+        with self._lock:
+            return {"last_voltage_v": self._last_voltage_v}
+
     def close(self):
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
@@ -120,6 +138,7 @@ class EtapeSensor(Sensor):
 
             with self._lock:
                 self._last_readings["raw"] = {"value": distance_mm, "at": datetime.now(timezone.utc).isoformat()}
+                self._last_voltage_v = voltage_v
             self._record_reading()
             time.sleep(self._poll_interval_s)
 

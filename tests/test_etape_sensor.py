@@ -117,6 +117,28 @@ def test_poll_loop_skips_a_sample_on_transient_read_error():
     assert sensor.last_reading("raw") is not None
 
 
+def test_extra_diag_is_empty_before_any_reading():
+    sensor = EtapeSensor(_never_ready_adc(), 9, 10.0, 0.0, poll_interval_s=1000)
+    time.sleep(0.02)
+    assert sensor.extra_diag() == {"last_voltage_v": None}
+
+
+def test_extra_diag_reports_last_raw_voltage_unrounded():
+    sensor = EtapeSensor(FakeADC(voltage=0.503172), 9, 10.0, 0.0, poll_interval_s=0.001)
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    assert sensor.extra_diag() == {"last_voltage_v": 0.503172}
+
+
+def test_extra_diag_voltage_updates_across_polls():
+    adc = FakeADC(voltage=1.0)
+    sensor = EtapeSensor(adc, 9, 10.0, 0.0, poll_interval_s=0.001)
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+
+    adc.voltage = 2.0
+    _wait_until(lambda: sensor.extra_diag()["last_voltage_v"] == 2.0)
+    assert sensor.extra_diag() == {"last_voltage_v": 2.0}
+
+
 def test_supports_reset_is_false():
     sensor = EtapeSensor(FakeADC(), 9, 10.0, 0.0, poll_interval_s=1000)
     assert sensor.supports_reset is False
