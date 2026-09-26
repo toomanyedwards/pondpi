@@ -12,6 +12,12 @@ dependencies = [
     "flask",
     "pyyaml",
     "gpiozero",
+    # Linux-only (its build needs linux/spi/spidev.h, which doesn't
+    # exist on macOS/Windows) -- only needed on the real Pi. Only ever
+    # imported from etape_sensor/__init__.py's create(), deferred inside
+    # its non-simulate branch, so its absence in a non-Linux dev venv
+    # never breaks importing the package or running the test suite.
+    "spidev; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]

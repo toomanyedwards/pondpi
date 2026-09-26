@@ -89,11 +89,14 @@ pondpi/
 │   ├── server.py            # entrypoint (installed as the `pondpi-server` command)
 │   ├── sensors/              # one Sensor subclass per <type>_sensor.py file or <type>_sensor/ dir
 │   │   ├── base.py            # Sensor interface
-│   │   └── a02yyuw_sensor/    # A02YYUW driver -- multi-file, so it's a package, not a single file
-│   │       ├── __init__.py      # A02YYUWSensor + create() -- the discovered entry point
-│   │       ├── read_sensor.py   # protocol/hardware layer: checksum, frame parsing, SimulatedSerial
-│   │       ├── sensor_mode.py   # drives the mode-select pin
-│   │       └── sensor_power.py  # drives the power supply pin
+│   │   ├── a02yyuw_sensor/    # A02YYUW driver -- multi-file, so it's a package, not a single file
+│   │   │   ├── __init__.py      # A02YYUWSensor + create() -- the discovered entry point
+│   │   │   ├── read_sensor.py   # protocol/hardware layer: checksum, frame parsing, SimulatedSerial
+│   │   │   ├── sensor_mode.py   # drives the mode-select pin
+│   │   │   └── sensor_power.py  # drives the power supply pin
+│   │   └── etape_sensor/      # Milone eTape driver -- also multi-file, protocol + sensor split
+│   │       ├── __init__.py      # EtapeSensor + create() -- the discovered entry point
+│   │       └── ads1263.py       # Waveshare ADS1263 ADC protocol layer + SimulatedADS1263
 │   ├── sensor_config.py
 │   ├── signals/               # one Signal subclass per <type>_signal.py file
 │   │   └── utils/             # RollingMedianFilter, RollingAverage -- generic building blocks,
@@ -115,6 +118,9 @@ pondpi/
 | `sensors/a02yyuw_sensor/read_sensor.py` | A02YYUW protocol/hardware layer only: checksum validation, frame parsing, a single instantaneous `read_frame(ser)` call, and `SimulatedSerial` (a fake serial source for local dev). No smoothing, no I/O loop, no knowledge of anything beyond one raw frame. |
 | `sensors/a02yyuw_sensor/sensor_mode.py` | Drives the RX/mode-select pin — see [Sensor notes](#sensor-notes). `GpioModeController` (real GPIO via `gpiozero`) and `NullModeController` (no-op, used for `--simulate` and in tests). |
 | `sensors/a02yyuw_sensor/sensor_power.py` | Drives the power supply pin for `POST /reset` — see [Sensor notes](#sensor-notes). `GpioPowerController` (real GPIO via `gpiozero`) and `NullPowerController` (no-op, used for `--simulate` and in tests). |
+| `sensors/etape_sensor/` | The Milone eTape driver, also a directory package — protocol layer (`ads1263.py`) split from the sensor itself, same split as `a02yyuw_sensor/`'s `read_sensor.py`. |
+| `sensors/etape_sensor/__init__.py` | `EtapeSensor` — polls one channel of a Waveshare ADS1263 ADC HAT over SPI (via `ads1263.py`) and applies a per-install linear calibration (`adc_channel`, `calibration_slope_cm_per_v`, `calibration_intercept_cm` — all required `settings:`, see [Sensor notes](#sensor-notes)) to turn its voltage into a depth. Reports one named reading, `"raw"` — no onboard smoothing the way the A02YYUW's "processed" mode has. `supports_reset` stays False — this hardware has no software-controllable power pin. |
+| `sensors/etape_sensor/ads1263.py` | ADS1263 register-level protocol only: SPI/GPIO command framing, checksum validation, one single-ended `read_voltage(channel)` call, and `SimulatedADS1263` (a fake ADC for local dev). Ported from Waveshare's own demo — see its own module docstring. No calibration, no I/O loop, no knowledge of anything beyond one raw voltage. |
 | `sensor_config.py` | `load_sensors()` — reads `config/sensors.yaml` into named sensors, each bundled with its driver instance and its own signal pipeline. Constructs each sensor's driver *before* its signals, since a `reads_from_sensor` signal needs a live `Sensor` object to pull from. |
 | `signals/` | `Signal` base class (`base.py`) — owns the thread-safe pull-and-cache `read()` every signal type shares, plus its built-in implementations, one per file, each named `<type>_signal.py` (`sensor_signal.py`, `rolling_median_signal.py`, `rolling_average_signal.py`, `exponential_smoothing_signal.py`) — see [Signal processing](#signal-processing). |
 | `signals/utils/` | `RollingMedianFilter` and `RollingAverage` — generic building blocks used internally by some `Signal` classes. Not signals themselves (they don't implement the `Signal` interface), so they live in a subpackage that dynamic discovery ignores — its name doesn't end in `_signal`. |
@@ -799,6 +805,77 @@ sensor while it's powered off. The public `read()` (a plain
 `last_reading()` cache lookup -- see [Signal processing](#signal-processing))
 never contends for this lock at all.
 
+### Milone eTape liquid-level sensor (SPI ADC, Waveshare ADS1263)
+
+Unlike the A02YYUW (UART, plugs directly into the Pi's serial pins), the
+[Milone eTape](https://milonetech.com/) is a resistive sensor: hydrostatic
+pressure from the water compresses its "printed electronics" strip,
+changing its resistance in inverse proportion to water level. This
+deployment uses it via Milone's own 0-3.3V "Resistance to Voltage
+Module" (factory-calibrated to output a linear 0-3.3V analog signal
+instead of raw resistance), read into the Pi through a [Waveshare
+High-Precision AD HAT](https://www.waveshare.com/wiki/High-Precision_AD_HAT)
+(ADS1263 chip, SPI, 10 single-ended channels) — the Pi has no built-in
+ADC, so this extra chip is required regardless of which eTape module is
+used.
+
+**Wiring**: the voltage module's 3-wire output (red = Vin, black = GND,
+white = Vout) connects white → any one of the ADC HAT's `IN0`-`IN9`
+screw terminals, black → `COM`, red → the Pi's own 3.3V pin. Which `INx`
+terminal is `adc_channel` in `config/sensors.yaml` (below). The ADC
+HAT's own SPI/GPIO pins (`ads1263.py`'s `RST_PIN`/`CS_PIN`/`DRDY_PIN` —
+BCM 18/22/17) are fixed by the HAT's own PCB layout, not configurable
+per-install, and don't conflict with any configured A02YYUW's own
+UART/GPIO pins — this whole ADC HAT is a separate peripheral sharing the
+same Pi. Only one `etape` sensor should be configured per physical ADC HAT —
+`EtapeSensor`/`ADS1263` assume they own the whole chip (its RST/CS/DRDY
+pins can't be shared between two independently-constructed driver
+instances); wiring a second eTape into another channel of the same HAT
+would need a shared-controller redesign this driver doesn't attempt.
+
+**Calibration**: `config/sensors.yaml`'s `settings:` for an `etape`
+sensor requires `adc_channel` (0-9) and a linear fit,
+`calibration_slope_cm_per_v` / `calibration_intercept_cm`, applied as
+`depth_cm = slope * voltage_v + intercept` (see `EtapeSensor`). Neither
+has a project-wide default the way the A02YYUW's fixed UART pins do —
+both describe one specific physical eTape unit's own installation (which
+channel it's wired to, and its own per-unit voltage-to-depth fit from
+bench calibration: submerge the sensor to several known depths, read
+`GET /diag`'s driver output — or the Waveshare demo script directly — at
+each, and fit a line), not something this driver can assume. Re-run the
+calibration (and update these two settings) if the physical eTape unit,
+its wiring, or the ADC's own `reference_voltage` (below) ever changes —
+a stale calibration doesn't fail loudly, it just silently reports the
+wrong level.
+
+`EtapeSensor` applies the calibration as a pure linear transform and has
+no opinion of its own about which physical direction is which — the
+canonical `Sensor.read()` contract ([Sensor drivers](#sensor-drivers))
+expects a result that *increases* as the water level *falls* (distance
+from the sensor's mount point down to the water surface), same
+convention the A02YYUW's raw distance already follows. A depth-style
+bench calibration (voltage rises as the tape submerges deeper, i.e.
+depth *increases* with rising water) is the *opposite* sign — pick
+`calibration_slope_cm_per_v`/`calibration_intercept_cm` accordingly
+(e.g. negate the fitted slope) so this sensor's output moves the same
+direction as `pond_main`'s/`pond_secondary`'s A02YYUW readings if
+signals from both are ever compared or combined.
+
+`reference_voltage` (`ads1263.py`'s `DEFAULT_REFERENCE_VOLTAGE`, 5.08V
+default) is a separate, optional `settings:` key — the ADC's own AVDD
+supply-rail voltage, used as its conversion reference in this HAT's
+default single-ended jumper mode (not a nominal 5.0V; measure it
+directly rather than assuming). Only override it if a specific board's
+rail is confirmed to measure differently than the default — since the
+calibration above is fit against voltages this value produces, changing
+it without recalibrating silently shifts every reading.
+
+Unlike the A02YYUW, this hardware has no software-controlled power
+supply (the voltage module's Vin is wired straight to the Pi's 3.3V
+rail, not a GPIO), so `supports_reset` stays False — there's no `POST
+/reset` support for this sensor type, and none of the A02YYUW's
+reset/power-cycle machinery applies here.
+
 ## Signal processing
 
 Signals live in their own top-level `signals:` list in
@@ -1059,7 +1136,7 @@ behavior.
 | `--sensors-config` | `config/sensors.yaml` (relative to the working directory) | Path to the YAML file configuring sensors and their level-processing pipelines. |
 | `--host` | `0.0.0.0` | Address the HTTP server binds to. |
 | `--port` | `8080` | Port the HTTP server binds to. |
-| `--simulate` | off | Build every configured sensor in simulated mode (e.g. the A02YYUW driver uses `SimulatedSerial` — synthetic sine-wave + noise data — and no-op mode/power controllers) instead of opening real hardware. For local development with no sensor hardware attached. |
+| `--simulate` | off | Build every configured sensor in simulated mode (e.g. the A02YYUW driver uses `SimulatedSerial` — synthetic sine-wave + noise data — and no-op mode/power controllers; the eTape driver uses `SimulatedADS1263`, the same sine-wave + noise approach at the voltage level) instead of opening real hardware. For local development with no sensor hardware attached. |
 
 How often a sensor is polled for a new reading is a per-sensor
 `poll_interval_ms` param in `config/sensors.yaml` now (defaulting to

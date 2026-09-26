@@ -4,6 +4,7 @@ import pytest
 
 from pondpi.sensor_config import load_sensors
 from pondpi.sensors.a02yyuw_sensor import A02YYUWSensor
+from pondpi.sensors.etape_sensor import EtapeSensor
 
 
 def write_yaml(tmp_path, content):
@@ -98,6 +99,40 @@ def test_loads_multiple_sensors(tmp_path):
     assert sensors["pond_main"]["driver"] is not sensors["rain_barrel"]["driver"]
     assert set(sensors["pond_main"]["signals"]) == {"pond_raw_sensor", "pond_raw"}
     assert set(sensors["rain_barrel"]["signals"]) == {"barrel_raw_sensor", "barrel_raw"}
+
+
+def test_loads_an_etape_sensor(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        """
+        sensors:
+          - name: pond_etape
+            type: etape
+            settings:
+              adc_channel: 9
+              calibration_slope_cm_per_v: 9.867
+              calibration_intercept_cm: -0.530
+        signals:
+          - name: raw
+            type: sensor
+            source:
+              name: pond_etape
+            settings:
+              unit: cm
+          - name: instantaneous_raw
+            type: rolling_average
+            source:
+              name: raw
+            settings:
+              window_size: 5
+              poll_interval_ms: 1000
+        """,
+    )
+
+    sensors = load_sensors(path, simulate=True)
+
+    assert set(sensors) == {"pond_etape"}
+    assert isinstance(sensors["pond_etape"]["driver"], EtapeSensor)
 
 
 def test_simulate_true_ignores_hardware_settings(tmp_path):
