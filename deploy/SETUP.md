@@ -15,6 +15,26 @@ sudo mkdir -p /opt/pondpi-staging-venv
 sudo chown "$USER":"$USER" /opt/pondpi-staging-venv
 ```
 
+### System packages `pip install -e .` needs to build from source
+
+Two of `pyproject.toml`'s dependencies are C extensions that need system
+headers/libraries present to build -- `pip` alone can't pull these in:
+
+```bash
+sudo apt-get install -y liblgpio-dev swig
+```
+
+(`liblgpio-dev` for `lgpio` -- gpiozero's pin factory backend, needed for
+*any* GPIO input device, not just output; `swig` to build `lgpio`'s
+bindings. `spidev`'s own build needs the kernel's SPI headers, which are
+already present on stock Raspberry Pi OS.) Without `liblgpio-dev`/`swig`,
+`pip install -e .` still succeeds (`lgpio` just fails to build) but
+gpiozero then silently falls back to its own broken legacy `NativeFactory`
+the moment anything constructs a `DigitalInputDevice` -- which doesn't
+fail until that code path actually runs, i.e. in production, not during
+install. Confirmed the hard way: this broke the live service before it
+was caught here.
+
 ## 2. systemd service
 
 ```bash
