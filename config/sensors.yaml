@@ -29,6 +29,21 @@ sensors:
       mode_select_pin: 16
       power_pin: 6
 
+  - name: pond_etape
+    type: etape
+    settings:
+      adc_channel: 0
+      # Bench-calibrated 2026-09-20 (container + tape measure, 3"-11"
+      # depth range) -- see README's "Milone eTape" section for the
+      # raw calibration points and residuals. This is the sensor's own
+      # voltage-to-*depth* fit (rises with water level), the opposite
+      # sign from this project's canonical distance-to-surface
+      # convention that pond_main/pond_secondary's raw readings follow
+      # -- re-sign (and re-calibrate if the wiring/unit changes) before
+      # comparing pond_etape_sensor_raw directly against either of them.
+      calibration_slope_cm_per_v: 9.867
+      calibration_intercept_cm: -0.530
+
 # ==============================================================================
 # SIGNAL PROCESSING CHAINS
 # Generic fields: name, type, source, emit
@@ -117,6 +132,24 @@ signals:
   - name: pond_secondary_rolling_avg
     type: rolling_average
     source: pond_secondary_rolling_median5
+    settings:
+      window_size: 60
+      poll_interval_ms: 1000
+
+  - name: pond_etape_sensor_raw
+    type: sensor
+    source: pond_etape
+    settings:
+      unit: cm
+  - name: pond_etape_rolling_median5
+    type: rolling_median
+    source: pond_etape_sensor_raw
+    emit: false
+    settings:
+      window_size: 5
+  - name: pond_etape_rolling_avg
+    type: rolling_average
+    source: pond_etape_rolling_median5
     settings:
       window_size: 60
       poll_interval_ms: 1000

@@ -1,12 +1,13 @@
 import pytest
 
 from pondpi.sensors import discover_sensor_types
-from pondpi.sensors.a02yyuw_sensor import create
+from pondpi.sensors.a02yyuw_sensor import create as create_a02yyuw
 from pondpi.sensors.base import Sensor
+from pondpi.sensors.etape_sensor import create as create_etape
 
 
 def test_discover_sensor_types_finds_all_built_ins():
-    assert discover_sensor_types() == {"a02yyuw": create}
+    assert discover_sensor_types() == {"a02yyuw": create_a02yyuw, "etape": create_etape}
 
 
 class _StubSensor(Sensor):
