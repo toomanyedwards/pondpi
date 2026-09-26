@@ -18,6 +18,21 @@ dependencies = [
     # its non-simulate branch, so its absence in a non-Linux dev venv
     # never breaks importing the package or running the test suite.
     "spidev; sys_platform == 'linux'",
+    # gpiozero (above) needs a real pin factory backend to do anything
+    # beyond plain digital output -- an *input* device (DigitalInputDevice,
+    # only used by etape_sensor's DRDY pin; every existing GPIO use before
+    # it was output-only and never hit this) configures edge-detection at
+    # construction time regardless of whether the caller ever uses it,
+    # which needs a working backend to succeed at all. Without one
+    # installed, gpiozero silently falls back to its own legacy
+    # NativeFactory (sysfs GPIO), which errors outright on this Pi's
+    # current kernel (OSError: [Errno 22] Invalid argument on pin
+    # export) -- confirmed the hard way in production (see PR history).
+    # lgpio is the modern backend for the gpiochip character-device
+    # interface Raspberry Pi OS Bookworm+ uses. Linux-only, same as
+    # spidev above -- its C extension needs liblgpio-dev's headers to
+    # build, which isn't available off Linux either.
+    "lgpio; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
