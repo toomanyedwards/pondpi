@@ -33,19 +33,25 @@ sensors:
     type: etape
     settings:
       adc_channel: 0
-      # PLACEHOLDER -- carried over from an earlier bench calibration
-      # (2026-09-20, container + tape measure, 3"-11" depth range; see
-      # README's "Milone eTape" section for the raw points/residuals),
-      # NOT yet re-done against the currently-connected physical unit
-      # (nicknamed met5_1, a 5" eTape). Don't trust pond_etape_sensor_raw's
-      # cm value as accurate until met5_1 gets its own calibration.
+      # met5_1's own calibration (2026-09-27), fit against its actual
+      # ADC voltage via EtapeSensor.extra_diag()'s last_voltage_v --
+      # preliminary, only 3 points so far (depth_cm, voltage_v):
+      # (5.0, 0.902), (6.096, 1.326), (7.112, 1.645), residuals under
+      # 0.08cm. Narrower range and fewer points than the original
+      # 6-point bench calibration -- worth widening with more points
+      # later, especially near the low/high ends of met5_1's actual
+      # working range. Superseded a placeholder value carried over from
+      # a different, earlier-calibrated unit (see README's "Milone
+      # eTape" section); also required fixing a miswired M12 extension
+      # cable connector along the way (see memory/git history) --
+      # readings before that fix are not valid and were discarded.
       # This is also the sensor's own voltage-to-*depth* fit (rises with
       # water level), the opposite sign from this project's canonical
       # distance-to-surface convention that pond_main/pond_secondary's
       # raw readings follow -- re-sign (in addition to re-calibrating)
       # before comparing pond_etape_sensor_raw directly against either.
-      calibration_slope_cm_per_v: 9.867
-      calibration_intercept_cm: -0.530
+      calibration_slope_cm_per_v: 2.829
+      calibration_intercept_cm: 2.417
 
 # ==============================================================================
 # SIGNAL PROCESSING CHAINS
