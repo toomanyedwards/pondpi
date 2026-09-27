@@ -53,6 +53,26 @@ sensors:
       calibration_slope_cm_per_v: 2.829
       calibration_intercept_cm: 2.417
 
+  - name: pond_etape_12
+    type: etape
+    settings:
+      adc_channel: 1
+      # met12_1's own calibration (2026-09-27), a 12" eTape wired on ADC
+      # channel 1 ("a1"/IO1), sharing the same ADS1263 HAT as met5_1
+      # above (see this driver's own _get_or_build_shared_adc() for why
+      # that's safe now). Fit against 5 points via
+      # EtapeSensor.extra_diag()'s last_voltage_v, depth_cm/voltage_v:
+      # (7.874, 0.891), (17.018, 1.795), (23.622, 2.522), (25.908,
+      # 2.722), (26.924, 2.809) -- least-squares over all 5 gave
+      # residuals up to 0.31cm, with the 23.622cm point as the clear
+      # outlier (+0.31cm). Refitting the other 4 (excluding that point)
+      # tightened this to a 0.15cm max residual and was confirmed
+      # against live readings as "spot on" -- that's the fit below, not
+      # the full-5-point one. Only calibrated across 3.1-10.6in of this
+      # tape's 12in range; the 10.6-12in top end is untested.
+      calibration_slope_cm_per_v: 9.8727
+      calibration_intercept_cm: -0.8519
+
 # ==============================================================================
 # SIGNAL PROCESSING CHAINS
 # Generic fields: name, type, source, emit
@@ -159,6 +179,24 @@ signals:
   - name: pond_etape_rolling_avg
     type: rolling_average
     source: pond_etape_rolling_median5
+    settings:
+      window_size: 60
+      poll_interval_ms: 1000
+
+  - name: pond_etape_12_sensor_raw
+    type: sensor
+    source: pond_etape_12
+    settings:
+      unit: cm
+  - name: pond_etape_12_rolling_median5
+    type: rolling_median
+    source: pond_etape_12_sensor_raw
+    emit: false
+    settings:
+      window_size: 5
+  - name: pond_etape_12_rolling_avg
+    type: rolling_average
+    source: pond_etape_12_rolling_median5
     settings:
       window_size: 60
       poll_interval_ms: 1000
