@@ -19,6 +19,14 @@ DEFAULT_POLL_INTERVAL_S = 0.5
 # of one slow poll.
 HEALTH_STALE_THRESHOLD_S = 3.0
 
+# The real ADS1263 hardware path's shared state -- see
+# `_get_or_build_shared_adc()` below for why this exists. Only ever
+# populated under `simulate=False`; `create()`'s simulated path never
+# touches these.
+_shared_adc = None
+_shared_adc_reference_voltage = None
+_shared_adc_lock = threading.Lock()
+
 
 class EtapeSensor(Sensor):
     """Driver for a Milone eTape liquid-level sensor's 0-3.3V
@@ -116,6 +124,12 @@ class EtapeSensor(Sensor):
             return {"last_voltage_v": self._last_voltage_v}
 
     def close(self):
+        """Stops this sensor's own poll thread, then closes `self._adc`
+        -- safe even when another `EtapeSensor` shares the same real
+        `ADS1263` (see `_get_or_build_shared_adc()`), since `ADS1263.
+        close()` is itself idempotent and only actually tears down the
+        SPI/GPIO handles on the first call, no matter how many sensors
+        call this."""
         self._stop_event.set()
         self._thread.join(timeout=self._poll_interval_s + 1)
         self._adc.close()
@@ -148,13 +162,76 @@ class EtapeSensor(Sensor):
         self._thread.start()
 
 
+def _build_real_adc(reference_voltage):
+    """Constructs one real `ads1263.ADS1263` against the Waveshare HAT's
+    fixed SPI bus and RST/CS/DRDY pins. Only ever called (at most once
+    per process) from `_get_or_build_shared_adc()` below -- never call
+    this directly from `create()`."""
+    import spidev
+    from gpiozero import DigitalInputDevice, DigitalOutputDevice
+
+    spi = spidev.SpiDev()
+    spi.open(0, 0)
+    reset_pin = DigitalOutputDevice(ads1263.RST_PIN, initial_value=True)
+    cs_pin = DigitalOutputDevice(ads1263.CS_PIN, initial_value=True)
+    drdy_pin = DigitalInputDevice(ads1263.DRDY_PIN, pull_up=True)
+    return ads1263.ADS1263(spi, reset_pin, cs_pin, drdy_pin, reference_voltage=reference_voltage)
+
+
+def _get_or_build_shared_adc(reference_voltage, build_adc=_build_real_adc):
+    """Every real (non-simulated) `etape` sensor config entry reads a
+    different single-ended channel of the *same* physical ADS1263 HAT --
+    there's only one per Pi, wired to one SPI bus and one set of
+    RST/CS/DRDY pins (see `ads1263.py`'s own docstring: "Owns the whole
+    chip ... only one instance should exist per physical HAT"). Before
+    this function existed, `create()` built a fresh `ADS1263` (its own
+    SPI handle + GPIO pin objects) on every call, so a second `etape`
+    entry always failed with `gpiozero.exc.GPIOPinInUse` fighting the
+    first over the same pins. This lazily builds ONE shared instance the
+    first time any real `etape` entry needs it, and hands that same
+    object to every entry after -- module-level state deliberately,
+    since it mirrors the actual physical hardware: there is exactly one
+    ADC chip, at most once per process.
+
+    `build_adc` is injectable (defaults to `_build_real_adc`, which
+    touches real SPI/GPIO) purely so this caching/validation logic can
+    be unit-tested without real hardware -- same spirit as `ads1263.py`
+    taking `spi`/pin objects as constructor args instead of opening them
+    itself. Every `etape` entry sharing this HAT must agree on
+    `reference_voltage` (it's a property of the physical board, not of
+    one sensor's install) -- a conflicting value raises rather than
+    silently using whichever entry happened to load first.
+
+    Simulated sensors (`create(..., simulate=True)`) never call this --
+    each gets its own independent `SimulatedADS1263()`, since there's no
+    real GPIO to contend over and existing tests rely on that
+    independence."""
+    global _shared_adc, _shared_adc_reference_voltage
+    with _shared_adc_lock:
+        if _shared_adc is None:
+            _shared_adc = build_adc(reference_voltage)
+            _shared_adc_reference_voltage = reference_voltage
+        elif reference_voltage != _shared_adc_reference_voltage:
+            raise ValueError(
+                f"etape: reference_voltage {reference_voltage!r} conflicts with "
+                f"{_shared_adc_reference_voltage!r} already in use by another etape "
+                "sensor on this ADC HAT -- every etape entry shares one physical "
+                "chip, so they must all agree on reference_voltage (or leave it "
+                "unset on every entry to use the default)"
+            )
+        return _shared_adc
+
+
 def create(params, simulate):
     """Builds an EtapeSensor from a sensor config entry's `params` dict.
 
     Recognized params:
       adc_channel (required, integer 0-9) -- which single-ended channel
       of the Waveshare ADS1263 ADC HAT this eTape's Resistance-to-Voltage
-      module's Vout is wired to.
+      module's Vout is wired to. Multiple `etape` entries (different
+      physical eTapes wired to different channels of the same HAT) are
+      supported -- see `_get_or_build_shared_adc()` for how they share
+      one underlying ADC handle.
       calibration_slope_cm_per_v, calibration_intercept_cm (both
       required) -- this specific physical eTape unit's own linear
       voltage-to-depth fit (`depth_cm = slope * voltage_v + intercept`),
@@ -162,7 +239,8 @@ def create(params, simulate):
       reference_voltage (default ads1263.DEFAULT_REFERENCE_VOLTAGE) --
       the ADC's own AVDD reference rail voltage (see ads1263.py); only
       needs overriding if a board is remeasured differently than the
-      one the default was measured against.
+      one the default was measured against -- and must be the same
+      across every entry sharing one HAT.
       poll_interval_ms (default 500) -- how often this driver's own
       background thread reads the ADC.
     """
@@ -184,14 +262,6 @@ def create(params, simulate):
     if simulate:
         adc = ads1263.SimulatedADS1263()
     else:
-        import spidev
-        from gpiozero import DigitalInputDevice, DigitalOutputDevice
-
-        spi = spidev.SpiDev()
-        spi.open(0, 0)
-        reset_pin = DigitalOutputDevice(ads1263.RST_PIN, initial_value=True)
-        cs_pin = DigitalOutputDevice(ads1263.CS_PIN, initial_value=True)
-        drdy_pin = DigitalInputDevice(ads1263.DRDY_PIN, pull_up=True)
-        adc = ads1263.ADS1263(spi, reset_pin, cs_pin, drdy_pin, reference_voltage=reference_voltage)
+        adc = _get_or_build_shared_adc(reference_voltage)
 
     return EtapeSensor(adc, adc_channel, slope, intercept, poll_interval_s=poll_interval_s)

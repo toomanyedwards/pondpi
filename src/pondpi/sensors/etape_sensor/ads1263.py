@@ -114,6 +114,7 @@ class ADS1263:
         self._cs_pin = cs_pin
         self._drdy_pin = drdy_pin
         self._reference_voltage = reference_voltage
+        self._closed = False
 
         self._spi.max_speed_hz = 2_000_000
         self._spi.mode = 0b01
@@ -148,6 +149,14 @@ class ADS1263:
         return self._raw_to_voltage(raw)
 
     def close(self):
+        """Idempotent -- safe to call more than once. Multiple
+        `EtapeSensor`s can share one `ADS1263` (see `etape_sensor/
+        __init__.py`'s `_get_or_build_shared_adc()`), each calling
+        `close()` independently on process shutdown; without this guard
+        the second call would double-close the same SPI handle/pins."""
+        if self._closed:
+            return
+        self._closed = True
         self._spi.close()
         self._reset_pin.close()
         self._cs_pin.close()

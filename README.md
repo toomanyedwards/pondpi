@@ -827,11 +827,17 @@ HAT's own SPI/GPIO pins (`ads1263.py`'s `RST_PIN`/`CS_PIN`/`DRDY_PIN` —
 BCM 18/22/17) are fixed by the HAT's own PCB layout, not configurable
 per-install, and don't conflict with any configured A02YYUW's own
 UART/GPIO pins — this whole ADC HAT is a separate peripheral sharing the
-same Pi. Only one `etape` sensor should be configured per physical ADC HAT —
-`EtapeSensor`/`ADS1263` assume they own the whole chip (its RST/CS/DRDY
-pins can't be shared between two independently-constructed driver
-instances); wiring a second eTape into another channel of the same HAT
-would need a shared-controller redesign this driver doesn't attempt.
+same Pi. Multiple `etape` sensors *can* be configured against the same
+physical ADC HAT (different eTapes wired to different `INx` channels) —
+`etape_sensor/__init__.py`'s `_get_or_build_shared_adc()` lazily builds
+one shared `ADS1263` (one SPI handle, one set of RST/CS/DRDY pin
+objects) the first time any `etape` entry needs it and hands that same
+object to every entry after, rather than each entry's own `create()`
+call independently opening the pins (which used to fail the second
+entry with `gpiozero.exc.GPIOPinInUse`). Every entry sharing one HAT
+must agree on `reference_voltage` (below) — it's a property of the
+physical board, not of one sensor's install — a conflicting value raises
+at startup rather than silently using whichever entry loaded first.
 
 **Calibration**: `config/sensors.yaml`'s `settings:` for an `etape`
 sensor requires `adc_channel` (0-9) and a linear fit,
