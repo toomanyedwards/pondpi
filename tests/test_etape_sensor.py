@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from pondpi.sensors import etape_sensor
 from pondpi.sensors.etape_sensor import EtapeSensor, ads1263, create
 
 
@@ -228,3 +229,62 @@ def test_create_uses_the_configured_adc_channel():
         assert sensor._adc_channel == 6
     finally:
         sensor.close()
+
+
+# -- _get_or_build_shared_adc() (real hardware path) -------------------
+#
+# create()'s simulated path (exercised above) never touches this --
+# every simulate=True call still gets its own independent
+# SimulatedADS1263(), same as before this function existed. These tests
+# cover the real-hardware path's sharing/conflict-detection logic in
+# isolation, via an injectable `build_adc` -- same spirit as ads1263.py
+# taking spi/pin objects instead of opening them itself, since the real
+# `_build_real_adc()` touches actual spidev/gpiozero hardware this
+# environment doesn't have. Each test resets the module-level cache via
+# monkeypatch so they don't leak state into each other or into whichever
+# test runs next.
+
+
+class _FakeSharedAdc:
+    """Distinguishable stand-in for whatever a real ADS1263 build would
+    return -- these tests only care about object identity and how many
+    times the builder was called, never about ADC behavior itself."""
+
+
+def test_get_or_build_shared_adc_builds_once_and_reuses(monkeypatch):
+    monkeypatch.setattr(etape_sensor, "_shared_adc", None)
+    monkeypatch.setattr(etape_sensor, "_shared_adc_reference_voltage", None)
+
+    built = []
+
+    def fake_build(reference_voltage):
+        built.append(reference_voltage)
+        return _FakeSharedAdc()
+
+    first = etape_sensor._get_or_build_shared_adc(5.08, build_adc=fake_build)
+    second = etape_sensor._get_or_build_shared_adc(5.08, build_adc=fake_build)
+
+    assert first is second
+    assert built == [5.08]  # the builder only ever ran once
+
+
+def test_get_or_build_shared_adc_rejects_conflicting_reference_voltage(monkeypatch):
+    monkeypatch.setattr(etape_sensor, "_shared_adc", None)
+    monkeypatch.setattr(etape_sensor, "_shared_adc_reference_voltage", None)
+
+    etape_sensor._get_or_build_shared_adc(5.08, build_adc=lambda rv: _FakeSharedAdc())
+
+    with pytest.raises(ValueError, match="reference_voltage"):
+        etape_sensor._get_or_build_shared_adc(5.0, build_adc=lambda rv: _FakeSharedAdc())
+
+
+def test_get_or_build_shared_adc_same_reference_voltage_does_not_raise(monkeypatch):
+    monkeypatch.setattr(etape_sensor, "_shared_adc", None)
+    monkeypatch.setattr(etape_sensor, "_shared_adc_reference_voltage", None)
+
+    first = etape_sensor._get_or_build_shared_adc(5.08, build_adc=lambda rv: _FakeSharedAdc())
+    # A second entry configuring the same reference_voltage is exactly
+    # the expected multi-etape-on-one-HAT case, not a conflict.
+    second = etape_sensor._get_or_build_shared_adc(5.08, build_adc=lambda rv: _FakeSharedAdc())
+
+    assert first is second

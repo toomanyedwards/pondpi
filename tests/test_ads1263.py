@@ -12,6 +12,7 @@ class FakePin:
         self.calls = []
         self.value = 0
         self.closed = False
+        self.close_calls = 0
 
     def on(self):
         self.calls.append("on")
@@ -21,6 +22,7 @@ class FakePin:
 
     def close(self):
         self.closed = True
+        self.close_calls += 1
 
 
 class FakeSPI:
@@ -36,6 +38,7 @@ class FakeSPI:
         self.writes = []
         self._responses = list(responses or [])
         self.closed = False
+        self.close_calls = 0
 
     def writebytes(self, data):
         self.writes.append(list(data))
@@ -49,6 +52,7 @@ class FakeSPI:
 
     def close(self):
         self.closed = True
+        self.close_calls += 1
 
 
 def _checksum_byte(value):
@@ -195,6 +199,20 @@ def test_close_closes_spi_and_every_pin():
     assert reset_pin.closed
     assert cs_pin.closed
     assert drdy_pin.closed
+
+
+def test_close_is_idempotent():
+    # Multiple EtapeSensors can share one real ADS1263 (see
+    # etape_sensor/__init__.py's _get_or_build_shared_adc()), each
+    # calling close() independently on shutdown -- the second call must
+    # not double-close the same spi/pin objects.
+    adc, spi, reset_pin, cs_pin, drdy_pin = _make_adc(0)
+    adc.close()
+    adc.close()
+    assert spi.close_calls == 1
+    assert reset_pin.close_calls == 1
+    assert cs_pin.close_calls == 1
+    assert drdy_pin.close_calls == 1
 
 
 def test_checksum_ok_matches_known_good_value():
