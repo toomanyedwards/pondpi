@@ -15,19 +15,23 @@
 # individually at /sensors/<name>/diag and /sensors/<name>/reset.
 # ==============================================================================
 sensors:
-  - name: pond_main
-    type: a02yyuw
-    settings:
-      serial_port: /dev/serial0
-      mode_select_pin: 25
-      power_pin: 24
+  # pond_main and pond_secondary (both a02yyuw ultrasonic) are commented
+  # out -- neither has a physical sensor attached (2026-09-27). Their
+  # matching signal blocks below are commented out too. Uncomment both
+  # (and reconnect the hardware) to bring one back.
+  # - name: pond_main
+  #   type: a02yyuw
+  #   settings:
+  #     serial_port: /dev/serial0
+  #     mode_select_pin: 25
+  #     power_pin: 24
 
-  - name: pond_secondary
-    type: a02yyuw
-    settings:
-      serial_port: /dev/ttyAMA3
-      mode_select_pin: 16
-      power_pin: 6
+  # - name: pond_secondary
+  #   type: a02yyuw
+  #   settings:
+  #     serial_port: /dev/ttyAMA3
+  #     mode_select_pin: 16
+  #     power_pin: 6
 
   - name: pond_etape
     type: etape
@@ -53,25 +57,30 @@ sensors:
       calibration_slope_cm_per_v: 2.829
       calibration_intercept_cm: 2.417
 
-  - name: pond_etape_12
-    type: etape
-    settings:
-      adc_channel: 1
-      # met12_1's own calibration (2026-09-27), a 12" eTape wired on ADC
-      # channel 1 ("a1"/IO1), sharing the same ADS1263 HAT as met5_1
-      # above (see this driver's own _get_or_build_shared_adc() for why
-      # that's safe now). Fit against 5 points via
-      # EtapeSensor.extra_diag()'s last_voltage_v, depth_cm/voltage_v:
-      # (7.874, 0.891), (17.018, 1.795), (23.622, 2.522), (25.908,
-      # 2.722), (26.924, 2.809) -- least-squares over all 5 gave
-      # residuals up to 0.31cm, with the 23.622cm point as the clear
-      # outlier (+0.31cm). Refitting the other 4 (excluding that point)
-      # tightened this to a 0.15cm max residual and was confirmed
-      # against live readings as "spot on" -- that's the fit below, not
-      # the full-5-point one. Only calibrated across 3.1-10.6in of this
-      # tape's 12in range; the 10.6-12in top end is untested.
-      calibration_slope_cm_per_v: 9.8727
-      calibration_intercept_cm: -0.8519
+  # pond_etape_12 (met12_1, the 12" unit) is commented out -- physically
+  # disconnected from ADC channel 1 as of 2026-09-27 (only met5_1 stays
+  # connected for now). Its matching signal block below is commented out
+  # too, and its two HA REST sensors are disabled (not deleted). Bring
+  # all three back together if this unit is reconnected.
+  # - name: pond_etape_12
+  #   type: etape
+  #   settings:
+  #     adc_channel: 1
+  #     # met12_1's own calibration (2026-09-27), a 12" eTape wired on ADC
+  #     # channel 1 ("a1"/IO1), sharing the same ADS1263 HAT as met5_1
+  #     # above (see this driver's own _get_or_build_shared_adc() for why
+  #     # that's safe now). Fit against 5 points via
+  #     # EtapeSensor.extra_diag()'s last_voltage_v, depth_cm/voltage_v:
+  #     # (7.874, 0.891), (17.018, 1.795), (23.622, 2.522), (25.908,
+  #     # 2.722), (26.924, 2.809) -- least-squares over all 5 gave
+  #     # residuals up to 0.31cm, with the 23.622cm point as the clear
+  #     # outlier (+0.31cm). Refitting the other 4 (excluding that point)
+  #     # tightened this to a 0.15cm max residual and was confirmed
+  #     # against live readings as "spot on" -- that's the fit below, not
+  #     # the full-5-point one. Only calibrated across 3.1-10.6in of this
+  #     # tape's 12in range; the 10.6-12in top end is untested.
+  #     calibration_slope_cm_per_v: 9.8727
+  #     calibration_intercept_cm: -0.8519
 
 # ==============================================================================
 # SIGNAL PROCESSING CHAINS
@@ -107,63 +116,63 @@ sensors:
 # type's own implementation, not something marked in this file.
 # ==============================================================================
 signals:
-  - name: pond_main_sensor_raw
-    type: sensor
-    source: pond_main
-    settings:
-      unit: cm
-  - name: pond_main_sensor_processed
-    type: sensor
-    source:
-      name: pond_main
-      options:
-        read_mode: processed
-    settings:
-      unit: cm
-  - name: rolling_median5
-    type: rolling_median
-    source: pond_main_sensor_raw
-    emit: false
-    settings:
-      window_size: 5
-  - name: rolling_avg
-    type: rolling_average
-    source: rolling_median5
-    settings:
-      # Its own dedicated thread admits one sample per poll_interval_ms
-      # regardless of how often the sensor itself is actually polled,
-      # so window_size * poll_interval_ms (60 * 1000ms = 60s) is the
-      # real time span this averages over -- matched to Home
-      # Assistant's scan_interval so rolling_avg represents a full
-      # averaged interval per HA poll rather than a ~6s slice of it.
-      window_size: 60
-      poll_interval_ms: 1000
+  # - name: pond_main_sensor_raw
+  #   type: sensor
+  #   source: pond_main
+  #   settings:
+  #     unit: cm
+  # - name: pond_main_sensor_processed
+  #   type: sensor
+  #   source:
+  #     name: pond_main
+  #     options:
+  #       read_mode: processed
+  #   settings:
+  #     unit: cm
+  # - name: rolling_median5
+  #   type: rolling_median
+  #   source: pond_main_sensor_raw
+  #   emit: false
+  #   settings:
+  #     window_size: 5
+  # - name: rolling_avg
+  #   type: rolling_average
+  #   source: rolling_median5
+  #   settings:
+  #     # Its own dedicated thread admits one sample per poll_interval_ms
+  #     # regardless of how often the sensor itself is actually polled,
+  #     # so window_size * poll_interval_ms (60 * 1000ms = 60s) is the
+  #     # real time span this averages over -- matched to Home
+  #     # Assistant's scan_interval so rolling_avg represents a full
+  #     # averaged interval per HA poll rather than a ~6s slice of it.
+  #     window_size: 60
+  #     poll_interval_ms: 1000
 
-  - name: pond_secondary_sensor_raw
-    type: sensor
-    source: pond_secondary
-    settings:
-      unit: cm
-  - name: pond_secondary_sensor_processed
-    type: sensor
-    source:
-      name: pond_secondary
-      options:
-        read_mode: processed
-    settings:
-      unit: cm
-  - name: pond_secondary_rolling_median5
-    type: rolling_median
-    source: pond_secondary_sensor_raw
-    emit: false
-    settings:
-      window_size: 5
-  - name: pond_secondary_rolling_avg
-    type: rolling_average
-    source: pond_secondary_rolling_median5
-    settings:
-      window_size: 60
-      poll_interval_ms: 1000
+  # - name: pond_secondary_sensor_raw
+  #   type: sensor
+  #   source: pond_secondary
+  #   settings:
+  #     unit: cm
+  # - name: pond_secondary_sensor_processed
+  #   type: sensor
+  #   source:
+  #     name: pond_secondary
+  #     options:
+  #       read_mode: processed
+  #   settings:
+  #     unit: cm
+  # - name: pond_secondary_rolling_median5
+  #   type: rolling_median
+  #   source: pond_secondary_sensor_raw
+  #   emit: false
+  #   settings:
+  #     window_size: 5
+  # - name: pond_secondary_rolling_avg
+  #   type: rolling_average
+  #   source: pond_secondary_rolling_median5
+  #   settings:
+  #     window_size: 60
+  #     poll_interval_ms: 1000
 
   - name: pond_etape_sensor_raw
     type: sensor
@@ -183,20 +192,20 @@ signals:
       window_size: 60
       poll_interval_ms: 1000
 
-  - name: pond_etape_12_sensor_raw
-    type: sensor
-    source: pond_etape_12
-    settings:
-      unit: cm
-  - name: pond_etape_12_rolling_median5
-    type: rolling_median
-    source: pond_etape_12_sensor_raw
-    emit: false
-    settings:
-      window_size: 5
-  - name: pond_etape_12_rolling_avg
-    type: rolling_average
-    source: pond_etape_12_rolling_median5
-    settings:
-      window_size: 60
-      poll_interval_ms: 1000
+  # - name: pond_etape_12_sensor_raw
+  #   type: sensor
+  #   source: pond_etape_12
+  #   settings:
+  #     unit: cm
+  # - name: pond_etape_12_rolling_median5
+  #   type: rolling_median
+  #   source: pond_etape_12_sensor_raw
+  #   emit: false
+  #   settings:
+  #     window_size: 5
+  # - name: pond_etape_12_rolling_avg
+  #   type: rolling_average
+  #   source: pond_etape_12_rolling_median5
+  #   settings:
+  #     window_size: 60
+  #     poll_interval_ms: 1000
