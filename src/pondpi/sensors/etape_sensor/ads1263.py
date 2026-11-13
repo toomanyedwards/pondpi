@@ -204,6 +204,15 @@ class ADS1263:
         if actual != data:
             raise RuntimeError(f"ads1263: register 0x{reg:02x} write failed (wrote 0x{data:02x}, read back 0x{actual:02x})")
 
+    @property
+    def reference_voltage(self):
+        """The conversion reference (volts) this chip was built with --
+        also the ceiling of any single-ended reading it can return: a
+        saturated/garbage conversion comes back as exactly this value
+        (raw code 0x7FFFFFFF), which `EtapeSensor` uses to recognise and
+        drop such samples."""
+        return self._reference_voltage
+
     def _select_channel(self, channel):
         # Single-ended: measures AIN<channel> against AINCOM (tied to
         # this HAT's own ground in its default single-ended jumper mode
@@ -280,6 +289,10 @@ class SimulatedADS1263:
         self._period_s = period_s
         self._noise_v = noise_v
         self._start = time.monotonic()
+
+    @property
+    def reference_voltage(self):
+        return DEFAULT_REFERENCE_VOLTAGE
 
     def read_voltage(self, channel):
         elapsed = time.monotonic() - self._start

@@ -121,13 +121,13 @@ def test_poll_loop_skips_a_sample_on_transient_read_error():
 def test_extra_diag_is_empty_before_any_reading():
     sensor = EtapeSensor(_never_ready_adc(), 9, 10.0, 0.0, poll_interval_s=1000)
     time.sleep(0.02)
-    assert sensor.extra_diag() == {"last_voltage_v": None}
+    assert sensor.extra_diag()["last_voltage_v"] is None
 
 
 def test_extra_diag_reports_last_raw_voltage_unrounded():
     sensor = EtapeSensor(FakeADC(voltage=0.503172), 9, 10.0, 0.0, poll_interval_s=0.001)
     _wait_until(lambda: sensor.last_reading("raw") is not None)
-    assert sensor.extra_diag() == {"last_voltage_v": 0.503172}
+    assert sensor.extra_diag()["last_voltage_v"] == 0.503172
 
 
 def test_extra_diag_voltage_updates_across_polls():
@@ -137,7 +137,72 @@ def test_extra_diag_voltage_updates_across_polls():
 
     adc.voltage = 2.0
     _wait_until(lambda: sensor.extra_diag()["last_voltage_v"] == 2.0)
-    assert sensor.extra_diag() == {"last_voltage_v": 2.0}
+    assert sensor.extra_diag()["last_voltage_v"] == 2.0
+
+
+def test_saturated_sample_is_rejected_and_previous_reading_kept():
+    # A reading right at the ADC reference is a saturated/garbage
+    # conversion, not water -- drop it, keep the last good reading.
+    adc = FakeADC(voltage=1.0)
+    sensor = EtapeSensor(adc, 9, 10.0, 0.0, poll_interval_s=0.001, max_plausible_voltage_v=4.9)
+    _wait_until(lambda: sensor.last_reading("raw") is not None)
+    good = sensor.last_reading("raw")
+    assert good["value"] == pytest.approx(100.0)
+
+    adc.voltage = 5.08
+    _wait_until(lambda: sensor.extra_diag()["rejected_samples"] >= 3)
+    assert sensor.last_reading("raw") == good
+    assert sensor.extra_diag()["last_voltage_v"] == 1.0
+    assert sensor.extra_diag()["last_rejected_voltage_v"] == 5.08
+    assert sensor.extra_diag()["last_rejected_at"] is not None
+
+    # Resumes normally once the ADC returns plausible values again.
+    adc.voltage = 2.0
+    _wait_until(lambda: sensor.extra_diag()["last_voltage_v"] == 2.0)
+    assert sensor.last_reading("raw")["value"] == pytest.approx(200.0)
+
+
+def test_sustained_rejections_make_check_health_stale():
+    adc = FakeADC(voltage=5.08)
+    sensor = EtapeSensor(
+        adc, 9, 10.0, 0.0, poll_interval_s=0.001, health_stale_threshold_s=0.05, max_plausible_voltage_v=4.9
+    )
+    time.sleep(0.03)
+    assert sensor.last_reading("raw") is None
+    assert sensor.check_health() is False
+    assert sensor.extra_diag()["rejected_samples"] > 0
+
+
+def test_nan_sample_is_rejected():
+    adc = FakeADC(voltage=float("nan"))
+    sensor = EtapeSensor(adc, 9, 10.0, 0.0, poll_interval_s=0.001)
+    _wait_until(lambda: sensor.extra_diag()["rejected_samples"] >= 1)
+    assert sensor.last_reading("raw") is None
+
+
+def test_default_plausibility_ceiling_comes_from_the_adc_reference():
+    class RefADC(FakeADC):
+        reference_voltage = 4.0
+
+    sensor = EtapeSensor(RefADC(voltage=1.0), 9, 10.0, 0.0, poll_interval_s=1000)
+    assert sensor.extra_diag()["max_plausible_voltage_v"] == pytest.approx(4.0 * etape_sensor.SATURATION_REJECT_FRACTION)
+
+    # Bare doubles with no reference attribute fall back to the board default.
+    sensor2 = EtapeSensor(FakeADC(voltage=1.0), 9, 10.0, 0.0, poll_interval_s=1000)
+    assert sensor2.extra_diag()["max_plausible_voltage_v"] == pytest.approx(
+        ads1263.DEFAULT_REFERENCE_VOLTAGE * etape_sensor.SATURATION_REJECT_FRACTION
+    )
+
+
+def test_create_sets_plausibility_ceiling_from_reference_voltage():
+    sensor = create(
+        {"adc_channel": 0, "calibration_slope_cm_per_v": 1.0, "calibration_intercept_cm": 0.0, "reference_voltage": 3.3},
+        simulate=True,
+    )
+    try:
+        assert sensor.extra_diag()["max_plausible_voltage_v"] == pytest.approx(3.3 * etape_sensor.SATURATION_REJECT_FRACTION)
+    finally:
+        sensor.close()
 
 
 def test_supports_reset_is_false():
