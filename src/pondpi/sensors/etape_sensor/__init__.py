@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,19 @@ DEFAULT_POLL_INTERVAL_S = 0.5
 # genuinely stopped (died, or the ADC/SPI link went stale), not because
 # of one slow poll.
 HEALTH_STALE_THRESHOLD_S = 3.0
+
+# Plausibility ceiling for one ADC sample, as a fraction of the ADC's
+# reference voltage. The ADS1263 occasionally hands back a saturated or
+# garbage conversion that decodes to exactly its reference voltage (raw
+# code 0x7FFFFFFF) -- seen in the field on 2026-11-12/13 as isolated
+# one-sample spikes to 5.08V (16.8cm on met5_1's calibration, above the
+# 5" probe's physical maximum) three times in 24h, with the true level
+# sitting at the probe's floor. A real eTape's resistance divider can't
+# drive its output all the way to the rail, so anything at or above this
+# fraction of the reference is dropped (counted in `extra_diag()`) rather
+# than published as a reading. Kept just below 1.0 so the comparison
+# doesn't depend on float equality with the exact reference value.
+SATURATION_REJECT_FRACTION = 0.98
 
 # The real ADS1263 hardware path's shared state -- see
 # `_get_or_build_shared_adc()` below for why this exists. Only ever
@@ -73,6 +87,7 @@ class EtapeSensor(Sensor):
         calibration_intercept_cm,
         poll_interval_s=DEFAULT_POLL_INTERVAL_S,
         health_stale_threshold_s=HEALTH_STALE_THRESHOLD_S,
+        max_plausible_voltage_v=None,
     ):
         self._adc = adc
         self._adc_channel = adc_channel
@@ -80,8 +95,18 @@ class EtapeSensor(Sensor):
         self._intercept = calibration_intercept_cm
         self._poll_interval_s = poll_interval_s
         self._health_stale_threshold_s = health_stale_threshold_s
+        if max_plausible_voltage_v is None:
+            # Derive from the ADC itself when it says what its reference
+            # is (the real ADS1263 and the simulated one both do); fall
+            # back to the board default for bare test doubles.
+            reference_v = getattr(adc, "reference_voltage", ads1263.DEFAULT_REFERENCE_VOLTAGE)
+            max_plausible_voltage_v = reference_v * SATURATION_REJECT_FRACTION
+        self._max_plausible_voltage_v = max_plausible_voltage_v
         self._last_readings = {}
         self._last_voltage_v = None
+        self._rejected_samples = 0
+        self._last_rejected_voltage_v = None
+        self._last_rejected_at = None
 
         super().__init__()
         # Must be last: this starts a background thread that immediately
@@ -121,7 +146,13 @@ class EtapeSensor(Sensor):
         sidesteps needing a correct calibration to already be in place
         just to calibrate at all."""
         with self._lock:
-            return {"last_voltage_v": self._last_voltage_v}
+            return {
+                "last_voltage_v": self._last_voltage_v,
+                "max_plausible_voltage_v": self._max_plausible_voltage_v,
+                "rejected_samples": self._rejected_samples,
+                "last_rejected_voltage_v": self._last_rejected_voltage_v,
+                "last_rejected_at": self._last_rejected_at,
+            }
 
     def close(self):
         """Stops this sensor's own poll thread, then closes `self._adc`
@@ -147,6 +178,21 @@ class EtapeSensor(Sensor):
                 time.sleep(self._poll_interval_s)
                 continue
 
+            if not self._is_plausible(voltage_v):
+                # A saturated/garbage conversion (see
+                # SATURATION_REJECT_FRACTION) -- drop it and keep the
+                # previous reading rather than publishing an impossible
+                # level. Counted so GET /diag can show how often this
+                # happens; a sustained run of rejections still surfaces
+                # via check_health() going stale, exactly like a run of
+                # SPI errors would.
+                with self._lock:
+                    self._rejected_samples += 1
+                    self._last_rejected_voltage_v = voltage_v
+                    self._last_rejected_at = datetime.now(timezone.utc).isoformat()
+                time.sleep(self._poll_interval_s)
+                continue
+
             depth_cm = self._slope * voltage_v + self._intercept
             distance_mm = depth_cm * 10.0
 
@@ -155,6 +201,12 @@ class EtapeSensor(Sensor):
                 self._last_voltage_v = voltage_v
             self._record_reading()
             time.sleep(self._poll_interval_s)
+
+    def _is_plausible(self, voltage_v):
+        # NaN fails every comparison, so test for it explicitly.
+        if math.isnan(voltage_v):
+            return False
+        return voltage_v < self._max_plausible_voltage_v
 
     def _begin_polling(self):
         self._stop_event = threading.Event()
@@ -264,4 +316,11 @@ def create(params, simulate):
     else:
         adc = _get_or_build_shared_adc(reference_voltage)
 
-    return EtapeSensor(adc, adc_channel, slope, intercept, poll_interval_s=poll_interval_s)
+    return EtapeSensor(
+        adc,
+        adc_channel,
+        slope,
+        intercept,
+        poll_interval_s=poll_interval_s,
+        max_plausible_voltage_v=reference_voltage * SATURATION_REJECT_FRACTION,
+    )
